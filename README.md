@@ -1,23 +1,24 @@
-<p align="center"><img src="docs/logo.png" width="128" alt="DigUp"></p>
+<p align="center"><img src="docs/logo.png" width="96" alt=""></p>
 
 <h1 align="center">DigUp</h1>
 
-<p align="center">Describe it. Dig it up.</p>
+<p align="center"><b>Describe it. Dig it up.</b><br>
+Search the files on your Mac by what's in them, with Google DeepMind's
+<a href="https://huggingface.co/google/embeddinggemma-2">EmbeddingGemma 2</a>.</p>
 
-DigUp is a search app for your Mac built on
-[EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2), the multimodal embedding model Google DeepMind
-released in October 2026.
+<p align="center"><a href="https://github.com/ARahim3/DigUp/releases/latest"><b>Download for Mac</b></a> · Apple Silicon,
+macOS 14 or later · Free and open source</p>
 
-EmbeddingGemma 2 puts text, images, audio and video into one shared space. A photo of a dog on a beach lands next to
-the words "a dog on the beach", and a recording of someone talking about sleep lands next to "where they talk about
-sleep". It understands more than 100 languages, it's open (Apache 2.0), and at 740M parameters it's small enough to
-run comfortably on a laptop.
+<p align="center"><img src="docs/demo.gif" width="800" alt="DigUp's search panel finding a zebra in a video, a podcast moment, a clause in a lease, a dog on the beach in English, Bengali and Arabic, and code that opens in Zed"></p>
+
+EmbeddingGemma 2 is the multimodal embedding model Google DeepMind released in October 2026. It puts text, images,
+audio and video into one shared space: a photo of a dog on a beach lands next to the words "a dog on the beach", and a
+recording of someone talking about sleep lands next to "where they talk about sleep". It understands more than 100
+languages, it's open (Apache 2.0), and at 740M parameters it's small enough to run comfortably on a laptop.
 
 DigUp brings that to the files on your Mac. Pick the folders to search, and it reads the pictures, PDFs, documents,
 recordings and videos in them. Then describe what you're looking for, in your own words, and it finds the match,
 whatever kind of file it is. All of it happens on your Mac.
-
-<p align="center"><img src="docs/demo.gif" width="800" alt="DigUp's search panel finding a zebra in a video, a podcast moment, a clause in a lease, a dog on the beach in English, Bengali and Arabic, and code that opens in Zed"></p>
 
 ## What you can find
 
