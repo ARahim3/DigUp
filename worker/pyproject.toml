@@ -1,0 +1,20 @@
+[project]
+name = "digup-worker"
+version = "0.1.0"
+description = "DigUp's embedding worker: EmbeddingGemma 2 on MLX (mlx-vlm), spoken to over stdin/stdout"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    # EmbeddingGemma 2 support landed on mlx-vlm main on 2026-10-06 and isn't on PyPI yet; at this commit it matches
+    # the float32 reference (parity >= 0.9997). Move to a PyPI release when one ships.
+    "mlx-vlm @ git+https://github.com/Blaizzy/mlx-vlm@fec3f50379bb2cb0760ef3c8a68ebce9585e4d97",
+    "mlx==0.32.3",
+    "transformers==5.19.0",
+    "huggingface-hub>=1.33",
+    "numpy>=2.5",
+    "pillow>=12.3",
+    "miniaudio>=1.71",
+    "opencv-python>=5.0",
+]
+
+[tool.uv]
+package = false
