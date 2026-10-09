@@ -17,7 +17,7 @@ DigUp brings that to the files on your Mac. Pick the folders to search, and it r
 recordings and videos in them. Then describe what you're looking for, in your own words, and it finds the match,
 whatever kind of file it is. All of it happens on your Mac.
 
-<!-- demo: docs/demo.gif -->
+<p align="center"><img src="docs/demo.gif" width="800" alt="DigUp's search panel finding a zebra in a video, a podcast moment, a clause in a lease, a dog on the beach in English, Bengali and Arabic, and code that opens in Zed"></p>
 
 ## What you can find
 
