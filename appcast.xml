@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>DigUp</title>
+    <item>
+      <title>0.6.0</title>
+      <pubDate>Fri, 09 Oct 2026 14:23:08 GMT</pubDate>
+      <sparkle:version>11</sparkle:version>
+      <sparkle:shortVersionString>0.6.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[<p>The first public release of DigUp, built on Google DeepMind's EmbeddingGemma 2.</p>
+<ul>
+<li>Pictures, screenshots, PDFs, documents, audio and video, found by describing them. Long PDFs and documents are read to the end.</li>
+<li>Exact words count too: invoice numbers, error codes and names, including the text inside screenshots.</li>
+<li>Code search, off until you choose folders for it: start a search with <code>code:</code>. With it on, the search field shows a <code>code:</code> example.</li>
+<li>Updates like this one arrive by themselves: a daily check you can turn off in Settings.</li>
+</ul>]]></description>
+      <enclosure url="https://github.com/ARahim3/DigUp/releases/download/v0.6.0/DigUp-0.6.0.dmg" sparkle:edSignature="9pqdSPSiAMbARWAviU1dyxm1tX2pXp+FuadUOvsIF+v/Cdw6zIXgF8FDt0/WDV0gYX3lk2sHglJ0IA1X6PhvBg==" length="8574862" type="application/octet-stream"/>
+    </item>
+  </channel>
+</rss>
