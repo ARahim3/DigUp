@@ -10,12 +10,12 @@ released in October 2026.
 
 EmbeddingGemma 2 puts text, images, audio and video into one shared space. A photo of a dog on a beach lands next to
 the words "a dog on the beach", and a recording of someone talking about sleep lands next to "where they talk about
-sleep". It understands more than 100 languages, it's open (Apache 2.0), and at 744M parameters it's small enough to
+sleep". It understands more than 100 languages, it's open (Apache 2.0), and at 740M parameters it's small enough to
 run comfortably on a laptop.
 
-DigUp brings that to the files on your Mac. Pick the folders to search, and it reads every picture, PDF page,
-document, recording and video in them. Then describe what you're looking for, in your own words, and it finds the
-match, whatever kind of file it is. All of it happens on your Mac.
+DigUp brings that to the files on your Mac. Pick the folders to search, and it reads the pictures, PDFs, documents,
+recordings and videos in them. Then describe what you're looking for, in your own words, and it finds the match,
+whatever kind of file it is. All of it happens on your Mac.
 
 <!-- demo: docs/demo.gif -->
 
@@ -25,7 +25,8 @@ match, whatever kind of file it is. All of it happens on your Mac.
 - "where they talk about sleep" jumps to that minute of a podcast
 - "the clause about pets in the lease" shows the PDF page, with the words marked
 - "a dog on the beach" finds the photo, and "payment declined error" the screenshot
-- a search in English can find a note written in Bengali or Arabic, and the other way around
+- a search in English can find a note written in Bengali, Arabic or any of the model's 100+ languages, and the other
+  way around
 - "code: retry a failed call with backoff" finds the function in your projects, if you turn on code search
 
 Exact words count too. Invoice numbers, error codes and names are matched as written, in file names, document text
@@ -50,8 +51,9 @@ DigUp needs an Apple Silicon Mac with macOS 14 or later (it's tested on macOS 26
 | Key | What it does |
 |---|---|
 | ⇧⌘Space | Opens the search panel from any app (you can change it in Settings) |
+| ↓ ↑ | Moves through the results |
 | ↩ | Opens the result: videos and recordings at the moment, PDFs with your words in Preview's search, code in your editor at the line |
-| Space | Quick Look, at the page or moment |
+| Space | Quick Look, at the page or moment (once you've moved to a result) |
 | ⌘↩ | Shows it in Finder |
 | ⌘C | Copies the file, to paste anywhere |
 | ⌘O | The same search in a bigger window, with a picture grid and filters |
@@ -72,10 +74,11 @@ Only the folders you choose:
   match points to its moment
 - video of any length: a frame every few seconds, one per shot, plus the soundtrack the same way as audio
 
-Outside the folders you pick for code search, it never reads code. It never reads keys, certificates, password files,
-hidden folders like `~/.ssh`, app bundles or caches. It skips
-folders that look like datasets, and never downloads iCloud files that only live in the cloud. You can skip more
-folders or file types in Settings. DigUp only reads your files; it never changes, moves or uploads them.
+Outside the folders you pick for code search, it never reads code, and inside a code project (a folder with `.git`,
+`package.json` and the like) it reads only screenshots. It never reads keys, certificates, password files, hidden
+folders like `~/.ssh`, app bundles or caches. It skips folders that look like datasets, and never downloads iCloud
+files that only live in the cloud. You can skip more folders or file types in Settings. DigUp only reads your files;
+it never changes, moves or uploads them.
 
 The first pass takes a few minutes for a few hundred files and can take an hour for a big Downloads folder. That
 happens once, on battery too unless you tell it to wait for a charger, and it pauses in Low Power Mode. After that, a
@@ -111,7 +114,7 @@ your words   ─► the same model's text part (~250 MB, only while you search) 
 
 DigUp runs ggml-org's 8-bit build of EmbeddingGemma 2 through [llama.cpp](https://github.com/ggml-org/llama.cpp) on
 the Mac's GPU. Every vector lives in the same 768-dimensional space, which is why one query can rank a video frame
-against a PDF page. A search embeds your words in a few milliseconds and compares them with everything in the index.
+against a PDF page. A search embeds your words in milliseconds and compares them with everything in the index.
 Exact-word matches get a boost, because no embedding holds an invoice number exactly.
 
 The index remembers which model version made its vectors. An update that leaves the vectors unchanged keeps your
@@ -119,18 +122,20 @@ index, and a test checks every llama.cpp update against stored reference vectors
 
 ## Build from source
 
-You'll need Xcode 26, git, and CMake (or `uv`) for llama.cpp.
+You'll need Xcode 26, git, and CMake (or `uv`) for llama.cpp. If `xcode-select -p` shows the Command Line Tools,
+switch to Xcode first (`sudo xcode-select -s /Applications/Xcode.app`): they lack the SwiftUI and Swift Testing
+macros the build needs.
 
 ```sh
 git clone https://github.com/ARahim3/DigUp && cd DigUp
-scripts/build-llama.sh            # llama.cpp at a pinned tag, with a one-line patch (~40 s)
+scripts/build-llama.sh            # llama.cpp at a pinned tag, with a one-line patch (a few minutes)
 swift build -c release && swift test
 ./build.sh                        # → build.noindex/DigUp.app
 ```
 
-There's also a command-line tool, `.build/release/digup`, that indexes, searches and runs the evals from the
-terminal (`digup --help`). `scripts/make-testbed.sh` builds a folder of test files to try it on, and `evals/` holds
-the queries ranking changes are measured with.
+There's also a command-line tool, `.build/release/digup`, that indexes, searches and runs the evals from the terminal
+(`digup --help`). `scripts/make-testbed.sh` builds a folder of test files to try it on (it needs ffmpeg), and `evals/`
+holds the queries ranking changes are measured with.
 
 ## FAQ
 
@@ -143,19 +148,20 @@ The app itself is about 20 MB.
 **Will it slow my Mac down?** Only the first pass is heavy. After that it reads new files only. The model runs in a
 separate process that quits when it's done, and the search side only loads while you're searching.
 
-**Which languages?** The model knows more than 100. The evals cover only English, Bengali and Arabic because those are
-the languages of the files DigUp was tested on, but the others should work just as well, across languages too. Two
-limits apply to exact words, not to meaning: inside screenshots they're read by Apple's text recognition, which knows
-about 25 languages, and languages written without spaces, like Chinese, Japanese and Thai, aren't split into words.
+**Which languages?** The model knows more than 100, and DigUp searches in all of them, across languages too. The evals
+cover only English, Bengali and Arabic because those are the languages of the files DigUp was tested on, and Google
+notes that the model isn't equally strong in every language. Two limits apply to exact words, not to meaning: inside
+screenshots they're read by Apple's text recognition, which knows about 25 languages, and languages written without
+spaces, like Chinese, Japanese and Thai, aren't split into words.
 
 **How do I remove it?** Quit it, then delete DigUp.app and `~/Library/Application Support/DigUp`, which holds the
-model and the index.
+model and the indexes. Its settings are in `~/Library/Preferences/com.abdurrahim.DigUp.plist`.
 
 ## Thanks
 
 DigUp is built on [EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2) by Google DeepMind (Apache 2.0),
 [llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT) and [Sparkle](https://sparkle-project.org) (MIT). Their
-notices are in the app, under Acknowledgements.
+license notices ship inside the app, in `DigUp.app/Contents/Resources/Acknowledgements.txt`.
 
 DigUp isn't affiliated with Google or Apple. Gemma is a trademark of Google LLC; Mac and Spotlight are trademarks of
 Apple Inc.
