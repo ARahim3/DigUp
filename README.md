@@ -40,7 +40,8 @@ day. The update check sends nothing about your files, and you can turn it off. N
 
 ## Install
 
-1. Download the DMG from [Releases](https://github.com/ARahim3/DigUp/releases) and drag DigUp to Applications.
+1. Download the DMG from [Releases](https://github.com/ARahim3/DigUp/releases) and drag DigUp to Applications, or use
+   Homebrew: `brew install --cask arahim3/tap/digup`.
 2. Open it. While the model downloads (865 MB, once), pick the folders to search: whole folders, or only some of their
    subfolders. DigUp shows how long the first pass will take for each.
 3. Press **⇧⌘Space** in any app and describe what you're looking for.
@@ -156,7 +157,8 @@ screenshots they're read by Apple's text recognition, which knows about 25 langu
 spaces, like Chinese, Japanese and Thai, aren't split into words.
 
 **How do I remove it?** Quit it, then delete DigUp.app and `~/Library/Application Support/DigUp`, which holds the
-model and the indexes. Its settings are in `~/Library/Preferences/com.abdurrahim.DigUp.plist`.
+model and the indexes. Its settings are in `~/Library/Preferences/com.abdurrahim.DigUp.plist`. With Homebrew,
+`brew uninstall --cask --zap digup` removes all of it.
 
 ## Thanks
 
