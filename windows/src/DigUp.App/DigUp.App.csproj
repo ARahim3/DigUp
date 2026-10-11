@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>DigUpApp</AssemblyName>
+    <RootNamespace>DigUp.App</RootNamespace>
+    <ApplicationIcon>Assets\DigUp.ico</ApplicationIcon>
+    <!-- AssemblyName differs from the digup CLI on purpose: Windows disks are
+         case-insensitive, so DigUp.dll would overwrite digup.dll in one folder
+         (and the app would start instead of the CLI, exiting 0 with no output).
+         The Mac build hit the same clash and also ships DigUpApp. Product name
+         shown to users stays "DigUp". -->
+    <!-- One folder, no admin: everything lives next to the exe + %LocalAppData%\DigUp. -->
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\DigUp.Core\DigUp.Core.csproj" />
+    <!-- Thumbnails (ships in the app folder, no install). -->
+    <PackageReference Include="System.Drawing.Common" Version="9.0.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Embedded for windows + tray (pack:// URI); the exe icon comes from ApplicationIcon above. -->
+    <Resource Include="Assets\DigUp.ico" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,35 @@
+<Window x:Class="DigUp.App.SettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="DigUp settings" Width="520" Height="500"
+        WindowStartupLocation="CenterScreen" ResizeMode="NoResize">
+  <DockPanel Margin="18">
+    <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+      <Button Content="Cancel" Width="90" Margin="0,0,8,0" Click="OnCancel" />
+      <Button Content="Save" Width="90" IsDefault="True" Click="OnSave" />
+    </StackPanel>
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+      <StackPanel>
+        <TextBlock FontWeight="SemiBold" Margin="0,0,0,6" Text="Folders to search" />
+        <ListBox x:Name="Folders" Height="110" Margin="0,0,0,6" />
+        <StackPanel Orientation="Horizontal" Margin="0,0,0,14">
+          <Button Content="Add…" Width="90" Margin="0,0,8,0" Click="OnAdd" />
+          <Button Content="Remove" Width="90" Click="OnRemove" />
+        </StackPanel>
+        <TextBlock FontWeight="SemiBold" Margin="0,0,0,6" Text="Shortcut (opens search anywhere)" />
+        <TextBox x:Name="Hotkey" Margin="0,0,0,4" ToolTip="Click here, then press Space with Shift, Ctrl, Alt, or Win held. Example: Ctrl+Alt+Space." />
+        <TextBlock Foreground="Gray" Margin="0,0,0,14" Text="Win+Space can't be taken (Windows keeps it); avoid Shift+Alt (Windows switches language with it)." />
+        <CheckBox x:Name="Code" Content="Search my code (searches starting with code:)" Margin="0,0,0,8" />
+        <TextBlock FontWeight="SemiBold" Margin="0,0,0,6" Text="Code opens in" />
+        <ComboBox x:Name="Editor" Margin="0,0,0,14" />
+        <CheckBox x:Name="Updates" Content="Check for updates once a day" Margin="0,0,0,8" />
+        <TextBlock FontWeight="SemiBold" Margin="0,0,0,6" Text="Search overlay" />
+        <CheckBox x:Name="Blur" Content="Blur the screen behind search" Margin="0,0,0,6" />
+        <TextBlock Margin="0,0,0,2" Text="How dark the screen gets behind search" />
+        <Slider x:Name="Dim" Minimum="0" Maximum="80" TickFrequency="10" IsSnapToTickEnabled="True" Margin="0,0,0,14" />
+        <CheckBox x:Name="Startup" Content="Start DigUp with Windows" Margin="0,0,0,8" />
+        <TextBlock Foreground="Gray" TextWrapping="Wrap" Text="DigUp stays per user: no admin, nothing on PATH, data in %LocalAppData%\DigUp." />
+      </StackPanel>
+    </ScrollViewer>
+  </DockPanel>
+</Window>

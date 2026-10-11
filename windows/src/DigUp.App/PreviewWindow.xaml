@@ -1,0 +1,51 @@
+<Window x:Class="DigUp.App.PreviewWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Preview" Width="880" Height="660" MinWidth="520" MinHeight="380"
+        WindowStyle="None" Background="#1E1E1E" Topmost="True"
+        ShowInTaskbar="False" WindowStartupLocation="CenterOwner">
+  <Border Margin="12" Background="#282828" CornerRadius="14" Padding="16"
+          BorderBrush="#4A4A4A" BorderThickness="1">
+    <Border.Effect>
+      <DropShadowEffect BlurRadius="40" ShadowDepth="0" Opacity="0.6" Color="Black" />
+    </Border.Effect>
+    <Grid>
+      <Grid.RowDefinitions>
+        <RowDefinition Height="Auto" />
+        <RowDefinition Height="*" />
+        <RowDefinition Height="Auto" />
+        <RowDefinition Height="Auto" />
+      </Grid.RowDefinitions>
+      <StackPanel Grid.Row="0" Margin="0,0,0,10">
+        <TextBlock x:Name="Title" FontSize="16" FontWeight="SemiBold" Foreground="White"
+                   TextWrapping="Wrap" TextTrimming="CharacterEllipsis" MaxHeight="48" />
+        <TextBlock x:Name="Kind" FontSize="12" Foreground="#AAAAAA" Margin="0,2,0,0" />
+      </StackPanel>
+      <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"
+                    HorizontalScrollBarVisibility="Auto">
+        <Grid>
+          <Image x:Name="Picture" Stretch="Uniform" Visibility="Collapsed"
+                 HorizontalAlignment="Center" VerticalAlignment="Center" />
+          <MediaElement x:Name="Player" Stretch="Uniform" Visibility="Collapsed"
+                        LoadedBehavior="Manual" UnloadedBehavior="Close" />
+          <TextBox x:Name="Words" Visibility="Collapsed" IsReadOnly="True"
+                   Background="Transparent" Foreground="#DDDDDD" FontSize="14"
+                   BorderThickness="0" TextWrapping="Wrap"
+                   VerticalScrollBarVisibility="Disabled"
+                   HorizontalScrollBarVisibility="Disabled" />
+        </Grid>
+      </ScrollViewer>
+      <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,10,0,0"
+                  x:Name="Transport" Visibility="Collapsed">
+        <Button x:Name="PlayPause" Content="Pause" Width="80" Margin="0,0,8,0" Click="OnPlayPause" />
+        <TextBlock x:Name="Time" Foreground="#AAAAAA" VerticalAlignment="Center" />
+      </StackPanel>
+      <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,10,0,0">
+        <Button Content="Open" Width="80" Margin="0,0,8,0" Click="OnOpen" />
+        <Button Content="Close" Width="80" Margin="0,0,16,0" Click="OnClose" />
+        <TextBlock Foreground="#888888" VerticalAlignment="Center"
+                   Text="Space or Esc closes · Enter opens" />
+      </StackPanel>
+    </Grid>
+  </Border>
+</Window>
