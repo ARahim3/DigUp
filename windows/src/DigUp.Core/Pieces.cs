@@ -120,13 +120,15 @@ public sealed record PdfPage(int Number, string Text, string? ImagePath, bool Oc
 /// </summary>
 public sealed record CodePiece(string Text, int First, int Last);
 
-/// <summary>Ports CodeExtractor.File (CodeExtractor.swift:13). Cells is null for non-notebooks.</summary>
+/// <summary>Ports CodeExtractor.File (CodeExtractor.swift:13). Cells is null for non-notebooks.
+/// CapNote is set when a long repo doc was read only partly (see MaxDocBytes).</summary>
 public sealed record CodeFile(
     System.Collections.Generic.IReadOnlyList<CodePiece> Pieces,
     string Title,
     string? Repo,
     int Lines,
-    int? Cells);
+    int? Cells,
+    string? CapNote = null);
 
 /// <summary>
 /// Indexing settings. Anything that changes vectors is part of
@@ -138,6 +140,10 @@ public sealed class IndexOptions
     public int CodeStretch { get; set; } = 1800;
     public int MaxCodeBytes { get; set; } = 1 << 20;
     public int MaxNotebookBytes { get; set; } = 20 << 20;
+    /// <summary>Repo docs (md, txt and family) are read up to here, then
+    /// capped instead of skipped: a 5 MB changelog still matches on its
+    /// head. Part of the code fingerprint (it changes what's stored).</summary>
+    public int MaxDocBytes { get; set; } = 200 << 10;
     public bool IncludeCode { get; set; }
     public bool IncludeDatasets { get; set; }
     public int MinImageSide { get; set; } = 256;
@@ -169,7 +175,7 @@ public sealed class IndexOptions
             var culture = CultureInfo.InvariantCulture;
             if (Code)
             {
-                return string.Format(culture, "code1 lines{0}", CodeStretch);
+                return string.Format(culture, "code1 lines{0} doc{1}", CodeStretch, MaxDocBytes);
             }
 
             return string.Format(

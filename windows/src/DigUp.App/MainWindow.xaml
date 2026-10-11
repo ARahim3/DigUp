@@ -80,9 +80,9 @@
                 <TextBlock x:Name="PreviewText" Foreground="#DDDDDD" TextWrapping="Wrap" MaxHeight="120"
                            TextTrimming="CharacterEllipsis" />
                 <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                  <Button Content="Open" Width="80" Margin="0,0,8,0" Click="OnOpenButton" />
-                  <Button Content="Show in Explorer" Width="120" Margin="0,0,8,0" Click="OnShowButton" />
-                  <Button Content="Copy" Width="70" Click="OnCopyButton" />
+                  <Button Content="Open" Width="80" Margin="0,0,8,0" Click="OnOpenButton" Focusable="False" />
+                  <Button Content="Show in Explorer" Width="120" Margin="0,0,8,0" Click="OnShowButton" Focusable="False" />
+                  <Button Content="Copy" Width="70" Click="OnCopyButton" Focusable="False" />
                 </StackPanel>
               </StackPanel>
             </Grid>

@@ -26,6 +26,11 @@ public sealed class Engine : IDisposable
     // swaps them: the swap waits for running searches instead of freeing
     // a searcher one is inside.
     private readonly object _searchGate = new();
+    // One query worker for all keystrokes: starting a helper per keystroke
+    // costs ~2 s of model load each time (measured 1859 ms spawn+load vs
+    // 15 ms on a warm one). It lives until pause, model change, or quit.
+    private IEmbedder? _queryWorker;
+    private readonly object _queryGate = new();
 
     public string Status { get; private set; } = "starting…";
     public event Action? Changed;
@@ -39,7 +44,9 @@ public sealed class Engine : IDisposable
         _paused = paused;
         Status = paused ? "paused" : "running…";
         Changed?.Invoke();
-        if (!paused) RequestIndex();
+        // Paused means quiet: the query helper's GPU memory goes back too.
+        if (paused) DropQueryWorker();
+        else RequestIndex();
     }
 
     /// <summary>Settings window saved: pick up folders/code without a restart.</summary>
@@ -70,7 +77,19 @@ public sealed class Engine : IDisposable
             if (_settings.Code) IndexOne(_codeStore!, _codeOptions, "code");
             RefreshSearchers();
             var counts = _store!.Counts();
-            Say($"{counts.Segments} pieces, {counts.Vectors} vectors. Type to search.");
+            if (_codeStore is not null)
+            {
+                // Code lives in its own index: count it too, or the status
+                // line pretends thousands of indexed files don't exist.
+                var code = _codeStore.Counts();
+                Say($"{counts.Segments + code.Segments} pieces, " +
+                    $"{counts.Vectors + code.Vectors} vectors (code {code.Vectors}). Type to search.");
+            }
+            else
+            {
+                Say($"{counts.Segments} pieces, {counts.Vectors} vectors. Type to search.");
+            }
+            WarmQueryWorker(); // still on the background thread: first keystroke is instant
         }
         catch (OperationCanceledException) { Say("paused"); }
         catch (Exception ex) { ErrorLog.Write("index: " + ex); Say($"indexer stopped: {FirstLine(ex.Message)}"); }
@@ -126,16 +145,36 @@ public sealed class Engine : IDisposable
     {
         query = TextSanitize.Clean(query);
         OpenStores();
+        string? codeText = CodeQuery.TextOf(query);
         Searcher searcher;
+        Searcher? codeSearcher;
         lock (_searchGate)
         {
-            bool code = CodeQuery.TextOf(query) is not null && _codeSearcher is not null;
-            searcher = code ? _codeSearcher! : (_searcher ??= new Searcher(_store!, loadVectors: false));
+            // Both searchers lazy: a search before the first indexing pass
+            // still reaches code (the fallback below needs it). Loading
+            // vectors waits for the first meaning search either way.
+            if (_settings.Code && _codeStore is not null)
+                codeSearcher = _codeSearcher ??= new Searcher(_codeStore, loadVectors: false);
+            else
+                codeSearcher = null;
+            searcher = codeText is not null && codeSearcher is not null
+                ? codeSearcher
+                : (_searcher ??= new Searcher(_store!, loadVectors: false));
         }
         IReadOnlyList<float>? vec = TryEmbedQuery(query);
-        return searcher.Search(query, vec, limit: limit)
+        var hits = searcher.Search(query, vec, limit: limit)
             .Select(h => new Hit(h.Path, h.Kind.ToString(), WhereOf(h), Clean(h.Excerpt), h.Score))
             .ToList();
+        if (hits.Count == 0 && codeText is null && codeSearcher is not null)
+        {
+            // Nothing outside code: fall back to the code index, so a bare
+            // query on a code folder doesn't come back empty without saying
+            // why. (An explicit "code:" still searches code only.)
+            hits = codeSearcher.Search(query, vec, limit: limit)
+                .Select(h => new Hit(h.Path, h.Kind.ToString(), WhereOf(h), Clean(h.Excerpt), h.Score))
+                .ToList();
+        }
+        return hits;
     }
 
     /// <summary>First-pass size for folders, off the UI thread.</summary>
@@ -215,7 +254,9 @@ public sealed class Engine : IDisposable
             new GdiImageDecoder(), new WindowsOcrEngineStub(),
             new PdfiumEngine(ExeNextTo("pdfium.dll")), FindFFmpeg(), null);
         var indexer = new Indexer(store, options, new Crawler(), () => MakeEmbedder(store.Directory), extractor);
-        indexer.ResetOnModelChange = (_, _) => { };
+        // A new model means new vectors: the index rebuilds and the warm
+        // query helper (old model) is dropped with it.
+        indexer.ResetOnModelChange = (_, _) => DropQueryWorker();
         indexer.WorkerCount = 1; // measured fastest on one GPU (see Indexer)
         return indexer;
     }
@@ -229,17 +270,74 @@ public sealed class Engine : IDisposable
 
     private IReadOnlyList<float>? TryEmbedQuery(string query)
     {
-        try
+        IEmbedder? worker;
+        lock (_queryGate)
         {
             string exe = ExeNextTo("digup-embed.exe");
             if (!File.Exists(exe)) return null;
-            using IEmbedder w = new WorkerClient(new WorkerConfig(exe, [], TextOnly: true,
-                LogPath: Path.Combine(Settings.Dir, "worker.log")));
+            if (_queryWorker is null)
+            {
+                // Creation loads the model (~2 s, once): failure here is
+                // worth one log line; per-keystroke embed failures stay quiet
+                // (the search simply goes words-only that once).
+                try
+                {
+                    _queryWorker = new WorkerClient(new WorkerConfig(exe, [], TextOnly: true,
+                        LogPath: Path.Combine(Settings.Dir, "worker.log")));
+                }
+                catch (Exception ex)
+                {
+                    ErrorLog.Write("query helper won't start: " + ex.Message);
+                    _queryWorker = null;
+                    return null;
+                }
+            }
+            worker = _queryWorker;
+        }
+        try
+        {
             string prompted = CodeQuery.TextOf(query) is not null ? Prompts.CodeQuery(query) : Prompts.Query(query);
-            var rows = w.EmbedTexts([prompted]);
+            var rows = worker.EmbedTexts([prompted]);
             return rows.Length > 0 && rows[0].Length == Vectors.Dimension ? rows[0] : null;
         }
-        catch { return null; }
+        catch
+        {
+            // A dead helper must not wedge every later keystroke: drop it,
+            // this search goes words-only, the next keystroke starts fresh.
+            DropQueryWorker();
+            return null;
+        }
+    }
+
+    /// <summary>Load the query helper now (background), so the first real
+    /// keystroke embeds in milliseconds instead of seconds.</summary>
+    private void WarmQueryWorker()
+    {
+        try
+        {
+            lock (_queryGate)
+            {
+                string exe = ExeNextTo("digup-embed.exe");
+                if (!File.Exists(exe) || _queryWorker is not null) return;
+                _queryWorker = new WorkerClient(new WorkerConfig(exe, [], TextOnly: true,
+                    LogPath: Path.Combine(Settings.Dir, "worker.log")));
+            }
+            _queryWorker.EmbedTexts([Prompts.Query("warmup")]);
+        }
+        catch
+        {
+            DropQueryWorker();
+        }
+    }
+
+    private void DropQueryWorker()
+    {
+        lock (_queryGate)
+        {
+            try { _queryWorker?.Close(); } catch { }
+            try { _queryWorker?.Dispose(); } catch { }
+            _queryWorker = null;
+        }
     }
 
     private sealed class WordsOnly : IEmbedder
@@ -294,6 +392,7 @@ public sealed class Engine : IDisposable
     {
         _disposed = true;
         _run?.Cancel();
+        DropQueryWorker();
         lock (_searchGate)
         {
             _searcher?.Dispose();

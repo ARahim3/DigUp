@@ -471,12 +471,19 @@ public sealed class IndexStore : IDisposable, IIndexerStore
     }
 
     /// <summary>Removes every file that isn't under one of <paramref name="roots"/>.
+    /// A root that doesn't exist right now (ejected drive, offline share)
+    /// keeps its files: gone hardware must not read as deleted folders.
     /// Returns how many went.</summary>
     public int Prune(IReadOnlyList<string> roots)
     {
         var prefixes = new List<string>();
         foreach (var root in roots)
         {
+            if (!System.IO.Directory.Exists(root) && !System.IO.File.Exists(root))
+            {
+                continue;
+            }
+
             string p = NormalizePath(root);
             prefixes.Add(p.EndsWith('/') ? p : p + "/");
         }
@@ -487,7 +494,9 @@ public sealed class IndexStore : IDisposable, IIndexerStore
             bool keep = false;
             foreach (var p in prefixes)
             {
-                if (path.StartsWith(p, StringComparison.Ordinal)) { keep = true; break; }
+                // Windows paths ignore case (the rest of sync compares
+                // case-insensitively too): never prune over a capital.
+                if (path.StartsWith(p, StringComparison.OrdinalIgnoreCase)) { keep = true; break; }
             }
             if (!keep)
                 gone.Add(r.GetInt64(0));

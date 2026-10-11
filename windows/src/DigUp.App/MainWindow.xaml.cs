@@ -6,6 +6,7 @@
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Input;
+using DigUp.Core;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
@@ -166,6 +167,10 @@ public partial class MainWindow : Window
                 }).ToList();
                 if (_hits.Count > 0) Results.SelectedIndex = 0;
                 ShowPreview();
+                FollowPreview(); // an open Space preview tracks new results, never goes stale
+                if (CodeQuery.TextOf(q) is null && _hits.Count > 0
+                    && _hits.All(h => h.Kind == "Code"))
+                    Status.Text = "only code matches — tip: code: searches code, plain words search the rest";
             });
         });
     }
@@ -184,27 +189,29 @@ public partial class MainWindow : Window
         PreviewText.Text = h.Excerpt ?? "(no words — found by what it shows or says)";
         PreviewImage.Source = null;
         // Thumbnails load off the UI thread; a late one for an old selection is dropped.
+        // The whole continuation runs on the UI thread: touching Results from
+        // a pool thread throws and silently kills every thumbnail.
         int at = Results.SelectedIndex;
-        Task.Run(() => ThumbFor(h))?.ContinueWith(t =>
+        Task.Run(() => ThumbFor(h)).ContinueWith(t =>
         {
-            if (t.Result is null || at != Results.SelectedIndex) return;
-            Dispatcher.Invoke(() =>
+            string? file;
+            try { file = t.Result; }
+            catch { return; }
+            if (file is null || at != Results.SelectedIndex) return;
+            try
             {
+                var bmp = new BitmapImage();
+                bmp.BeginInit();
+                bmp.CacheOption = BitmapCacheOption.OnLoad;
+                bmp.DecodePixelWidth = 440;
+                bmp.UriSource = new Uri(file);
+                bmp.EndInit();
+                bmp.Freeze();
                 if (at != Results.SelectedIndex) return;
-                try
-                {
-                    var bmp = new BitmapImage();
-                    bmp.BeginInit();
-                    bmp.CacheOption = BitmapCacheOption.OnLoad;
-                    bmp.DecodePixelWidth = 440;
-                    bmp.UriSource = new Uri(t.Result);
-                    bmp.EndInit();
-                    bmp.Freeze();
-                    PreviewImage.Source = bmp;
-                }
-                catch { }
-            });
-        });
+                PreviewImage.Source = bmp;
+            }
+            catch { }
+        }, TaskScheduler.FromCurrentSynchronizationContext());
     }
 
     private static string? ThumbFor(Engine.Hit h)
@@ -263,9 +270,15 @@ public partial class MainWindow : Window
             var win = new PreviewWindow(
                 System.IO.Path.Combine(AppContext.BaseDirectory, "pdfium.dll"), OpenSelected);
             win.Owner = this;
-            win.Closed += (_, _) => { if (ReferenceEquals(_preview, win)) _preview = null; };
+            win.Closed += (_, _) =>
+            {
+                if (ReferenceEquals(_preview, win)) _preview = null;
+                // Focus goes back to the list (unless they're typing): arrows
+                // and Space keep working without another click.
+                try { if (!Query.IsFocused) Results.Focus(); } catch { }
+            };
             _preview = win;
-            win.ShowHit(_hits[Results.SelectedIndex]);
+            win.ShowHit(_hits[Results.SelectedIndex], Query.Text);
             win.Show();
             win.Focus();
         }
@@ -282,7 +295,7 @@ public partial class MainWindow : Window
         try
         {
             if (Results.SelectedIndex < 0 || Results.SelectedIndex >= _hits.Count) _preview.Close();
-            else _preview.ShowHit(_hits[Results.SelectedIndex]);
+            else _preview.ShowHit(_hits[Results.SelectedIndex], Query.Text);
         }
         catch { try { _preview.Close(); } catch { } }
     }

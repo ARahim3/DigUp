@@ -293,7 +293,12 @@ public sealed class Crawler : ICrawler
         if (options.Code)
         {
             // Too big to be written by hand; a notebook's file holds its outputs too.
-            long limit = Rules.ExtensionOf(name) == "ipynb" ? options.MaxNotebookBytes : options.MaxCodeBytes;
+            // Repo docs are exempt: Read caps them at MaxDocBytes instead of
+            // skipping them, so a long changelog still matches on its head.
+            string ext = Rules.ExtensionOf(name);
+            long limit = ext == "ipynb" ? options.MaxNotebookBytes
+                : RulesData.CodeTextExtensions.Contains(ext) ? long.MaxValue
+                : options.MaxCodeBytes;
             if (size > limit)
             {
                 Bump(report.Skipped, "too big to be written by hand");

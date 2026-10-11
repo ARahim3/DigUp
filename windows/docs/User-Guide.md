@@ -45,7 +45,6 @@ DigUp sits in the tray. Right-click it to pause indexing, pick folders,
 or quit. New files are searchable seconds after they land.
 
 ## Code search (off until you turn it on)
-
 Turn it on in settings for the folders you pick. Then start a search
 with `code:` and say what the code does, or type a name from the code:
 
@@ -53,7 +52,9 @@ with `code:` and say what the code does, or type a name from the code:
 - `code: refreshAccessToken` goes to the line that defines it.
 
 Results open in your editor at the line (VS Code, Cursor, Visual
-Studio, JetBrains, Sublime, Notepad++). Code never shows in other searches.
+Studio, JetBrains, Sublime, Notepad++). Plain words search everything
+except code — but when they match nothing else, code matches show up
+anyway (with a tip saying so).
 
 ## What it reads (only folders you choose)
 
@@ -67,6 +68,8 @@ Studio, JetBrains, Sublime, Notepad++). Code never shows in other searches.
 It never reads keys, passwords, hidden folders, app data, or files that
 only live in the cloud (OneDrive placeholders are skipped, never
 downloaded). It only reads. It never changes, moves, or uploads files.
+Take a folder out of Settings and its files leave the index (and search)
+with the next pass.
 
 ## Updates and privacy
 
@@ -103,3 +106,5 @@ model are removed only if you tick "remove my data". Settings live in
   ~10 files a second on a fast PC; CPU and GPU spike, then rest). After
   that, only new files are read. The model runs in a helper that quits
   when done. The app idles around 115 MB.
+- Very long documents are read up to 200 KB (the rest is noted, not
+  indexed); code files over 1 MB are left out.

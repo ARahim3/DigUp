@@ -15,8 +15,9 @@ public abstract record PreviewModel
     public sealed record TempImage(string Path) : PreviewModel;
     /// <summary>Sound or video from seconds in.</summary>
     public sealed record Media(string Path, double Seconds, bool IsVideo) : PreviewModel;
-    /// <summary>Words: code around the match, a text file, or an excerpt.</summary>
-    public sealed record Text(string Body) : PreviewModel;
+    /// <summary>Words: code around the match, a text file, or an excerpt.
+    /// Highlight marks the relevant passage (offset/length, -1 when none).</summary>
+    public sealed record Text(string Body, int Highlight = -1, int HighlightLength = 0) : PreviewModel;
     public sealed record None(string Note) : PreviewModel;
 }
 
@@ -28,11 +29,14 @@ public static class PreviewContent
 
     /// <summary>The preview for <paramref name="hit"/>: pictures as pictures,
     /// PDFs as the matched page rendered, sound/video from their moment,
-    /// code around the matched lines, small text files whole. Never throws
-    /// and never returns null; missing files fall back to the excerpt.</summary>
-    public static PreviewModel For(Engine.Hit hit, string pdfiumDll)
+    /// code around the matched lines, small text files whole. The words
+    /// carry the relevant passage marked (from <paramref name="query"/>).
+    /// Never throws and never returns null; missing files fall back to
+    /// the excerpt.</summary>
+    public static PreviewModel For(Engine.Hit hit, string pdfiumDll, string query = "")
     {
         string path = hit.Path.Replace('/', Path.DirectorySeparatorChar);
+        List<string> tokens = Tokens(query);
         try
         {
             return hit.Kind switch
@@ -42,18 +46,38 @@ public static class PreviewContent
                     new PreviewModel.Media(path, MainWindow.ParseSeconds(hit.Where), true),
                 "Audio" when File.Exists(path) =>
                     new PreviewModel.Media(path, MainWindow.ParseSeconds(hit.Where), false),
-                "Pdf" when File.Exists(path) => PdfPage(hit, path, pdfiumDll),
-                "Code" when File.Exists(path) => CodeAt(hit, path),
-                _ => Words(hit, path),
+                "Pdf" when File.Exists(path) => PdfPage(hit, path, pdfiumDll, tokens),
+                "Code" when File.Exists(path) => CodeAt(hit, path, tokens),
+                _ => Words(hit, path, tokens),
             };
         }
         catch
         {
-            return Fallback(hit);
+            return Fallback(hit, tokens);
         }
     }
 
-    private static PreviewModel PdfPage(Engine.Hit hit, string path, string pdfiumDll)
+    /// <summary>Query words to jump to. The "code:" prefix isn't one.</summary>
+    private static List<string> Tokens(string query)
+    {
+        try { return SearchText.Tokenize(CodeQuery.TextOf(query.Trim()) ?? query); }
+        catch { return []; }
+    }
+
+    /// <summary>First query word in the body (case-insensitive): the relevant
+    /// passage. (-1, 0) when none matches.</summary>
+    private static (int At, int Length) Passage(string body, List<string> tokens)
+    {
+        int at = -1, length = 0;
+        foreach (string token in tokens)
+        {
+            int i = body.IndexOf(token, StringComparison.OrdinalIgnoreCase);
+            if (i >= 0 && (at < 0 || i < at)) { at = i; length = token.Length; }
+        }
+        return (at, length);
+    }
+
+    private static PreviewModel PdfPage(Engine.Hit hit, string path, string pdfiumDll, List<string> tokens)
     {
         try
         {
@@ -66,11 +90,11 @@ public static class PreviewContent
         }
         catch
         {
-            return Fallback(hit);
+            return Fallback(hit, tokens);
         }
     }
 
-    private static PreviewModel CodeAt(Engine.Hit hit, string path)
+    private static PreviewModel CodeAt(Engine.Hit hit, string path, List<string> tokens)
     {
         try
         {
@@ -80,28 +104,37 @@ public static class PreviewContent
             var sb = new System.Text.StringBuilder();
             for (int i = from; i <= to; i++)
                 sb.Append(i).Append(": ").AppendLine(lines[i - 1]);
-            return new PreviewModel.Text(sb.ToString());
+            string body = sb.ToString();
+            var (at, length) = Passage(body, tokens);
+            return new PreviewModel.Text(body, at, length);
         }
         catch
         {
-            return Fallback(hit);
+            return Fallback(hit, tokens);
         }
     }
 
-    private static PreviewModel Words(Engine.Hit hit, string path)
+    private static PreviewModel Words(Engine.Hit hit, string path, List<string> tokens)
     {
         try
         {
             if (File.Exists(path) && TextExtensions.Contains(Path.GetExtension(path).ToLowerInvariant())
                 && new FileInfo(path).Length <= MaxTextBytes)
-                return new PreviewModel.Text(File.ReadAllText(path));
+            {
+                string body = File.ReadAllText(path);
+                var (at, length) = Passage(body, tokens);
+                return new PreviewModel.Text(body, at, length);
+            }
         }
         catch { }
-        return Fallback(hit);
+        return Fallback(hit, tokens);
     }
 
-    private static PreviewModel Fallback(Engine.Hit hit) =>
-        string.IsNullOrWhiteSpace(hit.Excerpt)
-            ? new PreviewModel.None("(no words — found by what it shows or says)")
-            : new PreviewModel.Text(hit.Excerpt);
+    private static PreviewModel Fallback(Engine.Hit hit, List<string> tokens)
+    {
+        if (string.IsNullOrWhiteSpace(hit.Excerpt))
+            return new PreviewModel.None("(no words — found by what it shows or says)");
+        var (at, length) = Passage(hit.Excerpt, tokens);
+        return new PreviewModel.Text(hit.Excerpt, at, length);
+    }
 }

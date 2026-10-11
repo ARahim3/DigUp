@@ -226,18 +226,38 @@ public static class CodeExtractor
             throw ExtractError.LeftOut(folderSkip);
         }
 
+        var (repo, title) = Place(path);
+        string ext = System.IO.Path.GetExtension(path).TrimStart('.').ToLowerInvariant();
+        bool cappedDoc = RulesData.CodeTextExtensions.Contains(ext);
+
         byte[] data;
+        long fileBytes;
         try
         {
-            data = System.IO.File.ReadAllBytes(path);
+            if (cappedDoc)
+            {
+                // Long repo doc: read the head plus slack only. Memory stays
+                // bounded whatever the file size; the cap below cuts at a line.
+                fileBytes = new System.IO.FileInfo(path).Length;
+                int want = (int)System.Math.Min(fileBytes, (long)options.MaxDocBytes + 65536);
+                data = new byte[want];
+                using var stream = System.IO.File.OpenRead(path);
+                int got = 0, n;
+                while (got < want && (n = stream.Read(data, got, want - got)) > 0)
+                    got += n;
+                if (got < want)
+                    System.Array.Resize(ref data, got);
+            }
+            else
+            {
+                data = System.IO.File.ReadAllBytes(path);
+                fileBytes = data.Length;
+            }
         }
         catch (System.Exception error) when (error is System.IO.IOException || error is System.UnauthorizedAccessException)
         {
             throw ExtractError.Unreadable(error.Message);
         }
-
-        var (repo, title) = Place(path);
-        string ext = System.IO.Path.GetExtension(path).TrimStart('.').ToLowerInvariant();
 
         if (ext == "ipynb")
         {
@@ -274,9 +294,28 @@ public static class CodeExtractor
         }
 
         string decoded = Decode(data);
+        string? capNote = null;
+        if (cappedDoc && fileBytes > options.MaxDocBytes)
+        {
+            // Read with a cap (length capped): keep the head, cut at a line,
+            // say what's missing. A split surrogate pair can't hurt: every
+            // text entry point cleans lone surrogates (see TextSanitize).
+            if (decoded.Length > options.MaxDocBytes)
+            {
+                int cut = decoded.LastIndexOf('\n', System.Math.Min(decoded.Length - 1, options.MaxDocBytes));
+                if (cut <= 0)
+                    cut = options.MaxDocBytes;
+                decoded = decoded.Substring(0, cut);
+            }
+            long kept = System.Text.Encoding.UTF8.GetByteCount(decoded);
+            capNote = kept < fileBytes ? $"first {SizeKb(kept)} of {SizeKb(fileBytes)}" : null;
+        }
         Check(decoded, RulesData.SourceExtensions.Contains(ext));
-        return new CodeFile(Lines(decoded, options.CodeStretch), title, repo, LineCount(decoded), null);
+        return new CodeFile(Lines(decoded, options.CodeStretch), title, repo, LineCount(decoded), null, capNote);
     }
+
+    private static string SizeKb(long bytes) =>
+        bytes >= 1 << 20 ? $"{bytes / (double)(1 << 20):0.0} MB" : $"{System.Math.Max(1, bytes >> 10)} KB";
 
     private static string Decode(byte[] data)
     {

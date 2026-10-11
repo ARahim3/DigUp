@@ -191,9 +191,12 @@ public static class Estimator
                 case FileKind.Code:
                 {
                     // A notebook's file is mostly its outputs, which aren't read: a guess at its cells' share.
+                    // Repo docs are capped at MaxDocBytes (see CodeExtractor.Read).
                     long characters = file.Path.EndsWith(".ipynb", StringComparison.OrdinalIgnoreCase)
                         ? file.Size / 8
-                        : file.Size;
+                        : RulesData.CodeTextExtensions.Contains(Rules.ExtensionOf(file.Path))
+                            ? Math.Min(file.Size, options.MaxDocBytes)
+                            : file.Size;
                     long stretches = Math.Max(
                         1,
                         (characters + CodeIndexSize.CharactersPerStretch - 1) / CodeIndexSize.CharactersPerStretch);

@@ -44,6 +44,7 @@ public partial class PreviewWindow : Window
         {
             Words.Text = "(this file won't play here — Enter opens it in its own app)";
             Words.Visibility = Visibility.Visible;
+            WordsScroll.Visibility = Visibility.Visible;
             Player.Visibility = Visibility.Collapsed;
             Transport.Visibility = Visibility.Collapsed;
         };
@@ -51,14 +52,15 @@ public partial class PreviewWindow : Window
     }
 
     /// <summary>Show another hit (follows the panel's selection).</summary>
-    public void ShowHit(Engine.Hit hit)
+    public void ShowHit(Engine.Hit hit, string query = "")
     {
         Cleanup();
+        ResetViews();
         Title.Text = hit.Path + (hit.Where.Length > 0 ? "  " + hit.Where : "");
         Kind.Text = KindLine(hit);
         try
         {
-            switch (PreviewContent.For(hit, _pdfiumDll))
+            switch (PreviewContent.For(hit, _pdfiumDll, query))
             {
                 case PreviewModel.Image img:
                     ShowPicture(img.Path, temp: false);
@@ -70,17 +72,26 @@ public partial class PreviewWindow : Window
                     ShowMedia(m);
                     break;
                 case PreviewModel.Text t:
-                    ShowWords(t.Body, mono: hit.Kind == "Code");
+                    ShowWords(t.Body, mono: hit.Kind == "Code", at: t.Highlight, length: t.HighlightLength);
                     break;
                 case PreviewModel.None n:
-                    ShowWords(n.Note, mono: false);
+                    ShowWords(n.Note, mono: false, at: -1, length: 0);
                     break;
             }
         }
         catch
         {
-            ShowWords("(can't preview this — Enter opens it in its own app)", mono: false);
+            ShowWords("(can't preview this — Enter opens it in its own app)", mono: false, at: -1, length: 0);
         }
+    }
+
+    private void ResetViews()
+    {
+        Picture.Visibility = Visibility.Collapsed;
+        Player.Visibility = Visibility.Collapsed;
+        Words.Visibility = Visibility.Collapsed;
+        WordsScroll.Visibility = Visibility.Collapsed;
+        Transport.Visibility = Visibility.Collapsed;
     }
 
     private void ShowPicture(string path, bool temp)
@@ -112,18 +123,30 @@ public partial class PreviewWindow : Window
         {
             Words.Text = "(this file won't play here — Enter opens it in its own app)";
             Words.Visibility = Visibility.Visible;
+            WordsScroll.Visibility = Visibility.Visible;
             Player.Visibility = Visibility.Collapsed;
         }
         StartClock();
     }
 
-    private void ShowWords(string body, bool mono)
+    private void ShowWords(string body, bool mono, int at, int length)
     {
         Words.FontFamily = new System.Windows.Media.FontFamily(
             mono ? "Cascadia Mono, Consolas, Courier New" : "Segoe UI");
         Words.TextWrapping = mono ? TextWrapping.NoWrap : TextWrapping.Wrap;
         Words.Text = body;
         Words.Visibility = Visibility.Visible;
+        WordsScroll.Visibility = Visibility.Visible;
+        // Jump to the relevant passage and mark it.
+        if (at >= 0 && at < body.Length && length > 0)
+        {
+            try
+            {
+                Words.Select(at, Math.Min(length, body.Length - at));
+                Words.ScrollToLine(Words.GetLineIndexFromCharacterIndex(at));
+            }
+            catch { }
+        }
     }
 
     private static string KindLine(Engine.Hit h) => h.Kind switch

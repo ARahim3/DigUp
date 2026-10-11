@@ -51,6 +51,9 @@ public interface IIndexerStore
     void AddSegment(long fileId, SegmentKind kind, Modality modality, double? loc = null, double? locEnd = null, string? excerpt = null, string? text = null, float[]? vector = null);
     string? GetMeta(string key);
     void SetMeta(string key, string value);
+    /// <summary>Removes every file that isn't under one of <paramref name="roots"/>.
+    /// Returns how many went.</summary>
+    int Prune(System.Collections.Generic.IReadOnlyList<string> roots);
     void ResetAll();
     int PendingCount();
     int UnfinishedFiles();
@@ -272,6 +275,11 @@ public sealed class Indexer : System.IDisposable
                 }
             }
         });
+
+        // Folders the user removed in Settings are outside every root above:
+        // FilesUnder never loads them, so without this they would haunt
+        // search results forever. Gone hardware keeps its files (see Prune).
+        summary.Removed += _store.Prune(roots);
 
         return summary;
     }
@@ -886,12 +894,14 @@ public sealed class Indexer : System.IDisposable
                 ["lines"] = code.Lines.ToString(),
                 ["cells"] = code.Cells?.ToString(),
                 ["repo"] = code.Repo,
+                ["capped"] = code.CapNote,
             };
             _store.Finish(file.Id, FileState.Done, info: info);
         });
 
         string extent = code.Cells.HasValue ? $"{code.Cells} cells" : $"{code.Lines} lines";
         return (FileState.Done, $"{code.Pieces.Count} stretches, {extent}"
+            + (code.CapNote is null ? "" : $", {code.CapNote}")
             + (worded.Count < code.Pieces.Count ? $", {code.Pieces.Count - worded.Count} for keywords only" : ""));
     }
 
