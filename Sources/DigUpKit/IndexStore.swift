@@ -34,16 +34,28 @@ public final class IndexStore {
     public var scope: [String]? {
         didSet {
             guard let scope else { (scopeSQL, scopeValues) = ("", []); return }
-            scopeSQL = scope.isEmpty ? " AND 0"
-                : " AND (" + scope.map { _ in "(path >= ? AND path < ?)" }.joined(separator: " OR ") + ")"
-            scopeValues = scope.flatMap { root -> [SQLValue] in
-                let prefix = root.hasSuffix("/") ? root : root + "/"
-                return [.text(prefix), .text(prefix + "\u{10FFFF}")]
-            }
+            let ranges = scope.flatMap(Self.ranges)
+            scopeSQL = ranges.isEmpty ? " AND 0"
+                : " AND (" + ranges.map { _ in "(path >= ? AND path < ?)" }.joined(separator: " OR ") + ")"
+            scopeValues = ranges.flatMap { [.text($0.from), .text($0.to)] }
         }
     }
     private var scopeSQL = ""
     private var scopeValues: [SQLValue] = []
+
+    /// The paths under a folder, as ranges on the UNIQUE path index: everything that starts with it, byte for byte.
+    /// Paths are stored as a walk reports them, and a folder isn't always spelled that way here: `standardizedFileURL`
+    /// says /var for /private/var, and decomposes a Korean name that's precomposed on disk (Google Drive's
+    /// "내 드라이브"). So a range for the folder as given, and one for its real path when that's spelled differently.
+    private static func ranges(under root: String) -> [(from: String, to: String)] {
+        var spellings = [root]
+        let real = FolderSelection.realPath(root)
+        if !real.utf8.elementsEqual(root.utf8) { spellings.append(real) }   // == says the two spellings are equal
+        return spellings.map { path in
+            let prefix = path.hasSuffix("/") ? path : path + "/"
+            return (prefix, prefix + "\u{10FFFF}")
+        }
+    }
 
     /// The main index's file in the index folder.
     public static let mainFile = "index.sqlite"
@@ -222,10 +234,10 @@ public final class IndexStore {
         var out: [FileRecord] = []
         // A folder inside another one listed is already covered (each file once).
         for root in roots where !roots.contains(where: { FolderSelection.isInside(root, $0) }) {
-            let prefix = root.hasSuffix("/") ? root : root + "/"
-            // A range on the UNIQUE path index: everything that starts with `prefix`.
-            try db.query("SELECT \(Self.fileColumns) FROM files WHERE path >= ? AND path < ?",
-                         [.text(prefix), .text(prefix + "\u{10FFFF}")]) { out.append(Self.record($0)) }
+            for range in Self.ranges(under: root) {
+                try db.query("SELECT \(Self.fileColumns) FROM files WHERE path >= ? AND path < ?",
+                             [.text(range.from), .text(range.to)]) { out.append(Self.record($0)) }
+            }
         }
         return out
     }

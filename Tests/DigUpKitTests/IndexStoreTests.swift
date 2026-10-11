@@ -96,5 +96,23 @@ import Testing
         #expect(try indexer.sync([drive]).removed == 0)   // an ejected drive is not "everything deleted"
         #expect(try store.files(under: [drive.path]).count == 1)
     }
+
+    @Test func syncFindsTheRowsOfAFolderSpelledAnotherWay() throws {
+        // Precomposed on disk, as Google Drive names "내 드라이브": `standardizedFileURL` decomposes it, and the
+        // crawler reports it as it's stored.
+        let base = String(cString: realpath(folder.path, nil))
+        let onDisk = base + "/" + "한글".precomposedStringWithCanonicalMapping
+        #expect(mkdir(onDisk, 0o755) == 0)
+        try Data("notes from the trip".utf8).write(to: URL(fileURLWithPath: onDisk + "/notes.txt"))
+        let chosen = URL(fileURLWithPath: onDisk).standardizedFileURL
+        #expect(!chosen.path.utf8.elementsEqual(onDisk.utf8))   // the same folder, other bytes
+        let store = try IndexStore(directory: URL(fileURLWithPath: base).appendingPathComponent("index"))
+        let indexer = try Indexer(store: store, options: IndexOptions(),
+                                  makeEmbedder: { throw WorkerError.notFound("no model needed to sync") })
+        #expect(try indexer.sync([chosen]).added == 1)
+        #expect(try indexer.sync([chosen]).unchanged == 1)   // not "UNIQUE constraint failed: files.path"
+        store.scope = [chosen.path]
+        #expect(try store.pendingCount() == 1)
+    }
 }
 
