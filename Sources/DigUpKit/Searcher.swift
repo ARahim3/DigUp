@@ -415,6 +415,8 @@ public final class Searcher {
         "papers": .pdf, "document": .doc, "documents": .doc, "note": .doc, "notes": .doc, "video": .video,
         "videos": .video, "clip": .video, "movie": .video, "audio": .audio, "song": .audio, "podcast": .audio,
         "voice": .audio, "sound": .audio,
+        "slide": .slides, "slides": .slides, "deck": .slides, "decks": .slides,
+        "presentation": .slides, "presentations": .slides, "powerpoint": .slides,
         "স্ক্রিনশট": .screenshot, "ছবি": .image, "পিডিএফ": .pdf, "নোট": .doc, "ভিডিও": .video, "অডিও": .audio,
         "গান": .audio, "রেকর্ডিং": .audio,
         "لقطة": .screenshot, "صورة": .image, "صور": .image, "مستند": .doc, "ملاحظات": .doc, "فيديو": .video,

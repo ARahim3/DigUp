@@ -34,6 +34,8 @@ public struct Estimate: Sendable {
     public var files: [FileKind: Int] = [:]
     public var pdfPages = 0           // pages the first pass will read
     public var pdfPagesTotal = 0
+    public var slidePages = 0         // slides the first pass will read
+    public var slidePagesTotal = 0
     public var audioSeconds = 0.0
     public var videoSeconds = 0.0
     public var docChunks = 0          // chunks the first pass will read
@@ -53,6 +55,8 @@ public struct Estimate: Sendable {
         sum.files.merge(b.files, uniquingKeysWith: +)
         sum.pdfPages += b.pdfPages
         sum.pdfPagesTotal += b.pdfPagesTotal
+        sum.slidePages += b.slidePages
+        sum.slidePagesTotal += b.slidePagesTotal
         sum.audioSeconds += b.audioSeconds
         sum.videoSeconds += b.videoSeconds
         sum.docChunks += b.docChunks
@@ -81,6 +85,18 @@ public enum Estimator {
                 let first = total > options.bigPDFPages ? min(options.pdfStep, all) : all
                 estimate.pdfPagesTotal += total
                 estimate.pdfPages += first
+                estimate.seconds += Double(first) * costs.pdfPage
+                if all > first {
+                    estimate.longFiles += 1
+                    estimate.laterSeconds += Double(all - first) * costs.pdfPage
+                }
+            case .slides:
+                // Slide count without converting (zip directory for .pptx); legacy .ppt gets a size guess.
+                let total = SlideExtractor.slideCount(of: URL(fileURLWithPath: file.path)) ?? max(1, Int(file.size / 50000))
+                let all = min(total, options.maxPages)
+                let first = total > options.bigPDFPages ? min(options.pdfStep, all) : all
+                estimate.slidePagesTotal += total
+                estimate.slidePages += first
                 estimate.seconds += Double(first) * costs.pdfPage
                 if all > first {
                     estimate.longFiles += 1

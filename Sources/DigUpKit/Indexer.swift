@@ -355,6 +355,18 @@ public final class Indexer {
         return pending
     }
 
+    /// A PDF's pages for a job (all of a short one, a step of a long one).
+    /// Long PDFs (books) get their first pages now and the rest after everything else.
+    static func preparePDF(of url: URL, job: Job, options: IndexOptions, into folder: URL) throws -> Payload {
+        var wanted = 0..<0
+        let read = try PDFExtractor.pages(of: url, range: { total in
+            wanted = (job.step ?? (total > options.bigPDFPages ? 0..<options.pdfStep : 0..<options.maxPages))
+                .clamped(to: 0..<min(total, options.maxPages))
+            return wanted
+        }, minText: options.minPageText, renderPixels: 1400, to: folder)
+        return .pdf(pages: read.pages, read: wanted, total: read.total, title: read.title)
+    }
+
     static func prepare(_ job: Job, options: IndexOptions, into folder: URL) -> Prepared {
         let batch = job.files
         var prepared = Prepared(batch: batch, step: job.step, folder: folder)
@@ -387,14 +399,11 @@ public final class Indexer {
                 }
                 prepared.payload = .images(screenshot: screenshot, ready: ready)
             case .pdf:
-                // Long PDFs (books) get their first pages now and the rest after everything else.
-                var wanted = 0..<0
-                let read = try PDFExtractor.pages(of: url, range: { total in
-                    wanted = (job.step ?? (total > options.bigPDFPages ? 0..<options.pdfStep : 0..<options.maxPages))
-                        .clamped(to: 0..<min(total, options.maxPages))
-                    return wanted
-                }, minText: options.minPageText, renderPixels: 1400, to: folder)
-                prepared.payload = .pdf(pages: read.pages, read: wanted, total: read.total, title: read.title)
+                prepared.payload = try Self.preparePDF(of: url, job: job, options: options, into: folder)
+            case .slides:
+                // Decks become PDFs first (LibreOffice), then read like one.
+                prepared.payload = try Self.preparePDF(of: try SlideExtractor.toPDF(url, to: folder), job: job,
+                                                       options: options, into: folder)
             case .doc:
                 // The chunks are cut the same way every time, so a later step goes on where the last one stopped.
                 let text = try DocExtractor.text(of: url)

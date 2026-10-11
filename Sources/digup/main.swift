@@ -35,7 +35,7 @@ let usage = """
       --index DIR          index folder (default: \(defaultIndexPath))
       --code               estimate, index or show the code index of these folders (code.sqlite in the index
                            folder): source files, their repos' docs and notebooks, minus what git ignores
-      --kind K,K           screenshot, image, pdf, doc, audio, video
+      --kind K,K           screenshot, image, pdf, doc, audio, video, slides
       --include-code       also index loose source code and data files as documents (outside code projects)
       --include-datasets   don't skip folders that look like datasets
       --exclude DIR        don't index this folder (repeatable)
@@ -158,7 +158,7 @@ struct Arguments {
         guard let list = values["--kind"] else { return nil }
         return Set(try list.split(separator: ",").map {
             guard let kind = FileKind(rawValue: $0.trimmingCharacters(in: .whitespaces)) else {
-                throw CLIError("unknown kind \($0); use screenshot, image, pdf, doc, audio, video")
+                throw CLIError("unknown kind \($0); use screenshot, image, pdf, doc, audio, video, slides")
             }
             return kind
         })
@@ -272,6 +272,7 @@ func estimate(_ args: Arguments) throws {
             guard let count = estimate.files[kind], count > 0 else { continue }
             switch kind {
             case .pdf: kinds.append("\(number(count)) PDFs (\(number(estimate.pdfPagesTotal)) pages; \(number(estimate.pdfPages)) in the first pass)")
+            case .slides: kinds.append("\(number(count)) slide decks (\(number(estimate.slidePagesTotal)) slides; \(number(estimate.slidePages)) in the first pass)")
             case .audio: kinds.append("\(number(count)) audio (\(duration(estimate.audioSeconds)))")
             case .video: kinds.append("\(number(count)) video (\(duration(estimate.videoSeconds)))")
             case .code: kinds.append("\(number(count)) code \(count == 1 ? "file" : "files") "

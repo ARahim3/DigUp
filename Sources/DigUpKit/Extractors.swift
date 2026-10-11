@@ -162,6 +162,86 @@ enum PDFExtractor {
 }
 #endif
 
+/// Presentation decks: converted to PDF with LibreOffice (`soffice`), then read
+/// as PDFs. Portable (a `Process` call); only Linux classifies decks for indexing.
+enum SlideExtractor {
+    /// Converts a deck to PDF in `folder` and returns it. Throws when LibreOffice
+    /// is missing or the conversion fails.
+    static func toPDF(_ url: URL, to folder: URL) throws -> URL {
+        let soffice: URL
+        let prefix: [String]
+        if FileManager.default.isExecutableFile(atPath: "/usr/bin/soffice") {
+            soffice = URL(fileURLWithPath: "/usr/bin/soffice")
+            prefix = []
+        } else {
+            soffice = URL(fileURLWithPath: "/usr/bin/env")
+            prefix = ["soffice"]
+        }
+        let process = Process()
+        process.executableURL = soffice
+        process.arguments = prefix + ["--headless", "--convert-to", "pdf", "--outdir", folder.path, url.path]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        process.standardInput = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            throw ExtractError.unreadable("can't run soffice (LibreOffice installed?)")
+        }
+        process.waitUntilExit()
+        let pdf = folder.appendingPathComponent(url.deletingPathExtension().lastPathComponent + ".pdf")
+        guard process.terminationStatus == 0, FileManager.default.fileExists(atPath: pdf.path) else {
+            throw ExtractError.unreadable("LibreOffice couldn't convert it")
+        }
+        return pdf
+    }
+
+    /// Slide count of a .pptx without converting it: a .pptx is a zip, and each
+    /// slide is `ppt/slides/slideN.xml` in its central directory. Nil for anything
+    /// else (legacy .ppt, broken files).
+    static func slideCount(of url: URL) -> Int? {
+        guard url.pathExtension.lowercased() == "pptx",
+              let data = try? Data(contentsOf: url), data.count > 22 else { return nil }
+        // End of central directory: the last 22 bytes at least (plus an optional comment).
+        let searchStart = max(0, data.count - 65557)
+        var eocd: Int?
+        var i = data.count - 22
+        while i >= searchStart {
+            if data[i] == 0x50, data[i + 1] == 0x4B, data[i + 2] == 0x05, data[i + 3] == 0x06 {
+                eocd = i
+                break
+            }
+            i -= 1
+        }
+        guard let eocd,
+              data.count >= eocd + 22,
+              data[eocd + 8] < 0xFF || data[eocd + 9] < 0xFF else { return nil }
+        let entries = Int(data[eocd + 8]) | (Int(data[eocd + 9]) << 8)
+        let dirOffset = Int(data[eocd + 16]) | (Int(data[eocd + 17]) << 8)
+            | (Int(data[eocd + 18]) << 16) | (Int(data[eocd + 19]) << 24)
+        guard entries > 0, dirOffset >= 0, dirOffset < data.count else { return nil }
+        var slides = 0
+        var offset = dirOffset
+        for _ in 0..<entries {
+            guard offset + 46 <= data.count,
+                  data[offset] == 0x50, data[offset + 1] == 0x4B,
+                  data[offset + 2] == 0x01, data[offset + 3] == 0x02 else { break }
+            let nameLength = Int(data[offset + 28]) | (Int(data[offset + 29]) << 8)
+            let extraLength = Int(data[offset + 30]) | (Int(data[offset + 31]) << 8)
+            let commentLength = Int(data[offset + 32]) | (Int(data[offset + 33]) << 8)
+            let nameStart = offset + 46
+            guard nameStart + nameLength <= data.count else { break }
+            let name = String(data: data[nameStart..<(nameStart + nameLength)], encoding: .utf8) ?? ""
+            if name.hasPrefix("ppt/slides/slide"), name.hasSuffix(".xml"),
+               name.dropFirst("ppt/slides/slide".count).dropLast(".xml".count).allSatisfy(\.isNumber) {
+                slides += 1
+            }
+            offset = nameStart + nameLength + extraLength + commentLength
+        }
+        return slides > 0 ? slides : nil
+    }
+}
+
 enum DocExtractor {
     /// Plain text from txt/md directly, HTML by stripping tags, and rtf/docx/doc/odt through the Cocoa text system.
     /// (Cocoa's HTML import runs WebKit and must be on the main thread; the app indexes on a background queue.)

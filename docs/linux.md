@@ -8,6 +8,8 @@ package graph (`Package.swift` appends it only on macOS).
 ## What works on Linux today
 
 - text, markdown, HTML and code indexing + search (pure `Foundation` paths)
+- PDFs via poppler (`pdftotext`/`pdftoppm`/`pdfinfo`), same page model as macOS
+- slide decks via LibreOffice (`soffice` converts ppt/pptx/odp to PDF, then the PDF path)
 - SQLite index + FTS5 keyword search + float16 meaning search (portable
   `Float` fallback where Accelerate is missing)
 - extension-based file typing (no `UniformTypeIdentifiers`)
@@ -18,7 +20,6 @@ package graph (`Package.swift` appends it only on macOS).
 ## Honest stubs (report why, never crash)
 
 - images/screenshots: `Extractors_Linux.swift` (needs stb/VIPS + resize)
-- PDFs: `Extractors_Linux.swift` (needs poppler: `pdftotext`/`pdftoppm`)
 - OCR: names only for now (needs tesseract)
 - audio/video: `MediaExtractors_Linux.swift` (needs ffmpeg decode)
 - rich documents (docx/doc/odt/rtf): needs pandoc/libreoffice

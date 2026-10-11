@@ -3,13 +3,16 @@ import Foundation
 /// What a file is, for indexing and for grouping results.
 public enum FileKind: String, CaseIterable, Sendable, Codable {
     case screenshot, image, pdf, doc, audio, video
+    /// Presentation decks (Linux: ppt/pptx via LibreOffice; macOS leaves them out).
+    case slides
     /// Source code, a repo's docs and notebooks: only in the code index (`IndexOptions.code`).
     case code
 
     /// The order of the first indexing pass: what people look for most comes first.
+    /// Slides go last: each needs a LibreOffice conversion first.
     static let indexingOrderSQL = """
         CASE kind WHEN 'screenshot' THEN 0 WHEN 'image' THEN 1 WHEN 'pdf' THEN 2 WHEN 'doc' THEN 3
-        WHEN 'audio' THEN 4 WHEN 'video' THEN 5 ELSE 6 END
+        WHEN 'audio' THEN 4 WHEN 'video' THEN 5 WHEN 'slides' THEN 6 ELSE 7 END
         """
 }
 

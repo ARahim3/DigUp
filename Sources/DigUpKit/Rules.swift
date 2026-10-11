@@ -120,6 +120,9 @@ public enum Rules {
         "mp4", "mov", "m4v", "mkv", "avi", "webm", "mpg", "mpeg", "3gp", "flv", "wmv", "ogv",
     ]
 
+    /// Presentations read through LibreOffice (Linux only; macOS leaves them out).
+    static let slidesExtensions: Set<String> = ["ppt", "pptx", "odp"]
+
     /// Extension-only classification for platforms without UniformTypeIdentifiers (Linux).
     public static func classify(_ url: URL, options: IndexOptions) -> Classification {
         let ext = url.pathExtension.lowercased()
@@ -129,6 +132,7 @@ public enum Rules {
             return options.includeCode ? .index(.doc) : .skip("code or data file")
         }
         if ext == "pdf" { return .index(.pdf) }
+        if slidesExtensions.contains(ext) { return .index(.slides) }
         if docExtensions.contains(ext) { return .index(.doc) }
         if codeExtensions.contains(ext) { return options.includeCode ? .index(.doc) : .skip("code or data file") }
         if imageExtensions.contains(ext) { return .index(isScreenshot(url) ? .screenshot : .image) }
