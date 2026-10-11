@@ -1,6 +1,7 @@
 #!/bin/bash
-# Builds llama.cpp (MIT), the embedding runtime: the pinned build tag plus scripts/llama.cpp-no-logits.patch, as static
-# libraries combined into Vendor/llama/lib/libllamacpp.a, with the headers in Vendor/llama/include (all out of git).
+# Builds llama.cpp (MIT), the embedding runtime: the pinned build tag plus scripts/llama.cpp-no-logits.patch.
+# macOS combines the static libraries into Vendor/llama/lib/libllamacpp.a; Linux links the original archives
+# directly (see Package.swift). Headers go in Vendor/llama/include (all out of git).
 # macOS: Metal shaders are embedded and compiled on first use, so no Metal toolchain is needed.
 # Linux (x86_64 CPU first): plain CPU build with GGML_NATIVE=OFF so -bin packages run on any x86_64.
 # CMake comes from PATH, or from a venv in Vendor/ (needs uv). Does nothing when that build is already there.
@@ -17,7 +18,8 @@ UNAME="$(uname -s)"
 if [[ "$UNAME" == "Darwin" ]]; then
   STAMP="$TAG $(shasum -a 256 "$PATCH" | cut -c1-12)"
 else
-  STAMP="$TAG-Linux $(sha256sum "$PATCH" | cut -c1-12)"
+  # r2: -fPIC static libs (SwiftPM links test bundles as .so).
+  STAMP="$TAG-Linux-r2 $(sha256sum "$PATCH" | cut -c1-12)"
 fi
 if [[ -f "$OUT/lib/libllamacpp.a" && "$(cat "$OUT/BUILD" 2>/dev/null)" == "$STAMP" ]]; then
   exit 0
@@ -53,9 +55,12 @@ if [[ "$UNAME" == "Darwin" ]]; then
     -DLLAMA_BUILD_COMMON=OFF -DLLAMA_BUILD_TOOLS=OFF -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_EXAMPLES=OFF \
     -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_APP=OFF -DLLAMA_BUILD_UI=OFF -DLLAMA_OPENSSL=OFF > /dev/null
 else
-  # Linux x86_64: CPU build (CUDA/Vulkan later). GGML_NATIVE=OFF keeps -bin packages portable.
+  # Linux x86_64: CPU build (CUDA/Vulkan later). GGML_NATIVE=OFF keeps -bin packages portable
+  # (generic x86_64 baseline; no GGML_CPU_ALL_VARIANTS: it needs GGML_BACKEND_DL dynamic backends,
+  # which don't fit the static link model). PIC: SwiftPM links test bundles as shared objects.
   cmake -S "$SOURCE" -B Vendor/llama-build -G "$GENERATOR" -DCMAKE_BUILD_TYPE=Release \
-    -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON -DLLAMA_BUILD_MTMD=ON \
+    -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+    -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=OFF -DLLAMA_BUILD_MTMD=ON \
     -DLLAMA_BUILD_COMMON=OFF -DLLAMA_BUILD_TOOLS=OFF -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_EXAMPLES=OFF \
     -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_APP=OFF -DLLAMA_BUILD_UI=OFF -DLLAMA_OPENSSL=OFF > /dev/null
 fi
@@ -69,17 +74,11 @@ if [[ "$UNAME" == "Darwin" ]]; then
     $B/ggml/src/libggml-cpu.a $B/ggml/src/ggml-metal/libggml-metal.a $B/ggml/src/ggml-blas/libggml-blas.a \
     $B/vendor/hash/libvendor-hash.a
 else
-  # GNU libtool can't merge archives: unpack and re-archive.
-  TMP="$OUT/combine-tmp"
-  rm -rf "$TMP"
-  mkdir -p "$TMP"
-  for lib in $B/src/libllama.a $B/tools/mtmd/libmtmd.a $B/ggml/src/libggml.a $B/ggml/src/libggml-base.a \
-    $B/ggml/src/libggml-cpu.a $B/ggml/src/ggml-blas/libggml-blas.a $B/vendor/hash/libvendor-hash.a; do
-    (cd "$TMP" && ar x "$PWD/$lib")
-  done
-  ar crus "$OUT/lib/libllamacpp.a" "$TMP"/*.o
-  ranlib "$OUT/lib/libllamacpp.a" 2>/dev/null || true
-  rm -rf "$TMP"
+  # Linux links the original archives directly (--start-group in Package.swift):
+  # members share basenames across archives (quants.c.o, repack.cpp.o), so no
+  # merge can hold them all. Drop a stale merged library, so it shadows nothing.
+  rm -f "$OUT/lib/libllamacpp.a"
+  rm -rf "$OUT/combine-tmp"
 fi
 cp "$SOURCE/include/llama.h" "$SOURCE"/ggml/include/*.h "$SOURCE/tools/mtmd/mtmd.h" "$SOURCE/tools/mtmd/mtmd-helper.h" \
   "$OUT/include/"

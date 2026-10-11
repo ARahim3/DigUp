@@ -10,11 +10,42 @@ var products: [Product] = [
 var dependencies: [Package.Dependency] = []
 
 #if os(Linux)
-let digUpKitDeps: [Target.Dependency] = ["CSQLite"]
+let digUpKitDeps: [Target.Dependency] = ["CSQLite", .product(name: "Crypto", package: "swift-crypto")]
 #else
 let digUpKitDeps: [Target.Dependency] = []
 #endif
 
+#if os(Linux)
+// Linux links llama.cpp's original static archives directly: several members
+// share basenames across archives, so no merge can hold them all, and the
+// archives reference each other cyclically (--start-group). scripts/build-llama.sh
+// must run first (it builds Vendor/llama-build and Vendor/llama/include).
+let _llamaDir = Context.packageDirectory + "/Vendor/llama-build"
+let llamaLinkerSettings: [LinkerSetting] = [
+    .unsafeFlags(["-L\(Context.packageDirectory)/Vendor/llama/lib"]),
+    .unsafeFlags(["-Xlinker", "--start-group",
+                  "\(_llamaDir)/src/libllama.a",
+                  "\(_llamaDir)/tools/mtmd/libmtmd.a",
+                  "\(_llamaDir)/ggml/src/libggml.a",
+                  "\(_llamaDir)/ggml/src/libggml-base.a",
+                  "\(_llamaDir)/ggml/src/libggml-cpu.a",
+                  "\(_llamaDir)/vendor/hash/libvendor-hash.a",
+                  "-Xlinker", "--end-group"]),
+    .linkedLibrary("stdc++"),
+    .linkedLibrary("gomp"),
+]
+#else
+let llamaLinkerSettings: [LinkerSetting] = [
+    .unsafeFlags(["-L\(Context.packageDirectory)/Vendor/llama/lib"]),
+    // Moved out of Sources/CLlama/module.modulemap (modulemaps have no
+    // conditionals, and `link framework` / `-lc++` break Linux linking).
+    .linkedFramework("Accelerate"),
+    .linkedFramework("Metal"),
+    .linkedFramework("MetalKit"),
+    .linkedLibrary("c++"),
+    .linkedLibrary("llamacpp"),
+]
+#endif
 var targets: [Target] = [
     // The engine: crawler, extractors, index store, the embedder interface and worker client, search. No UI.
     .target(name: "DigUpKit", dependencies: digUpKitDeps),
@@ -23,14 +54,7 @@ var targets: [Target] = [
     .target(
         name: "LlamaRuntime",
         dependencies: ["CLlama", "DigUpKit"],
-        linkerSettings: [
-            .unsafeFlags(["-L\(Context.packageDirectory)/Vendor/llama/lib"]),
-            // Moved out of Sources/CLlama/module.modulemap (modulemaps have no
-            // conditionals, and `link framework` breaks Linux linking).
-            .linkedFramework("Accelerate", .when(platforms: [.macOS])),
-            .linkedFramework("Metal", .when(platforms: [.macOS])),
-            .linkedFramework("MetalKit", .when(platforms: [.macOS])),
-        ]
+        linkerSettings: llamaLinkerSettings
     ),
     // Developer CLI: estimate / index / search / status / eval. Doubles as the eval harness, and the app runs it as
     // its indexing helper and its query encoder.
@@ -57,6 +81,8 @@ targets += [
 // Linux SQLite headers (macOS gets them from the SDK). Needs libsqlite3-dev (apt) / sqlite (Arch).
 targets.append(.systemLibrary(name: "CSQLite", path: "Sources/CSQLite", pkgConfig: "sqlite3",
                               providers: [.apt(["libsqlite3-dev"])]))
+// Linux CryptoKit (SHA-256 for model verification): swift-crypto's Crypto module has the same API.
+dependencies.append(.package(url: "https://github.com/apple/swift-crypto", from: "3.0.0"))
 #endif
 
 let package = Package(

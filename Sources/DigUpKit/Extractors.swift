@@ -234,8 +234,9 @@ enum DocExtractor {
 
     /// Splits text into ~`size`-character pieces (~450 tokens) that overlap a little, breaking at whitespace.
     static func chunks(_ text: String, size: Int = 1800, overlap: Int = 200, limit: Int) -> [String] {
+        // NBSP written braceless: ICU has no braced escape form, and Linux answers a bad pattern with "".
         let clean = text
-            .replacingOccurrences(of: #"[ \t\u{00A0}]+"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"[ \t\u00A0]+"#, with: " ", options: .regularExpression)
             .replacingOccurrences(of: #"\n\s*\n\s*\n+"#, with: "\n\n", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         var chunks: [String] = []

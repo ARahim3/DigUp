@@ -3,11 +3,9 @@ module CLlama [system] {
     header "../../Vendor/llama/include/mtmd.h"
     header "../../Vendor/llama/include/mtmd-helper.h"
     header "../../Vendor/llama/include/llama-build.h"
-    link "llamacpp"
-    link "c++"
-    // NOTE: macOS framework links (Accelerate/Metal/MetalKit/Foundation) used to
-    // live here, but modulemaps have no per-OS conditionals and `link framework`
-    // breaks Linux linking. macOS frameworks are linked via the LlamaRuntime
-    // target's linkerSettings in Package.swift instead.
+    // NOTE: linking lives in the LlamaRuntime target's linkerSettings in
+    // Package.swift (modulemaps have no per-OS conditionals): -lllamacpp and
+    // the C++/system frameworks on macOS, the original static archives with
+    // --start-group plus stdc++/gomp on Linux.
     export *
 }

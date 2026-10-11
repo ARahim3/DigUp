@@ -90,8 +90,6 @@ import Testing
 
     #if os(macOS)
     @Test func stoppingBetweenStepsLosesNothing() throws {
-
-    @Test func stoppingBetweenStepsLosesNothing() throws {
         let pdf = try makePDF("Book.pdf", pages: 100)
         let store = try store()
         let indexer = try indexer(store, FakeEmbedder())
@@ -108,8 +106,6 @@ import Testing
     #endif
 
     #if os(macOS)
-    @Test func aChangedFileStartsOver() throws {
-
     @Test func aChangedFileStartsOver() throws {
         let pdf = try makePDF("Book.pdf", pages: 80)
         let store = try store()
