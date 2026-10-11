@@ -384,7 +384,10 @@ struct SearchField: NSViewRepresentable {
     func updateNSView(_ field: NSTextField, context: Context) {
         context.coordinator.text = $text
         (field as? FocusReportingField)?.onFocus = onFocus
-        if field.stringValue != text { field.stringValue = text }
+        // An input method is composing (Korean, Japanese, Chinese…): the field is ahead of `text` until the syllable
+        // is committed, and writing `text` back would end the composition ("사어ㅂ" typed for "사업").
+        let composing = (field.currentEditor() as? NSTextView)?.hasMarkedText() == true
+        if !composing, field.stringValue != text { field.stringValue = text }
         if field.placeholderString != placeholder { field.placeholderString = placeholder }
     }
 
