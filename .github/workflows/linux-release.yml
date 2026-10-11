@@ -6,6 +6,16 @@ name: Linux binaries (x86_64)
 on:
   release:
     types: [published]
+  # Validates the Linux port on every PR (build + test + package, no upload).
+  pull_request:
+    paths:
+      - 'Sources/**'
+      - 'Tests/**'
+      - 'Package.swift'
+      - 'Package.resolved'
+      - 'scripts/build-llama.sh'
+      - 'scripts/package-linux.sh'
+      - '.github/workflows/linux-release.yml'
   workflow_dispatch:
     inputs:
       tag:
