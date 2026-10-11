@@ -20,9 +20,6 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
-      # Pinned Swift: Package.swift needs swift-tools 6.2+.
-      SWIFT_VERSION: 6.2-RELEASE
-      SWIFT_PLATFORM: ubuntu24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -32,11 +29,9 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq cmake ninja-build libsqlite3-dev ffmpeg poppler-utils rpm dpkg-dev curl
       - name: Swift toolchain
-        run: |
-          curl -fsSL --retry 3 -o /tmp/swift.tar.gz \
-            "https://download.swift.org/swift-${SWIFT_VERSION,,}/${SWIFT_PLATFORM//./}/swift-${SWIFT_VERSION}-${SWIFT_PLATFORM}.tar.gz"
-          sudo tar xzf /tmp/swift.tar.gz -C /opt
-          echo "/opt/swift-${SWIFT_VERSION}-${SWIFT_PLATFORM}/usr/bin" >> "$GITHUB_PATH"
+        uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "6.2"
       - name: Version check
         run: |
           [[ "$TAG" =~ ^v[0-9]+(\.[0-9]+)*$ ]] || { echo "Not a release tag: $TAG"; exit 1; }
