@@ -85,7 +85,10 @@ public final class Indexer {
     /// (no re-embedding), and files that are gone or newly excluded are removed.
     public func sync(_ roots: [URL]) throws -> SyncSummary {
         let crawl = Crawler.crawl(roots, options: options)
-        let existing = try store.files(under: roots.map { $0.standardizedFileURL.path })
+        let chosen = roots.map { $0.standardizedFileURL.path }
+        // Each folder's real path too, taken while it's there: `files(under:)` finds rows by it as well.
+        let spellings = chosen.map { [$0, FolderSelection.realPath($0)] }
+        let existing = try store.files(under: chosen)
         var byPath: [String: FileRecord] = [:]
         var byInode: [String: FileRecord] = [:]
         for file in existing {
@@ -117,8 +120,8 @@ public final class Indexer {
             }
             // A root that went away while it was being walked (a drive ejected mid-crawl) looked emptier than it is:
             // keep its rows rather than take that for "deleted".
-            let vanished = roots.map { $0.standardizedFileURL.path }
-                .filter { !FileManager.default.fileExists(atPath: $0) }.map { $0.hasSuffix("/") ? $0 : $0 + "/" }
+            let vanished = zip(chosen, spellings).filter { !FileManager.default.fileExists(atPath: $0.0) }
+                .flatMap(\.1).map { $0.hasSuffix("/") ? $0 : $0 + "/" }
             for row in existing where !seen.contains(row.path) && !movedFrom.contains(row.path)
                 && !vanished.contains(where: { row.path.hasPrefix($0) }) {
                 try store.delete(row.id)

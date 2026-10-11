@@ -232,11 +232,16 @@ public final class IndexStore {
     /// Every file under one of `roots`.
     public func files(under roots: [String]) throws -> [FileRecord] {
         var out: [FileRecord] = []
+        var seen = Set<Int64>()
         // A folder inside another one listed is already covered (each file once).
         for root in roots where !roots.contains(where: { FolderSelection.isInside(root, $0) }) {
             for range in Self.ranges(under: root) {
                 try db.query("SELECT \(Self.fileColumns) FROM files WHERE path >= ? AND path < ?",
-                             [.text(range.from), .text(range.to)]) { out.append(Self.record($0)) }
+                             [.text(range.from), .text(range.to)]) {
+                    // Each file once, when two spellings meet (/etc and /private/etc both listed).
+                    let record = Self.record($0)
+                    if seen.insert(record.id).inserted { out.append(record) }
+                }
             }
         }
         return out

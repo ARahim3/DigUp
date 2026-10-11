@@ -113,6 +113,9 @@ import Testing
         #expect(try indexer.sync([chosen]).unchanged == 1)   // not "UNIQUE constraint failed: files.path"
         store.scope = [chosen.path]
         #expect(try store.pendingCount() == 1)
+        // The folder and a link to it, both listed: their ranges meet, and each file still comes back once.
+        #expect(symlink(onDisk, base + "/link") == 0)
+        #expect(try store.files(under: [base + "/link", onDisk]).count == 1)
     }
 }
 
