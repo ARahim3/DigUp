@@ -1,10 +1,21 @@
 import DigUpKit
 import Foundation
 import LlamaRuntime
+#if os(Linux)
+import Glibc
+#endif
 
 // DigUp's developer CLI. Every command works on an explicit index folder, so tests never touch the real one.
 
 signal(SIGPIPE, SIG_IGN)   // a dead worker must surface as an error, not kill us
+
+#if os(macOS)
+let defaultIndexPath = "~/Library/Application Support/DigUp/index.noindex"
+let defaultModelsPath = "~/Library/Application Support/DigUp/Models"
+#else
+let defaultIndexPath = "~/.local/share/DigUp/index.noindex ($XDG_DATA_HOME/DigUp/index.noindex)"
+let defaultModelsPath = "~/.local/share/DigUp/Models ($XDG_DATA_HOME/DigUp/Models)"
+#endif
 
 let usage = """
     digup: search your files by meaning (DigUp developer CLI)
@@ -21,7 +32,7 @@ let usage = """
       digup worker [--text-only]              the model as a process (JSON lines; the app's query encoder)
 
     Options:
-      --index DIR          index folder (default: ~/Library/Application Support/DigUp/index.noindex)
+      --index DIR          index folder (default: \(defaultIndexPath))
       --code               estimate, index or show the code index of these folders (code.sqlite in the index
                            folder): source files, their repos' docs and notebooks, minus what git ignores
       --kind K,K           screenshot, image, pdf, doc, audio, video
@@ -36,7 +47,7 @@ let usage = """
       --code-stretch N     characters a stretch of code holds at most (default 1800; 1200 and 3600 lost on the evals)
 
     The model: EmbeddingGemma 2 on llama.cpp, from $DIGUP_MODELS (only there, when set), else
-    ~/Library/Application Support/DigUp/Models or the Hugging Face cache. DIGUP_WORKER_DIR=worker uses the
+    \(defaultModelsPath) or the Hugging Face cache. DIGUP_WORKER_DIR=worker uses the
     mlx-vlm reference worker instead (evals).
     """
 
@@ -77,7 +88,17 @@ struct Arguments {
     }
 
     var indexFolder: URL {
-        URL(fileURLWithPath: ((values["--index"] ?? "~/Library/Application Support/DigUp/index.noindex")
+        #if os(macOS)
+        let `default` = "~/Library/Application Support/DigUp/index.noindex"
+        #else
+        let `default`: String = {
+            if let xdg = ProcessInfo.processInfo.environment["XDG_DATA_HOME"], !xdg.isEmpty {
+                return xdg + "/DigUp/index.noindex"
+            }
+            return "~/.local/share/DigUp/index.noindex"
+        }()
+        #endif
+        return URL(fileURLWithPath: ((values["--index"] ?? `default`)
             as NSString).expandingTildeInPath).standardizedFileURL
     }
 
@@ -105,7 +126,11 @@ struct Arguments {
         return try positional.map {
             let url = Self.folderURL($0)
             guard Self.isFolder(url) else { throw CLIError("not a folder: \($0)") }
+            #if os(macOS)
             guard Self.isReadable(url) else { throw CLIError("can't read \($0) (macOS privacy settings?)") }
+            #else
+            guard Self.isReadable(url) else { throw CLIError("can't read \($0) (missing or no permission)") }
+            #endif
             return url
         }
     }
@@ -206,7 +231,11 @@ func estimate(_ args: Arguments) throws {
                 emit(["folder": folder.path, "readable": false, "seconds": 0, "files": [String: Int](),
                       "pdf_pages": 0, "audio_seconds": 0, "video_seconds": 0])
             } else {
+                #if os(macOS)
                 print("\(tilde(folder.path))    can't read it (not there, or not allowed in macOS privacy settings)")
+                #else
+                print("\(tilde(folder.path))    can't read it (not there, or no permission)")
+                #endif
             }
             continue
         }

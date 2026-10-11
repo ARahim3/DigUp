@@ -1,5 +1,10 @@
 import Foundation
+#if canImport(UniformTypeIdentifiers)
 import UniformTypeIdentifiers
+#endif
+#if os(Linux)
+import Glibc
+#endif
 
 /// A file the crawler decided to index.
 public struct Candidate: Sendable {
@@ -27,8 +32,13 @@ public enum Crawler {
     public static func crawl(_ roots: [URL], options: IndexOptions) -> CrawlReport {
         let fm = FileManager.default
         let home = fm.homeDirectoryForCurrentUser.path
+        #if os(macOS)
         let keys: [URLResourceKey] = [.isDirectoryKey, .isPackageKey, .contentTypeKey, .isUbiquitousItemKey,
                                       .ubiquitousItemDownloadingStatusKey]
+        #else
+        // Linux: no content-type or iCloud metadata keys.
+        let keys: [URLResourceKey] = [.isDirectoryKey, .isPackageKey]
+        #endif
         var report = CrawlReport()
         var projectRoots = Set<String>()
         var repos = GitRepos()
@@ -69,8 +79,13 @@ public enum Crawler {
                     report.skipped["app or bundle", default: 0] += 1
                     return
                 }
+                #if os(macOS)
                 let classification = options.code ? Rules.classifyCode(url, options: options)
                     : Rules.classify(url, type: values?.contentType, options: options)
+                #else
+                let classification = options.code ? Rules.classifyCode(url, options: options)
+                    : Rules.classify(url, options: options)
+                #endif
                 switch classification {
                 case .ignore:
                     report.skipped["other type", default: 0] += 1
@@ -83,12 +98,14 @@ public enum Crawler {
                         return
                     }
                     // Reading a dataless placeholder (iCloud "Optimize Mac Storage", File Providers) downloads it.
+                    #if os(macOS)
                     let dataless = info.st_flags & 0x4000_0000 != 0  // SF_DATALESS
                     let inCloud = values?.isUbiquitousItem == true && values?.ubiquitousItemDownloadingStatus != .current
                     if dataless || inCloud {
                         report.skipped["in the cloud, not downloaded", default: 0] += 1
                         return
                     }
+                    #endif
                     if options.code {
                         // Too big to be written by hand; a notebook's file holds its outputs too.
                         let limit = url.pathExtension.lowercased() == "ipynb" ? options.maxNotebookBytes
@@ -103,7 +120,11 @@ public enum Crawler {
                         }
                     }
                     guard foundPaths.insert(url.path).inserted else { return }
+                    #if os(macOS)
                     let mtime = Double(info.st_mtimespec.tv_sec) + Double(info.st_mtimespec.tv_nsec) / 1e9
+                    #else
+                    let mtime = Double(info.st_mtim.tv_sec) + Double(info.st_mtim.tv_nsec) / 1e9
+                    #endif
                     found.append(Candidate(path: url.path, kind: kind, size: Int64(info.st_size), mtime: mtime,
                                            inode: UInt64(info.st_ino), device: UInt64(bitPattern: Int64(info.st_dev))))
                 }
@@ -213,6 +234,23 @@ enum GitFiles {
     /// A git that's really installed (Xcode's, the command line tools', Homebrew's). /usr/bin/git on a Mac without the
     /// developer tools only asks to install them.
     static let git: String? = {
+        #if os(Linux)
+        let candidates = ["/usr/bin/git", "/usr/local/bin/git"]
+        if let found = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) { return found }
+        // Anything else on PATH (nix, ~/.local/bin).
+        let probe = Process()
+        probe.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        probe.arguments = ["sh", "-c", "command -v git"]
+        let output = Pipe()
+        probe.standardOutput = output
+        probe.standardError = FileHandle.nullDevice
+        probe.standardInput = FileHandle.nullDevice
+        guard (try? probe.run()) != nil else { return nil }
+        let path = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        probe.waitUntilExit()
+        return path.flatMap { $0.isEmpty ? nil : $0 }
+        #else
         var candidates: [String] = []
         if let developer = try? FileManager.default.destinationOfSymbolicLink(atPath: "/var/db/xcode_select_link") {
             candidates.append(developer + "/usr/bin/git")
@@ -221,6 +259,7 @@ enum GitFiles {
                        "/Applications/Xcode.app/Contents/Developer/usr/bin/git", "/opt/homebrew/bin/git",
                        "/usr/local/bin/git"]
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+        #endif
     }()
 
     /// Paths relative to `repo`, or nil when git can't say (no git, not a repo, an error).

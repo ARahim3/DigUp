@@ -1,5 +1,10 @@
+#if canImport(Accelerate)
 import Accelerate
+#endif
 import Foundation
+#if os(Linux)
+import Glibc
+#endif
 
 /// Vectors are stored as 768 × float16 (1.5 KB each), kept that way in memory too, and scored as float32.
 enum Vectors {
@@ -12,10 +17,15 @@ enum Vectors {
 
     /// Converts `count` float16s into float32s.
     static func floats(fromHalf source: UnsafePointer<Float16>, count: Int, to destination: UnsafeMutablePointer<Float>) {
+        #if canImport(Accelerate)
         var from = vImage_Buffer(data: UnsafeMutableRawPointer(mutating: source), height: 1,
                                  width: vImagePixelCount(count), rowBytes: count * 2)
         var to = vImage_Buffer(data: destination, height: 1, width: vImagePixelCount(count), rowBytes: count * 4)
         vImageConvert_Planar16FtoPlanarF(&from, &to, vImage_Flags(kvImageNoFlags))
+        #else
+        // Portable fallback (Linux): same result, no Accelerate.
+        for i in 0..<count { destination[i] = Float(source[i]) }
+        #endif
     }
 }
 

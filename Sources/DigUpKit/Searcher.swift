@@ -1,5 +1,7 @@
-import Accelerate
 import Foundation
+#if canImport(Accelerate)
+import Accelerate
+#endif
 
 public struct SearchHit: Sendable {
     public let path: String
@@ -293,9 +295,21 @@ public final class Searcher {
                     let count = min(VectorStorage.blockRows, rows - row)
                     Vectors.floats(fromHalf: matrix.halves + row * Vectors.dimension, count: count * Vectors.dimension,
                                    to: matrix.block)
+                    #if canImport(Accelerate)
                     // (count × 768) · (768 × 1)
                     vDSP_mmul(matrix.block, 1, query.baseAddress!, 1, scores.baseAddress! + row, 1,
                               vDSP_Length(count), 1, vDSP_Length(Vectors.dimension))
+                    #else
+                    // Portable fallback (Linux): plain dot products, same result.
+                    let q = query.baseAddress!
+                    let s = scores.baseAddress! + row
+                    for r in 0..<count {
+                        var sum: Float = 0
+                        let brow = matrix.block + r * Vectors.dimension
+                        for c in 0..<Vectors.dimension { sum += brow[c] * q[c] }
+                        s[r] = sum
+                    }
+                    #endif
                     row += count
                 }
             }

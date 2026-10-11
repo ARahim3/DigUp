@@ -5,9 +5,9 @@ module CLlama [system] {
     header "../../Vendor/llama/include/llama-build.h"
     link "llamacpp"
     link "c++"
-    link framework "Accelerate"
-    link framework "Foundation"
-    link framework "Metal"
-    link framework "MetalKit"
+    // NOTE: macOS framework links (Accelerate/Metal/MetalKit/Foundation) used to
+    // live here, but modulemaps have no per-OS conditionals and `link framework`
+    // breaks Linux linking. macOS frameworks are linked via the LlamaRuntime
+    // target's linkerSettings in Package.swift instead.
     export *
 }

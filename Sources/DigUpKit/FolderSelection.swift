@@ -1,4 +1,7 @@
 import Foundation
+#if os(Linux)
+import Glibc
+#endif
 
 /// Which folders DigUp searches: the folders you chose, minus the folders you skipped inside them. A skip applies
 /// inside the chosen folders that contain it, and a chosen folder is searched whole even inside a skipped one (skip

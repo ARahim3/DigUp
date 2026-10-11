@@ -1,0 +1,63 @@
+# Builds and publishes Linux x86_64 binaries (tarball + .deb + .rpm) on every
+# GitHub release. The AUR -bin package is a maintainer push from the same
+# tarball (see packaging/PKGBUILD-bin): bump pkgver + updpkgsums per release.
+name: Linux binaries (x86_64)
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag, like v0.7.0
+        required: true
+
+permissions:
+  contents: write   # upload dist/ to the release
+
+jobs:
+  x86_64:
+    runs-on: ubuntu-24.04
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      # Pinned Swift: Package.swift needs swift-tools 6.2+.
+      SWIFT_VERSION: 6.2-RELEASE
+      SWIFT_PLATFORM: ubuntu24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - name: System deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake ninja-build libsqlite3-dev ffmpeg poppler-utils rpm dpkg-dev curl
+      - name: Swift toolchain
+        run: |
+          curl -fsSL --retry 3 -o /tmp/swift.tar.gz \
+            "https://download.swift.org/swift-${SWIFT_VERSION,,}/${SWIFT_PLATFORM//./}/swift-${SWIFT_VERSION}-${SWIFT_PLATFORM}.tar.gz"
+          sudo tar xzf /tmp/swift.tar.gz -C /opt
+          echo "/opt/swift-${SWIFT_VERSION}-${SWIFT_PLATFORM}/usr/bin" >> "$GITHUB_PATH"
+      - name: Version check
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+(\.[0-9]+)*$ ]] || { echo "Not a release tag: $TAG"; exit 1; }
+          swift --version
+      - name: Build llama.cpp (Linux CPU, portable)
+        run: scripts/build-llama.sh
+      - name: Build + test (CLI engine only)
+        run: |
+          swift build -c release --product digup
+          swift test --filter DigUpKitTests
+      - name: Package tarball + .deb
+        run: scripts/package-linux.sh --version "${TAG#v}" --no-build
+      - name: Package .rpm from the tarball
+        run: |
+          mkdir -p ~/rpmbuild/SOURCES
+          cp "dist/digup-${TAG#v}-x86_64.tar.gz" ~/rpmbuild/SOURCES/
+          rpmbuild -bb --define "version ${TAG#v}" packaging/digup.spec \
+            --define "_topdir $HOME/rpmbuild"
+          cp ~/rpmbuild/RPMS/x86_64/digup-*.rpm dist/
+          (cd dist && sha256sum digup-*.tar.gz digup_*.deb digup-*.rpm > SHA256SUMS)
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" dist/* --clobber

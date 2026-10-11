@@ -1,5 +1,8 @@
 import DigUpKit
 import Foundation
+#if os(Linux)
+import Glibc
+#endif
 
 /// `digup index-service`: the app's indexing helper, one process per stretch of work.
 ///

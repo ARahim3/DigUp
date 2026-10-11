@@ -1,5 +1,12 @@
+#if canImport(CryptoKit)
 import CryptoKit
+#elseif canImport(Crypto)
+import Crypto
+#endif
 import Foundation
+#if os(Linux)
+import Glibc
+#endif
 import Testing
 @testable import DigUpKit
 

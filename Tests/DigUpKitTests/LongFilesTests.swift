@@ -1,5 +1,10 @@
+#if os(macOS)
 import AppKit
+#endif
 import Foundation
+#if os(Linux)
+import Glibc
+#endif
 import Testing
 @testable import DigUpKit
 
@@ -52,6 +57,7 @@ import Testing
         return out
     }
 
+    #if os(macOS)   // needs CoreGraphics PDF output + PDFKit reading (macOS-only for now)
     @Test func longPDFIsReadInSteps() throws {
         let pdf = try makePDF("Field guide.pdf", pages: 120, special: [100: "quokka"])
         let store = try store()
@@ -80,6 +86,10 @@ import Testing
         #expect(try indexer.finishLongFiles().isEmpty)   // nothing left
         #expect(embedder.texts == 120)                    // every page embedded once
     }
+    #endif
+
+    #if os(macOS)
+    @Test func stoppingBetweenStepsLosesNothing() throws {
 
     @Test func stoppingBetweenStepsLosesNothing() throws {
         let pdf = try makePDF("Book.pdf", pages: 100)
@@ -95,6 +105,10 @@ import Testing
         #expect(try places(store, pdf.path) == Array(1...100))
         #expect(try state(store, pdf.path).state == "done")
     }
+    #endif
+
+    #if os(macOS)
+    @Test func aChangedFileStartsOver() throws {
 
     @Test func aChangedFileStartsOver() throws {
         let pdf = try makePDF("Book.pdf", pages: 80)
@@ -110,6 +124,7 @@ import Testing
         try indexer.finishLongFiles()
         #expect(try places(store, pdf.path) == Array(1...90))
     }
+    #endif
 
     @Test func longDocumentGoesOnWhereItStopped() throws {
         let text = prose(characters: 150_000, special: (at: 120_000, word: "axolotl"))
@@ -162,6 +177,7 @@ import Testing
         #expect(try found(store, "4815162342").count == 1)
     }
 
+    #if os(macOS)
     @Test func machineMadeGiantsStopAtTheCap() throws {
         let pdf = try makePDF("Export.pdf", pages: 120)
         var options = IndexOptions()
@@ -178,6 +194,7 @@ import Testing
         try store.db.query("SELECT detail FROM files") { detail = $0.text(0) }
         #expect(detail == "the first 45 of 120 pages")
     }
+    #endif
 
     @Test func oldIndexesFinishWhatTheyCut() throws {
         // As schema 4 left them: a long PDF read to page 30, a document cut at its 40th chunk, and a chunk of digits
@@ -218,6 +235,7 @@ import Testing
         #expect(try found(migrated, "9153") == [1])   // still found by keyword search
     }
 
+    #if os(macOS)
     @Test func estimatesCountTheRest() throws {
         let book = try makePDF("Book.pdf", pages: 120)
         let short = try makePDF("Leaflet.pdf", pages: 3)
@@ -232,6 +250,7 @@ import Testing
         #expect(abs(estimate.seconds - 33 * costs.pdfPage) < 1e-9)
         #expect(abs(estimate.laterSeconds - 90 * costs.pdfPage) < 1e-9)
     }
+    #endif
 
     @Test func float16VectorsScoreAcrossBlocks() throws {
         // More vectors than one block (`VectorStorage.blockRows`): every one must be scored, the last ones too.
@@ -256,6 +275,7 @@ import Testing
 
     // MARK: Files
 
+    #if os(macOS)
     /// A text PDF with `pages` pages of a few sentences each; `special` puts a word on a page (from 1).
     @discardableResult
     func makePDF(_ name: String, pages: Int, special: [Int: String] = [:]) throws -> URL {
@@ -277,6 +297,7 @@ import Testing
         context.closePDF()
         return url
     }
+    #endif
 
     /// Plain English-looking sentences, the same for the same seed; `special`'s word goes in once, past `at`.
     func prose(characters: Int, seed: Int = 1, special: (at: Int, word: String)? = nil) -> String {

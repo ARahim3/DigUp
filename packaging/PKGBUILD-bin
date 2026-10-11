@@ -1,0 +1,22 @@
+# Maintainer template for the AUR -bin package (installs the release tarball,
+# no compilation). Copy to an AUR repo as PKGBUILD, set pkgver to the release,
+# and refresh sha256sums with: updpkgsums
+# (https://wiki.archlinux.org/title/Arch_package_guidelines)
+pkgname=digup-bin
+pkgver=0.6.0
+pkgrel=1
+pkgdesc="Search your files by meaning (EmbeddingGemma 2, local-first)"
+arch=('x86_64')
+url="https://github.com/ARahim3/DigUp"
+license=('MIT')
+depends=('sqlite' 'ffmpeg' 'poppler')
+provides=('digup')
+conflicts=('digup')
+source=("digup-$pkgver-x86_64.tar.gz::https://github.com/ARahim3/DigUp/releases/download/v$pkgver/digup-$pkgver-x86_64.tar.gz")
+sha256sums=('REPLACE_WITH_SHA256_FROM_SHA256SUMS')
+
+package() {
+  install -Dm755 usr/bin/digup "$pkgdir/usr/bin/digup"
+  install -Dm644 usr/share/doc/digup/README.md "$pkgdir/usr/share/doc/digup/README.md"
+  install -Dm644 usr/share/doc/digup/LICENSE "$pkgdir/usr/share/licenses/digup/LICENSE"
+}

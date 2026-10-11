@@ -135,7 +135,9 @@ public final class EmbeddingWorker: Embedder {
 
     public init(_ config: WorkerConfig, textOnly: Bool) throws {
         process.executableURL = config.executable
+        #if os(macOS)
         process.qualityOfService = config.qos
+        #endif
         process.arguments = config.arguments + (textOnly ? ["--text-only"] : [])
         process.environment = ProcessInfo.processInfo.environment.merging(config.environment) { $1 }
         process.standardInput = input

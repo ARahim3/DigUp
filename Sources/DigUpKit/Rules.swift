@@ -1,5 +1,7 @@
 import Foundation
+#if canImport(UniformTypeIdentifiers)
 import UniformTypeIdentifiers
+#endif
 
 public enum Classification: Equatable, Sendable {
     case index(FileKind)
@@ -105,6 +107,37 @@ public enum Rules {
         return nil
     }
 
+    /// File extensions mapped without Apple's type system (Linux: no UniformTypeIdentifiers).
+    /// Kept in sync with the UTType branches of `classify(_:type:options:)` above.
+    static let imageExtensions: Set<String> = [
+        "heic", "heif", "jpg", "jpeg", "png", "gif", "webp", "tiff", "tif", "bmp", "ico",
+        "raw", "cr2", "cr3", "nef", "arw", "dng", "raf", "rw2", "orf", "srw", "pef", "psd",
+    ]
+    static let audioExtensions: Set<String> = [
+        "mp3", "wav", "m4a", "aac", "flac", "ogg", "oga", "opus", "wma", "aiff", "aif", "caf",
+    ]
+    static let videoExtensions: Set<String> = [
+        "mp4", "mov", "m4v", "mkv", "avi", "webm", "mpg", "mpeg", "3gp", "flv", "wmv", "ogv",
+    ]
+
+    /// Extension-only classification for platforms without UniformTypeIdentifiers (Linux).
+    public static func classify(_ url: URL, options: IndexOptions) -> Classification {
+        let ext = url.pathExtension.lowercased()
+        if options.excludedExtensions.contains(ext) { return .skip("excluded type") }
+        if ext == "ts" || ext == "mts" || ext == "m2ts" {
+            if isMPEGTransportStream(url) { return .index(.video) }
+            return options.includeCode ? .index(.doc) : .skip("code or data file")
+        }
+        if ext == "pdf" { return .index(.pdf) }
+        if docExtensions.contains(ext) { return .index(.doc) }
+        if codeExtensions.contains(ext) { return options.includeCode ? .index(.doc) : .skip("code or data file") }
+        if imageExtensions.contains(ext) { return .index(isScreenshot(url) ? .screenshot : .image) }
+        if videoExtensions.contains(ext) { return .index(.video) }
+        if audioExtensions.contains(ext) { return .index(.audio) }
+        return .ignore
+    }
+
+    #if canImport(UniformTypeIdentifiers)
     public static func classify(_ url: URL, type: UTType?, options: IndexOptions) -> Classification {
         let ext = url.pathExtension.lowercased()
         if options.excludedExtensions.contains(ext) { return .skip("excluded type") }
@@ -125,6 +158,7 @@ public enum Rules {
         if type.conforms(to: .audio) { return .index(.audio) }
         return .ignore
     }
+    #endif
 
     /// MPEG-TS packets start with 0x47 every 188 bytes (or every 192 with a 4-byte timecode, as in .m2ts / AVCHD .mts).
     static func isMPEGTransportStream(_ url: URL) -> Bool {
@@ -137,8 +171,11 @@ public enum Rules {
     }
 
     /// macOS marks screenshots with an extended attribute that survives moves and copies; names are the fallback.
+    /// (Linux has no such attribute: names only.)
     public static func isScreenshot(_ url: URL) -> Bool {
+        #if os(macOS)
         if getxattr(url.path, "com.apple.metadata:kMDItemIsScreenCapture", nil, 0, 0, 0) > 0 { return true }
+        #endif
         let name = url.lastPathComponent
         return screenshotPrefixes.contains { name.hasPrefix($0) }
     }

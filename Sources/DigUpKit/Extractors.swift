@@ -1,9 +1,11 @@
-import AppKit
 import Foundation
+#if os(macOS)
+import AppKit
 import ImageIO
 import PDFKit
 import UniformTypeIdentifiers
 import Vision
+#endif
 
 enum ExtractError: Error, CustomStringConvertible {
     case unreadable(String)
@@ -24,6 +26,7 @@ enum ExtractError: Error, CustomStringConvertible {
     }
 }
 
+#if os(macOS)
 enum ImageExtractor {
     struct Prepared: Sendable {
         let path: String
@@ -157,12 +160,15 @@ enum PDFExtractor {
             .cgImage(forProposedRect: nil, context: nil, hints: nil)
     }
 }
+#endif
 
 enum DocExtractor {
     /// Plain text from txt/md directly, HTML by stripping tags, and rtf/docx/doc/odt through the Cocoa text system.
     /// (Cocoa's HTML import runs WebKit and must be on the main thread; the app indexes on a background queue.)
+    /// Linux reads txt/md/html only; rich formats need a backend (pandoc/libreoffice) — not ported yet.
     static func text(of url: URL) throws -> String {
         let ext = url.pathExtension.lowercased()
+        #if os(macOS)
         let type: NSAttributedString.DocumentType
         switch ext {
         case "docx": type = .officeOpenXML
@@ -173,6 +179,14 @@ enum DocExtractor {
         default: return try readText(url)
         }
         return try NSAttributedString(url: url, options: [.documentType: type], documentAttributes: nil).string
+        #else
+        switch ext {
+        case "html", "htm": return plainText(fromHTML: try readText(url))
+        case "docx", "doc", "odt", "rtf":
+            throw ExtractError.unreadable("\(ext) needs a Linux document backend — not ported yet")
+        default: return try readText(url)
+        }
+        #endif
     }
 
     private static func readText(_ url: URL) throws -> String {

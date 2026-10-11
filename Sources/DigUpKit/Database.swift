@@ -1,5 +1,9 @@
 import Foundation
+#if canImport(SQLite3)
 import SQLite3
+#elseif canImport(CSQLite)
+import CSQLite
+#endif
 
 /// A thin wrapper over the system SQLite (3.51 on macOS 26, FTS5 built in). One connection, used from one thread.
 public final class Database {

@@ -1,5 +1,9 @@
+#if canImport(CoreGraphics)
 import CoreGraphics
+#endif
+#if canImport(CoreServices)
 import CoreServices
+#endif
 import Foundation
 
 /// Seconds of indexing per unit, measured 2026-10-07 on an M4 Pro with llama.cpp (Q8_0), reading files while the
@@ -131,17 +135,69 @@ public enum Estimator {
     }
 
     static func pages(of path: String) -> Int {
+        #if os(macOS)
         if let pages = spotlight(path, kMDItemNumberOfPages), pages > 0 { return Int(pages) }
         return CGPDFDocument(URL(fileURLWithPath: path) as CFURL)?.numberOfPages ?? 1
+        #else
+        // Linux: `pdfinfo` (poppler-utils) when present, else a size heuristic.
+        if let pages = pdfinfoPages(path), pages > 0 { return pages }
+        let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? Int) ?? 0
+        return max(1, size / 3000)
+        #endif
     }
 
     static func duration(of path: String) -> Double {
+        #if os(macOS)
         if let seconds = spotlight(path, kMDItemDurationSeconds), seconds > 0 { return seconds }
         return MediaInfo.duration(of: URL(fileURLWithPath: path)) ?? 0
+        #else
+        // Linux: `ffprobe` when present (AVFoundation's MediaInfo is macOS-only).
+        return ffprobeDuration(path) ?? 0
+        #endif
     }
 
+    #if os(macOS)
     private static func spotlight(_ path: String, _ attribute: CFString) -> Double? {
         guard let item = MDItemCreate(kCFAllocatorDefault, path as CFString) else { return nil }
         return (MDItemCopyAttribute(item, attribute) as? NSNumber)?.doubleValue
     }
+    #else
+    /// Page count via poppler's `pdfinfo` ("Pages:  N"), nil when it's missing or fails.
+    private static func pdfinfoPages(_ path: String) -> Int? {
+        guard let output = runHelper("/usr/bin/pdfinfo", [path])
+            ?? runHelper("/usr/bin/env", ["pdfinfo", path]) else { return nil }
+        for line in output.split(separator: "\n") where line.hasPrefix("Pages:") {
+            if let pages = Int(line.dropFirst("Pages:".count).trimmingCharacters(in: .whitespaces)), pages > 0 {
+                return pages
+            }
+        }
+        return nil
+    }
+
+    /// Media duration via `ffprobe`, nil when it's missing or fails.
+    private static func ffprobeDuration(_ path: String) -> Double? {
+        guard let output = runHelper("/usr/bin/ffprobe",
+                                     ["-v", "error", "-show_entries", "format=duration",
+                                      "-of", "default=noprint_wrappers=1:nokey=1", path])
+            ?? runHelper("/usr/bin/env", ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                                          "-of", "default=noprint_wrappers=1:nokey=1", path]) else { return nil }
+        return Double(output.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    private static func runHelper(_ executable: String, _ arguments: [String]) -> String? {
+        guard FileManager.default.isExecutableFile(atPath: executable) || executable.hasSuffix("/env") else { return nil }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        process.standardInput = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return nil }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+    #endif
 }

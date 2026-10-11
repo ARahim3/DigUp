@@ -12,7 +12,11 @@ import Testing
     @Test func typeScriptIsNotVideo() throws {
         let file = folder.appendingPathComponent("app.ts")
         try "export const x: number = 1;\n".write(to: file, atomically: true, encoding: .utf8)
+        #if canImport(UniformTypeIdentifiers)
         #expect(Rules.classify(file, type: .init(filenameExtension: "ts"), options: IndexOptions()) == .skip("code or data file"))
+        #else
+        #expect(Rules.classify(file, options: IndexOptions()) == .skip("code or data file"))
+        #endif
     }
 
     @Test func realTransportStreamIsVideo() throws {
@@ -20,14 +24,22 @@ import Testing
         for packet in 0..<4 { bytes[packet * 188] = 0x47 }
         let file = folder.appendingPathComponent("clip.ts")
         try Data(bytes).write(to: file)
+        #if canImport(UniformTypeIdentifiers)
         #expect(Rules.classify(file, type: .init(filenameExtension: "ts"), options: IndexOptions()) == .index(.video))
+        #else
+        #expect(Rules.classify(file, options: IndexOptions()) == .index(.video))
+        #endif
     }
 
     @Test func codeCanBeIncluded() {
         var options = IndexOptions()
         options.includeCode = true
         let file = folder.appendingPathComponent("main.py")
+        #if canImport(UniformTypeIdentifiers)
         #expect(Rules.classify(file, type: .init(filenameExtension: "py"), options: options) == .index(.doc))
+        #else
+        #expect(Rules.classify(file, options: options) == .index(.doc))
+        #endif
     }
 
     @Test func machineNames() {
