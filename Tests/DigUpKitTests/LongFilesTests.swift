@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import PDFKit
 import Testing
 @testable import DigUpKit
 
@@ -252,6 +253,43 @@ import Testing
         let hits = try searcher.search("", queryVector: target, limit: 3)
         #expect(hits.first?.path == "/v/\(rows - 5).png")
         #expect(abs((hits.first?.cosine ?? 0) - 1) < 0.002)   // float16 rounding only
+    }
+
+    @Test func scannedPDFKeepsExactWordsAndImageVector() throws {
+        try FileManager.default.createDirectory(at: files, withIntermediateDirectories: true)
+        let url = files.appendingPathComponent("scan.pdf")
+        let bitmap = try #require(CGContext(data: nil, width: 1200, height: 800, bitsPerComponent: 8,
+                                           bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                           bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        bitmap.setFillColor(CGColor(gray: 1, alpha: 1))
+        bitmap.fill(CGRect(x: 0, y: 0, width: 1200, height: 800))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: bitmap, flipped: false)
+        ("Invoice QXTEST87231. Payment due Friday." as NSString).draw(
+            at: CGPoint(x: 80, y: 400), withAttributes: [.font: NSFont.systemFont(ofSize: 40),
+                                                       .foregroundColor: NSColor.black])
+        NSGraphicsContext.restoreGraphicsState()
+        let image = try #require(bitmap.makeImage())
+        var box = CGRect(x: 0, y: 0, width: 600, height: 400)
+        let pdf = try #require(CGContext(url as CFURL, mediaBox: &box, nil))
+        pdf.beginPDFPage(nil)
+        pdf.draw(image, in: box)
+        pdf.endPDFPage()
+        pdf.closePDF()
+        let document = try #require(PDFDocument(url: url))
+        #expect((document.page(at: 0)?.string ?? "").isEmpty) // really image-only
+
+        let store = try store()
+        let indexer = try indexer(store, FakeEmbedder())
+        _ = try indexer.sync([files])
+        #expect(try indexer.run()["done"] == 1)
+        #expect(try found(store, "QXTEST87231") == [1])
+        #expect(try places(store, url.path, kinds: ["page_image"]) == [1])
+        var imageVectors = 0
+        try store.db.query("SELECT count(*) FROM segments WHERE kind = 'page_image' AND vec IS NOT NULL") {
+            imageVectors = Int($0.double(0))
+        }
+        #expect(imageVectors == 1)
     }
 
     // MARK: Files

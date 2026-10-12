@@ -142,9 +142,17 @@ enum PDFExtractor {
                 }
             }
             guard let image = render(page, pixels: renderPixels) else { continue }
+            // Image-only scans need exact words too (invoice numbers, error codes). Keep the picture vector;
+            // OCR is keyword text beside it, not a replacement text vector. Garbled text layers keep their
+            // existing treatment, since Vision cannot read every script the embedding model understands.
+            var scanOCR = false
+            if text.isEmpty, garbled == nil {
+                text = OCR.text(in: image).trimmingCharacters(in: .whitespacesAndNewlines)
+                scanOCR = !text.isEmpty
+            }
             let out = folder.appendingPathComponent(UUID().uuidString + ".png")
             try ImageExtractor.write(image, to: out, png: true)
-            pages.append(Page(number: index + 1, text: text, imagePath: out.path, garbled: garbled))
+            pages.append(Page(number: index + 1, text: text, imagePath: out.path, ocr: scanOCR, garbled: garbled))
         }
         let title = document.documentAttributes?[PDFDocumentAttribute.titleAttribute] as? String
         return (pages, document.pageCount, title)
