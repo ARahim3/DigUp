@@ -90,8 +90,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             tabs.addTabViewItem(item)
         }
         let window = NSWindow(contentViewController: tabs)
-        window.styleMask = [.titled, .closable]
+        window.styleMask = [.titled, .closable, .resizable]
         window.toolbarStyle = .preference
+        window.contentMinSize = NSSize(width: 580, height: 420)
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.center()
@@ -167,10 +168,13 @@ final class SettingsState {
     var isLoaded: Bool { summaries != nil }
 }
 
-/// One tab's content, at the width every tab shares.
+/// One tab's content, at the width every tab shares. Folders and Code open at a default height and scroll inside
+/// the Form (they're long once there are folders); the window is resizable. General and Storage still size to content.
 private struct SettingsPane: View {
     let tab: SettingsTab
     let state: SettingsState
+
+    private var scrolls: Bool { tab == .folders || tab == .code }
 
     var body: some View {
         Group {
@@ -182,7 +186,14 @@ private struct SettingsPane: View {
             }
         }
         .frame(width: 580)
-        .fixedSize(horizontal: false, vertical: true)
+        // A fixed height makes the Form scroll; without it, preferredContentSize grows with every folder row.
+        .frame(height: scrolls ? Self.defaultScrollHeight : nil)
+        .fixedSize(horizontal: false, vertical: !scrolls)
+    }
+
+    /// Comfortable default for Folders/Code; the window is resizable if you want it taller or shorter.
+    private static var defaultScrollHeight: CGFloat {
+        min(620, max(480, (NSScreen.main?.visibleFrame.height ?? 800) * 0.72))
     }
 }
 
@@ -347,7 +358,6 @@ private struct FolderSettings: View {
             }
         }
         .formStyle(.grouped)
-        .scrollDisabled(true)
         .onChange(of: state.model.status) { state.statusChanged() }
         .confirmationDialog(removalTitle, isPresented: Binding(get: { removing != nil },
                                                                set: { if !$0 { removing = nil } })) {
@@ -615,7 +625,6 @@ private struct CodeSettings: View {
             }
         }
         .formStyle(.grouped)
-        .scrollDisabled(true)
         .onChange(of: state.model.status) { state.statusChanged() }
         .confirmationDialog("Turn off code search?", isPresented: $turningOff) {
             Button("Turn Off", role: .destructive) {
