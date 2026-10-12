@@ -18,7 +18,7 @@ SNAPSHOT="$HOME/.cache/huggingface/hub/models--ggml-org--embeddinggemma-2-GGUF/s
 if [[ "$MODELS" == "$PWD/.dev/models" ]]; then
   mkdir -p "$MODELS"
   for file in embeddinggemma-2-Q8_0.gguf mmproj-embeddinggemma-2-Q8_0.gguf; do
-    [[ -f "$MODELS/$file" || ! -e "$SNAPSHOT/$file" ]] || cp -cL "$SNAPSHOT/$file" "$MODELS/$file"
+    [[ -f "$MODELS/$file" || ! -e "$SNAPSHOT/$file" ]] || cp -cL "$SNAPSHOT/$file" "$MODELS/$file" 2>/dev/null || cp -L "$SNAPSHOT/$file" "$MODELS/$file"   # -c needs APFS; fall back elsewhere
   done
 fi
 
