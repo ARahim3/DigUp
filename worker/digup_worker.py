@@ -106,12 +106,27 @@ class Embedder:
         return np.array(output.text_embeds.astype(self.mx.float32))
 
     def text(self, inputs):
-        rows = []
+        rows, errors = [], []
         for i in range(0, len(inputs), BATCH["text"]):
             batch = inputs[i : i + BATCH["text"]]
-            tokens = self.tokenizer(batch, padding=True, truncation=True, max_length=2048, return_tensors="np")
-            rows.append(self._vectors(self.model(**{k: self.mx.array(v) for k, v in tokens.items()})))
-        return np.concatenate(rows), [None] * len(inputs)
+            try:
+                rows.append(self._text_batch(batch))
+                errors += [None] * len(batch)
+            except Exception:
+                # One bad input must not sink its neighbours (the docstring promises per-item errors):
+                # retry the batch item by item, like media() does.
+                for text in batch:
+                    try:
+                        rows.append(self._text_batch([text]))
+                        errors.append(None)
+                    except Exception as item_error:
+                        rows.append(np.zeros((1, DIM), np.float32))
+                        errors.append(f"{type(item_error).__name__}: {item_error}"[:300])
+        return np.concatenate(rows), errors
+
+    def _text_batch(self, batch):
+        tokens = self.tokenizer(batch, padding=True, truncation=True, max_length=2048, return_tensors="np")
+        return self._vectors(self.model(**{k: self.mx.array(v) for k, v in tokens.items()}))
 
     def media(self, kind, inputs, budget=None):
         if self.processor is None:
@@ -146,8 +161,12 @@ class Embedder:
 
 
 def reply(message):
-    sys.stdout.write(json.dumps(message, separators=(",", ":")) + "\n")
-    sys.stdout.flush()
+    try:
+        sys.stdout.write(json.dumps(message, separators=(",", ":")) + "\n")
+        sys.stdout.flush()
+    except BrokenPipeError:
+        # The app died mid-session: leave quietly instead of with a traceback.
+        raise SystemExit(0)
 
 
 def main():
