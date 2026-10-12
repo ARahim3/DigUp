@@ -25,7 +25,8 @@ fi
 scripts/build-llama.sh
 
 # Both executables: the app, and the `digup` CLI, which the app runs as its indexing helper and query encoder.
-swift build -c release --product DigUpApp --product digup
+swift build -c release --product DigUpApp
+swift build -c release --product digup
 BIN_DIR="$(swift build -c release --show-bin-path)"
 
 # The app icon ("One space", moss; Resources/AppIcon/README.md): macOS 26 draws the layered AppIcon.icon (compiled into
