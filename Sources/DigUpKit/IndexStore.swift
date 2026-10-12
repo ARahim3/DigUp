@@ -250,39 +250,47 @@ public final class IndexStore {
     /// Adds a file (pending) and returns its id.
     @discardableResult
     public func insert(_ file: Candidate) throws -> Int64 {
-        try db.run("INSERT INTO files(path, kind, size, mtime, inode, device) VALUES(?, ?, ?, ?, ?, ?)",
-                   [.text(file.path), .text(file.kind.rawValue), .int(file.size), .double(file.mtime),
-                    .int(Int64(bitPattern: file.inode)), .int(Int64(bitPattern: file.device))])
-        let id = db.lastInsertID
-        try addNameRow(file: id, path: file.path)
-        return id
+        try db.transaction {
+            try db.run("INSERT INTO files(path, kind, size, mtime, inode, device) VALUES(?, ?, ?, ?, ?, ?)",
+                       [.text(file.path), .text(file.kind.rawValue), .int(file.size), .double(file.mtime),
+                        .int(Int64(bitPattern: file.inode)), .int(Int64(bitPattern: file.device))])
+            let id = db.lastInsertID
+            try addNameRow(file: id, path: file.path)
+            return id
+        }
     }
 
     /// The file changed on disk: drop what was extracted from it and queue it again.
     public func requeue(_ id: Int64, as file: Candidate) throws {
-        try deleteSegments(of: id, keepingName: true)
-        try db.run("""
-            UPDATE files SET kind = ?, size = ?, mtime = ?, inode = ?, device = ?, state = 'pending', detail = NULL,
-                info = NULL, indexed_at = NULL WHERE id = ?
-            """, [.text(file.kind.rawValue), .int(file.size), .double(file.mtime), .int(Int64(bitPattern: file.inode)),
-                  .int(Int64(bitPattern: file.device)), .int(id)])
+        try db.transaction {
+            try deleteSegments(of: id, keepingName: true)
+            try db.run("""
+                UPDATE files SET kind = ?, size = ?, mtime = ?, inode = ?, device = ?, state = 'pending', detail = NULL,
+                    info = NULL, indexed_at = NULL WHERE id = ?
+                """, [.text(file.kind.rawValue), .int(file.size), .double(file.mtime), .int(Int64(bitPattern: file.inode)),
+                      .int(Int64(bitPattern: file.device)), .int(id)])
+        }
     }
 
     /// Extract and embed the file again, as it is (after a better way to read it arrived).
     func requeue(_ id: Int64) throws {
-        try deleteSegments(of: id, keepingName: true)
-        try db.run("UPDATE files SET state = 'pending', detail = NULL, info = NULL, indexed_at = NULL WHERE id = ?",
-                   [.int(id)])
+        try db.transaction {
+            try deleteSegments(of: id, keepingName: true)
+            try db.run("UPDATE files SET state = 'pending', detail = NULL, info = NULL, indexed_at = NULL WHERE id = ?",
+                       [.int(id)])
+        }
     }
 
     /// Same inode, size and date at a new path: a move or rename. Only the path changes; nothing is re-embedded.
     /// (Screenshot tools move screenshots into project folders all the time.)
     public func move(_ id: Int64, to path: String) throws {
-        try db.run("UPDATE files SET path = ? WHERE id = ?", [.text(path), .int(id)])
-        try db.run("""
-            UPDATE fts SET name = ?, body = ? WHERE rowid IN (SELECT id FROM segments WHERE file = ? AND kind = 'name')
-            """, [.text(SearchText.normalized(Self.nameText(path))), .text(SearchText.normalized(Self.folderText(path))),
-                  .int(id)])
+        try db.transaction {
+            try db.run("UPDATE files SET path = ? WHERE id = ?", [.text(path), .int(id)])
+            try db.run("""
+                UPDATE fts SET name = ?, body = ? WHERE rowid IN (SELECT id FROM segments WHERE file = ? AND kind = 'name')
+                """, [.text(SearchText.normalized(Self.nameText(path))), .text(SearchText.normalized(Self.folderText(path))),
+                      .int(id)])
+        }
     }
 
     public func delete(_ id: Int64) throws {
@@ -320,11 +328,34 @@ public final class IndexStore {
     public func pending(limit: Int?, only ids: Set<Int64>? = nil) throws -> [FileRecord] {
         var out: [FileRecord] = []
         if let ids, ids.isEmpty { return out }
-        let filter = ids.map { " AND id IN (\($0.map(String.init).joined(separator: ",")))" } ?? ""
+        let limitValue = SQLValue.int(Int64(limit ?? -1))
+        let order = "ORDER BY \(FileKind.indexingOrderSQL), mtime DESC"
+        if let ids {
+            // The id set goes into the SQL as literals, so it is chunked (SQLite caps the number of
+            // terms in an IN list): each chunk runs the same ordered/limited query and the union is
+            // re-ordered and limited outside, preserving the original ordering and limit semantics.
+            let sorted = ids.sorted()
+            var parts: [String] = []
+            var values: [SQLValue] = []
+            for start in stride(from: 0, to: sorted.count, by: 500) {
+                let chunk = sorted[start..<min(start + 500, sorted.count)]
+                parts.append("""
+                    (SELECT \(Self.fileColumns) FROM files WHERE state = 'pending'
+                     AND id IN (\(chunk.map(String.init).joined(separator: ",")))\(scopeSQL)
+                     \(order) LIMIT ?)
+                    """)
+                values += scopeValues + [limitValue]
+            }
+            try db.query("""
+                SELECT \(Self.fileColumns) FROM (\(parts.joined(separator: " UNION ALL ")))
+                \(order) LIMIT ?
+                """, values + [limitValue]) { out.append(Self.record($0)) }
+            return out
+        }
         try db.query("""
-            SELECT \(Self.fileColumns) FROM files WHERE state = 'pending'\(filter)\(scopeSQL)
-            ORDER BY \(FileKind.indexingOrderSQL), mtime DESC LIMIT ?
-            """, scopeValues + [.int(Int64(limit ?? -1))]) { out.append(Self.record($0)) }
+            SELECT \(Self.fileColumns) FROM files WHERE state = 'pending'\(scopeSQL)
+            \(order) LIMIT ?
+            """, scopeValues + [limitValue]) { out.append(Self.record($0)) }
         return out
     }
 
@@ -427,6 +458,9 @@ public final class IndexStore {
     /// Adds a segment; `text` goes into keyword search (normalized, see `SearchText`), `vector` into meaning search.
     public func addSegment(file: Int64, kind: SegmentKind, modality: Modality, loc: Double? = nil, locEnd: Double? = nil,
                            excerpt: String? = nil, text: String? = nil, vector: [Float]? = nil) throws {
+        // An empty vector means embedding failed: store NULL (what `Searcher.reload` skips with
+        // `WHERE s.vec IS NOT NULL`) instead of a 0-byte half-float blob that would be loaded and scored.
+        let vector = (vector?.isEmpty ?? false) ? nil : vector
         try db.run("INSERT INTO segments(file, kind, modality, loc, loc_end, excerpt, vec) VALUES(?, ?, ?, ?, ?, ?, ?)",
                    [.int(file), .text(kind.rawValue), .text(vector == nil ? Modality.none.rawValue : modality.rawValue),
                     .optional(loc), .optional(locEnd), .optional(excerpt),
@@ -452,8 +486,10 @@ public final class IndexStore {
 
     private func deleteSegments(of file: Int64, keepingName: Bool) throws {
         let filter = keepingName ? "AND kind != 'name'" : ""
-        try db.run("DELETE FROM fts WHERE rowid IN (SELECT id FROM segments WHERE file = ? \(filter))", [.int(file)])
-        try db.run("DELETE FROM segments WHERE file = ? \(filter)", [.int(file)])
+        try db.transaction {
+            try db.run("DELETE FROM fts WHERE rowid IN (SELECT id FROM segments WHERE file = ? \(filter))", [.int(file)])
+            try db.run("DELETE FROM segments WHERE file = ? \(filter)", [.int(file)])
+        }
     }
 
     /// "Screenshot 2026-10-01 at 9.41.07 PM.png" → searchable words.
