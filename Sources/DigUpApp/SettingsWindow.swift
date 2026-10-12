@@ -167,7 +167,8 @@ final class SettingsState {
     var isLoaded: Bool { summaries != nil }
 }
 
-/// One tab's content, at the width every tab shares.
+/// One tab's content, at the width every tab shares. Tall tabs (Folders, Code) cap to the screen and scroll
+/// inside the Form; short ones still size the window to their content.
 private struct SettingsPane: View {
     let tab: SettingsTab
     let state: SettingsState
@@ -182,7 +183,14 @@ private struct SettingsPane: View {
             }
         }
         .frame(width: 580)
+        .frame(maxHeight: Self.maxPaneHeight)
         .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// Leave room for the menu bar, Dock and the window's title bar so the pane stays on screen.
+    static var maxPaneHeight: CGFloat {
+        let visible = NSScreen.main?.visibleFrame.height ?? 800
+        return max(420, visible - 60)
     }
 }
 
@@ -337,7 +345,7 @@ private struct FolderSettings: View {
             }
         }
         .formStyle(.grouped)
-        .scrollDisabled(true)
+        .frame(maxHeight: SettingsPane.maxPaneHeight)
         .onChange(of: state.model.status) { state.statusChanged() }
         .confirmationDialog(removalTitle, isPresented: Binding(get: { removing != nil },
                                                                set: { if !$0 { removing = nil } })) {
@@ -605,7 +613,7 @@ private struct CodeSettings: View {
             }
         }
         .formStyle(.grouped)
-        .scrollDisabled(true)
+        .frame(maxHeight: SettingsPane.maxPaneHeight)
         .onChange(of: state.model.status) { state.statusChanged() }
         .confirmationDialog("Turn off code search?", isPresented: $turningOff) {
             Button("Turn Off", role: .destructive) {
