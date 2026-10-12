@@ -257,12 +257,12 @@ private struct GeneralSettings: View {
     }
 }
 
+/// Height of a typical FolderStatusRow (icon, name, path, kind counts): four fit at once.
+private let folderRowHeight: CGFloat = 56
+
 private struct FolderSettings: View {
     @Bindable var state: SettingsState
     @State private var removing: Engine.RootSummary?
-
-    /// Height of a typical FolderStatusRow (icon, name, path, kind counts): four fit at once.
-    private static let folderRowHeight: CGFloat = 56
 
     var body: some View {
         Form {
@@ -284,7 +284,7 @@ private struct FolderSettings: View {
                                 }
                             }
                         }
-                        .frame(maxHeight: 4 * Self.folderRowHeight)
+                        .frame(maxHeight: 4 * folderRowHeight)
                     } else {
                         ForEach(summaries) { summary in
                             FolderStatusRow(summary: summary) { removing = summary }
@@ -650,9 +650,20 @@ private struct CodeSettings: View {
                 if state.codeSummaries.isEmpty {
                     Text("No code folders yet. Add the folders that hold your projects.")
                         .foregroundStyle(.secondary)
-                }
-                ForEach(state.codeSummaries) { summary in
-                    FolderStatusRow(summary: summary) { removing = summary }
+                } else if state.codeSummaries.count > 4 {
+                    // Same as the Folders tab: four at a time, the rest scroll inside the list.
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 10) {
+                            ForEach(state.codeSummaries) { summary in
+                                FolderStatusRow(summary: summary) { removing = summary }
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 4 * folderRowHeight)
+                } else {
+                    ForEach(state.codeSummaries) { summary in
+                        FolderStatusRow(summary: summary) { removing = summary }
+                    }
                 }
             } header: {
                 Text("Code folders")
