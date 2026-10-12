@@ -1,3 +1,4 @@
+import DigUpLocalization
 import DigUpKit
 import Foundation
 import Observation
@@ -65,15 +66,15 @@ final class ModelDownload {
     /// "42% · about 1 min left", "Checking the download…", "Waiting for the network…"
     var progressText: String {
         switch phase {
-        case .needed: return "Not downloaded yet"
+        case .needed: return L10n.text("Not downloaded yet")
         case .downloading:
             let percent = "\(Int((fraction * 100).rounded(.down)))%"
             guard let left = secondsLeft else { return percent }
-            return percent + " · " + (left < 50 ? "less than a minute left" : "about \(roughDuration(left)) left")
-        case .verifying: return "Checking the download…"
-        case .retrying: return "Waiting for the network…"
+            return percent + " · " + (left < 50 ? L10n.text("less than a minute left") : L10n.format("about %1$@ left", String(describing: roughDuration(left))))
+        case .verifying: return L10n.text("Checking the download…")
+        case .retrying: return L10n.text("Waiting for the network…")
         case .failed(let message): return message
-        case .ready: return "Ready"
+        case .ready: return L10n.text("Ready")
         }
     }
 
@@ -104,13 +105,13 @@ final class ModelDownload {
             var folder = self.folder
             try folder.setResourceValues(values)
         } catch {
-            phase = .failed("Can't create \(tildePath(folder.path))")
+            phase = .failed(L10n.format("Can't create %1$@", String(describing: tildePath(folder.path))))
             log("model: can't create \(folder.path): \(error)")
             return
         }
         let needed = ModelFiles.missing(in: folder).reduce(0) { $0 + $1.bytes } - partialBytes(of: file) + 200_000_000
         if let free = freeSpace(), free < needed {
-            phase = .failed("Needs \(bytes(needed)) free on this disk")
+            phase = .failed(L10n.format("Needs %1$@ free on this disk", String(describing: bytes(needed))))
             log("model: needs \(bytes(needed)) free, \(bytes(free)) is free")
             return
         }
@@ -154,7 +155,7 @@ final class ModelDownload {
         }, waiting: { [weak self] in
             DispatchQueue.main.async { [weak self] in
                 guard let self, attempt == current else { return }
-                phase = .retrying("Waiting for a network connection")
+                phase = .retrying(L10n.text("Waiting for a network connection"))
                 log("model: waiting for a network connection")
             }
         }, done: { [weak self] outcome in
@@ -211,7 +212,7 @@ final class ModelDownload {
                         failedChecks += 1
                         received = bytesOnDisk()
                         if failedChecks >= 2 {
-                            phase = .failed("The download was damaged twice. Try again later.")
+                            phase = .failed(L10n.text("The download was damaged twice. Try again later."))
                         } else {
                             next()
                         }
@@ -356,13 +357,13 @@ nonisolated final class FileFetcher: NSObject, URLSessionDataDelegate, @unchecke
             guard range.hasPrefix("bytes \(written)-") else {
                 // Not where we asked: start the file over next time.
                 try? FileManager.default.removeItem(at: partial)
-                problem = ("The download couldn't resume", true)
+                problem = (L10n.text("The download couldn't resume"), true)
                 return completionHandler(.cancel)
             }
         case 200:
             written = 0   // the whole file, from the start
         default:
-            problem = ("Hugging Face answered \(status)", status == 429 || status >= 500)
+            problem = (L10n.format("Hugging Face answered %1$@", String(describing: status)), status == 429 || status >= 500)
             return completionHandler(.cancel)
         }
         do {
@@ -375,7 +376,7 @@ nonisolated final class FileFetcher: NSObject, URLSessionDataDelegate, @unchecke
             self.handle = handle
             completionHandler(.allow)
         } catch {
-            problem = ("Can't save the model: \(error.localizedDescription)", false)
+            problem = (L10n.format("Can't save the model: %1$@", String(describing: error.localizedDescription)), false)
             completionHandler(.cancel)
         }
     }
@@ -385,7 +386,7 @@ nonisolated final class FileFetcher: NSObject, URLSessionDataDelegate, @unchecke
             try handle?.write(contentsOf: data)
             written += Int64(data.count)
         } catch {
-            problem = ("Can't save the model: \(error.localizedDescription)", false)
+            problem = (L10n.format("Can't save the model: %1$@", String(describing: error.localizedDescription)), false)
             dataTask.cancel()
             return
         }
@@ -409,7 +410,7 @@ nonisolated final class FileFetcher: NSObject, URLSessionDataDelegate, @unchecke
         } else if written == file.bytes {
             done(.downloaded(partial))
         } else {
-            done(.failed("The download stopped early", retry: true))
+            done(.failed(L10n.text("The download stopped early"), retry: true))
         }
     }
 }

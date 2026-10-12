@@ -1,3 +1,4 @@
+import DigUpLocalization
 import DigUpKit
 import Foundation
 
@@ -195,7 +196,7 @@ nonisolated final class Engine: @unchecked Sendable {
     func start() {
         searchQueue.async { [self] in
             guard openSearcher() else {
-                update { $0.activity = .failed("Can't open the index") }
+                update { $0.activity = .failed(L10n.text("Can't open the index")) }
                 return
             }
             indexQueue.async { [self] in startHelper() }
@@ -493,7 +494,7 @@ nonisolated final class Engine: @unchecked Sendable {
             try process.run()
         } catch {
             log("indexer: can't start \(process.executableURL?.path ?? "the helper"): \(error)")
-            update { $0.activity = .failed("Can't start indexing") }
+            update { $0.activity = .failed(L10n.text("Can't start indexing")) }
             return
         }
         helper = process
@@ -584,7 +585,7 @@ nonisolated final class Engine: @unchecked Sendable {
             log("indexer: the model or settings changed, indexing everything again (was: \(event["from"] as? String ?? "?"))")
         case "error":
             log("indexer: \(event["message"] as? String ?? "error")")
-            if event["fatal"] as? Bool == true { update { $0.activity = .failed("Indexing stopped") } }
+            if event["fatal"] as? Bool == true { update { $0.activity = .failed(L10n.text("Indexing stopped")) } }
         default:
             break
         }
@@ -618,7 +619,7 @@ nonisolated final class Engine: @unchecked Sendable {
             log("indexer: the model changed, the code index starts over")
         case "error":
             log("indexer: code: \(event["message"] as? String ?? "error")")
-            if event["fatal"] as? Bool == true { update { $0.activity = .failed("Indexing stopped") } }
+            if event["fatal"] as? Bool == true { update { $0.activity = .failed(L10n.text("Indexing stopped")) } }
         default:
             break
         }

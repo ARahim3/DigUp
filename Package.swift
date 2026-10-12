@@ -3,6 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "DigUp",
+    defaultLocalization: "en",
     platforms: [.macOS(.v14)],
     products: [
         .executable(name: "digup", targets: ["digup"]),
@@ -16,6 +17,7 @@ let package = Package(
     targets: [
         // The engine: crawler, extractors, index store, the embedder interface and worker client, search. No UI.
         .target(name: "DigUpKit"),
+        .target(name: "DigUpLocalization", resources: [.process("Resources")]),
         // llama.cpp (scripts/build-llama.sh builds it into Vendor/llama) and EmbeddingGemma 2 on it.
         .systemLibrary(name: "CLlama", path: "Sources/CLlama"),
         .target(
@@ -30,11 +32,12 @@ let package = Package(
         // "DigUp": on a case-insensitive disk it would collide with the `digup` CLI binary.)
         .executableTarget(
             name: "DigUpApp",
-            dependencies: ["DigUpKit", .product(name: "Sparkle", package: "Sparkle")],
+            dependencies: ["DigUpKit", "DigUpLocalization", .product(name: "Sparkle", package: "Sparkle")],
             swiftSettings: [.defaultIsolation(MainActor.self)],
             linkerSettings: [.unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])]
         ),
         .testTarget(name: "DigUpKitTests", dependencies: ["DigUpKit"]),
+        .testTarget(name: "DigUpLocalizationTests", dependencies: ["DigUpLocalization"]),
         .testTarget(name: "LlamaRuntimeTests", dependencies: ["LlamaRuntime"]),
     ]
 )
