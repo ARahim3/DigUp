@@ -60,6 +60,44 @@ import Testing
         #expect(embedder.texts == 0)
     }
 
+    @Test func recoveryDrainsPendingDespiteQueuedSync() throws {
+        let part = try part(texts: ["The harbour opens today.", "A field guide to birds.",
+                                   "Notes from the meeting."])
+        let service = try service(part)
+        #expect(service.run(part, only: nil, yieldToSync: false))
+        #expect(try part.store.pendingCount() == 0)
+        #expect(embedder.texts == 3)
+    }
+
+    @Test(arguments: ["stop", "backfill off"])
+    func recoveryStillHonoursPause(command: String) throws {
+        let part = try part(texts: ["The harbour opens today."])
+        let service = try service(part)
+        service.receive(command)
+        #expect(service.run(part, only: nil, yieldToSync: false))
+        #expect(try part.store.pendingCount() == 1)
+        #expect(embedder.texts == 0)
+    }
+
+    @Test(arguments: ["stop", "backfill off"])
+    func recoveryHonoursPauseAfterFirstBatch(command: String) throws {
+        let part = try part(texts: ["The harbour opens today.", "A field guide to birds.",
+                                   "Notes from the meeting."])
+        let service = try service(part)
+        embedder.onTexts = { service.receive(command) }
+        #expect(service.run(part, only: nil, yieldToSync: false))
+        #expect(try part.store.pendingCount() == 2)
+        #expect(embedder.texts == 1)
+    }
+
+    @Test(arguments: [["--exclude", "/tmp/excluded"], ["--exclude-ext", "txt"]])
+    func recoveryRejectsUnreconciledExclusions(exclusion: [String]) throws {
+        let args = try Arguments((["--resume-pending", "--index", folder.appendingPathComponent("index").path]
+                                  + exclusion)[...])
+        #expect(throws: CLIError.self) { try indexService(args) }
+        #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent("index").path))
+    }
+
     @Test(arguments: [false, true])
     func backfillOffStillAllowsNewFiles(code: Bool) throws {
         let part = try part(code: code, texts: ["The harbour opens today.", "A field guide to birds."])
@@ -111,9 +149,11 @@ final class ServiceEmbedder: Embedder {
     let info = WorkerInfo(model: "fake", revision: "0000000", runtime: "test", dtype: "f32", dim: Vectors.dimension,
                           textOnly: false, loadSeconds: nil)
     private(set) var texts = 0
+    var onTexts: (() -> Void)?
 
     func embedTexts(_ texts: [String]) throws -> [[Float]] {
         self.texts += texts.count
+        onTexts?()
         return texts.map { _ in [1] + [Float](repeating: 0, count: Vectors.dimension - 1) }
     }
 

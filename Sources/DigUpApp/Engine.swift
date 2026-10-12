@@ -465,6 +465,9 @@ nonisolated final class Engine: @unchecked Sendable {
         let process = Process()
         process.executableURL = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/digup")
         var arguments = ["index-service", "--index", indexDirectory.path]
+        let resumePending = UserDefaults.standard.bool(forKey: "resumePendingOnce") && backfill
+            && excluded.isEmpty && types.isEmpty && ModelFiles.missing(in: modelsDirectory).isEmpty
+        if resumePending { arguments.append("--resume-pending") }
         if backfill { arguments.append("--backfill") }
         if pruneWanted { arguments.append("--prune") }
         for folder in excluded { arguments += ["--exclude", folder.path] }
@@ -491,6 +494,7 @@ nonisolated final class Engine: @unchecked Sendable {
         }
         do {
             try process.run()
+            if resumePending { UserDefaults.standard.removeObject(forKey: "resumePendingOnce") }
         } catch {
             log("indexer: can't start \(process.executableURL?.path ?? "the helper"): \(error)")
             update { $0.activity = .failed("Can't start indexing") }

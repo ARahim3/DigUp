@@ -397,6 +397,10 @@ func status(_ args: Arguments) throws {
 
 /// The app's indexing helper: sync + index on request, JSON events out (IndexService.swift).
 func indexService(_ args: Arguments) throws -> Int32 {
+    let resumePending = args.flags.contains("--resume-pending")
+    guard !resumePending || (args.options.excludedFolders.isEmpty && args.options.excludedExtensions.isEmpty) else {
+        throw CLIError("--resume-pending requires no excluded folders or types; sync must reconcile exclusions first")
+    }
     // One model for both indexes, started when the first file needs it (`SharedEmbedder`).
     let model = SharedEmbedder {
         try makeEmbedder(textOnly: false, log: args.indexFolder.appendingPathComponent("worker.log"), qos: .utility)
@@ -426,7 +430,8 @@ func indexService(_ args: Arguments) throws -> Int32 {
                                modelReady: { embedderSource() == nil || LlamaModels.complete },
                                backfill: args.flags.contains("--backfill"),
                                newFilesLimit: args.values["--new-limit"].flatMap(Int.init) ?? 50,
-                               linger: args.values["--linger"].flatMap(Double.init) ?? 60)
+                               linger: args.values["--linger"].flatMap(Double.init) ?? 60,
+                               resumePending: resumePending)
     return service.serve()
 }
 

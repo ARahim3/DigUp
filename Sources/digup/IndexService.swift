@@ -42,6 +42,7 @@ final class IndexService: @unchecked Sendable {
     private let modelReady: () -> Bool
     private let newFilesLimit: Int
     private let linger: Double
+    private let resumePending: Bool
 
     private let lock = NSLock()
     private var syncRequested = true       // the first thing it does
@@ -51,7 +52,7 @@ final class IndexService: @unchecked Sendable {
     private let wake = DispatchSemaphore(value: 0)
 
     init(main: Part, code: Part?, model: SharedEmbedder, modelReady: @escaping () -> Bool, backfill: Bool,
-         newFilesLimit: Int, linger: Double) {
+         newFilesLimit: Int, linger: Double, resumePending: Bool = false) {
         self.main = main
         self.code = code
         self.model = model
@@ -59,6 +60,7 @@ final class IndexService: @unchecked Sendable {
         self.backfillAllowed = backfill
         self.newFilesLimit = newFilesLimit
         self.linger = linger
+        self.resumePending = resumePending
     }
 
     private var parts: [Part] { [main] + (code.map { [$0] } ?? []) }
@@ -79,8 +81,19 @@ final class IndexService: @unchecked Sendable {
             return 1
         }
         Thread.detachNewThread { [self] in readCommands() }
+        if resumePending, modelReady(), lock.withLock({ backfillAllowed }) {
+            // shortcut: resume an already reconciled queue once; normal sync follows to discover later changes.
+            _ = availableRoots(main)
+            emitCounts("idle")
+            guard run(main, only: nil, yieldToSync: false) else {
+                finish()
+                emit(["event": "exit"])
+                return 1
+            }
+        }
         var newFiles = Set<Int64>(), newCode = Set<Int64>()
         while true {
+            if lock.withLock({ stopRequested }) { break }
             if lock.withLock({ () -> Bool in defer { syncRequested = false }; return syncRequested }) {
                 sync(main, into: &newFiles)
             }
@@ -187,7 +200,7 @@ final class IndexService: @unchecked Sendable {
 
     /// Embeds a part's pending files (`only` some). False when indexing has to stop (the worker died, or the index was
     /// built with other settings).
-    func run(_ part: Part, only ids: Set<Int64>?) -> Bool {
+    func run(_ part: Part, only ids: Set<Int64>?, yieldToSync: Bool = true) -> Bool {
         let started = Date()
         let isNew = ids != nil
         var madeProgress = false
@@ -196,7 +209,7 @@ final class IndexService: @unchecked Sendable {
                 lock.withLock {
                     // A sync queued during a slow crawl must not prevent the first batch from running.
                     stopRequested || (!isNew && !backfillAllowed)
-                        || (madeProgress && (syncRequested || (part.code && codeSyncRequested)))
+                        || (yieldToSync && madeProgress && (syncRequested || (part.code && codeSyncRequested)))
                 }
             }, onEvent: { event in
                 madeProgress = true
