@@ -24,8 +24,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate {
     func show(query: String? = nil, kind: ResultGroupKind? = nil) {
         let window = self.window ?? makeWindow()
         if let query {
-            search.filter = kind
-            search.query = query
+            search.show(query: query, kind: kind)
         }
         app.present(window)
         if !AppController.offscreen { window.makeFirstResponder(search.field) }
@@ -209,6 +208,8 @@ final class SearchModel {
     @ObservationIgnored private let engine: Engine
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var task: Task<Void, Never>?
+    /// `show(query:kind:)` is setting both properties: their `didSet`s skip `run()`, which it then runs once itself.
+    @ObservationIgnored private var batching = false
 
     init(engine: Engine) {
         self.engine = engine
@@ -232,6 +233,15 @@ final class SearchModel {
         navigated = false
     }
 
+    /// The window's query and kind filter at once: one search run, not one per property.
+    func show(query newQuery: String, kind: ResultGroupKind?) {
+        batching = true
+        filter = kind
+        query = newQuery
+        batching = false
+        run()
+    }
+
     /// Puts the cursor in the search field (a click on the empty window lands there).
     func focusField() {
         guard let field, field.currentEditor() == nil else { return }
@@ -252,6 +262,7 @@ final class SearchModel {
     }
 
     private func run() {
+        guard !batching else { return }
         generation += 1
         let current = generation
         task?.cancel()
