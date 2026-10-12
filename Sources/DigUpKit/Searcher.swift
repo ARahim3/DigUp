@@ -189,10 +189,21 @@ public final class Searcher {
 
         let wordRank = Dictionary(words.enumerated().map { ($0.element.file, ($0.offset + 1, $0.element)) },
                                   uniquingKeysWith: { first, _ in first })
-        var hits: [SearchHit] = []
+        // Each hit used to read its file and segment rows with one SELECT each (N+1). Instead: decide what every
+        // hit points at first, then fetch all needed rows with `id IN (…)` (chunked at 500, SQLite caps the terms
+        // of an IN list) and fill the hits in from the maps, preserving the order.
+        struct PendingHit {
+            let file: Int64
+            let score: Double
+            let semantic: (z: Double, cosine: Double, row: Int)?
+            let keyword: (Int, (file: Int64, segment: Int64, snippet: String?))?
+            let segmentID: Int64
+            let focus: Double?
+        }
+        var pending: [PendingHit] = []
         for (file, score) in scored.sorted(by: { $0.value > $1.value || ($0.value == $1.value && $0.key < $1.key) })
             .prefix(limit) {
-            let rank = hits.count
+            let rank = pending.count
             let semantic = best[file]
             let keyword = wordRank[file]
             // Point at the best meaning segment if it stands out; else at the segment the words matched.
@@ -207,41 +218,67 @@ public final class Searcher {
                                                    identifier: rank < 10 ? identifier : nil, query: text, terms: terms,
                                                    wordsHere: keyword?.1.segment == segmentID || identifier != nil)
             }
-            var path = "", kind = FileKind.doc, modified = 0.0, size: Int64 = 0, info: [String: String] = [:]
-            try store.db.query("SELECT path, kind, mtime, size, info FROM files WHERE id = ?", [.int(file)]) {
-                path = $0.text(0) ?? ""
-                kind = FileKind(rawValue: $0.text(1) ?? "") ?? .doc
-                modified = $0.double(2)
-                size = $0.int(3)
-                if let json = $0.text(4)?.data(using: .utf8) {
+            pending.append(PendingHit(file: file, score: score, semantic: semantic, keyword: keyword,
+                                      segmentID: segmentID, focus: focus))
+        }
+        var fileRows: [Int64: (path: String, kind: FileKind, modified: Double, size: Int64, info: [String: String])] = [:]
+        var segmentRows: [Int64: (kind: SegmentKind, loc: Double?, locEnd: Double?, excerpt: String?)] = [:]
+        let fileIDs = Array(Set(pending.map(\.file)))
+        // The borrowed-snippet check below also reads the kind of the segment the words matched, so batch those too.
+        let segmentIDs = Array(Set(pending.map(\.segmentID) + pending.compactMap { $0.keyword?.1.segment }))
+        for start in stride(from: 0, to: fileIDs.count, by: 500) {
+            let chunk = fileIDs[start..<min(start + 500, fileIDs.count)]
+            try store.db.query("""
+                SELECT id, path, kind, mtime, size, info FROM files
+                WHERE id IN (\(chunk.map(String.init).joined(separator: ",")))
+                """) { row in
+                var info: [String: String] = [:]
+                if let json = row.text(5)?.data(using: .utf8) {
                     info = (try? JSONSerialization.jsonObject(with: json) as? [String: String]) ?? [:]
                 }
+                fileRows[row.int(0)] = (row.text(1) ?? "", FileKind(rawValue: row.text(2) ?? "") ?? .doc,
+                                        row.double(3), row.int(4), info)
             }
-            var segment = SegmentKind.name, loc: Double?, locEnd: Double?, storedExcerpt: String?
-            try store.db.query("SELECT kind, loc, loc_end, excerpt FROM segments WHERE id = ?", [.int(segmentID)]) {
-                segment = SegmentKind(rawValue: $0.text(0) ?? "") ?? .name
-                loc = $0.isNull(1) ? nil : $0.double(1)
-                locEnd = $0.isNull(2) ? nil : $0.double(2)
-                storedExcerpt = $0.text(3)
+        }
+        for start in stride(from: 0, to: segmentIDs.count, by: 500) {
+            let chunk = segmentIDs[start..<min(start + 500, segmentIDs.count)]
+            try store.db.query("""
+                SELECT id, kind, loc, loc_end, excerpt FROM segments
+                WHERE id IN (\(chunk.map(String.init).joined(separator: ",")))
+                """) { row in
+                segmentRows[row.int(0)] = (SegmentKind(rawValue: row.text(1) ?? "") ?? .name,
+                                           row.isNull(2) ? nil : row.double(2),
+                                           row.isNull(3) ? nil : row.double(3), row.text(4))
             }
+        }
+        var hits: [SearchHit] = []
+        for hit in pending {
+            let fileRow = fileRows[hit.file]
+            let path = fileRow?.path ?? ""
+            let kind = fileRow?.kind ?? .doc
+            let modified = fileRow?.modified ?? 0.0
+            let size = fileRow?.size ?? 0
+            let info = fileRow?.info ?? [:]
+            let segmentRow = segmentRows[hit.segmentID]
+            let segment = segmentRow?.kind ?? .name
+            let loc = segmentRow?.loc
+            let locEnd = segmentRow?.locEnd
+            let storedExcerpt = segmentRow?.excerpt
             // Quote the matched words only when they come from the segment we point at, so a PDF hit on page 5
             // never shows page 2's words. A segment with no place and no text of its own (a screenshot's image
             // vector) can borrow them from its file's OCR text, which describes the same picture.
-            var snippet = keyword.flatMap { $0.1.segment == segmentID ? $0.1.snippet : nil }
+            var snippet = hit.keyword.flatMap { $0.1.segment == hit.segmentID ? $0.1.snippet : nil }
                 .flatMap { $0.contains("«") ? excerpt($0, limit: 400) : nil }
-            if snippet == nil, storedExcerpt == nil, loc == nil, let match = keyword?.1,
+            if snippet == nil, storedExcerpt == nil, loc == nil, let match = hit.keyword?.1,
                let text = match.snippet, text.contains("«") {
-                var matchedKind: String?
-                try store.db.query("SELECT kind FROM segments WHERE id = ?", [.int(match.segment)]) {
-                    matchedKind = $0.text(0)
-                }
-                if matchedKind != SegmentKind.name.rawValue { snippet = excerpt(text, limit: 400) }
+                if segmentRows[match.segment]?.kind != SegmentKind.name.rawValue { snippet = excerpt(text, limit: 400) }
             }
-            hits.append(SearchHit(path: path, kind: kind, score: score, z: semantic?.z, cosine: semantic?.cosine,
-                                  keywordRank: keyword?.0, segment: segment, segmentID: segmentID, loc: loc,
+            hits.append(SearchHit(path: path, kind: kind, score: hit.score, z: hit.semantic?.z,
+                                  cosine: hit.semantic?.cosine,
+                                  keywordRank: hit.keyword?.0, segment: segment, segmentID: hit.segmentID, loc: loc,
                                   locEnd: locEnd,
                                   excerpt: snippet ?? storedExcerpt, modified: modified, size: size, info: info,
-                                  focus: focus))
+                                  focus: hit.focus))
         }
         return hits
     }
