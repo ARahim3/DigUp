@@ -53,7 +53,14 @@ public final class LlamaEmbedder: Embedder {
             throw WorkerError.notFound("\(LlamaModels.mediaFile) (images and audio) isn't downloaded yet")
         }
         var modelParams = llama_model_default_params()
+        #if arch(x86_64)
+        // Intel iGPUs (UHD 620 and friends) put the graph on Metal while most operators fall back to the CPU —
+        // one synchronized copy per op, slower than a plain CPU run. Keep the whole model on the CPU here;
+        // build-llama.sh compiles the CPU backend with AVX2/FMA on these.
+        modelParams.n_gpu_layers = 0
+        #else
         modelParams.n_gpu_layers = 999
+        #endif
         guard let model = llama_model_load_from_file(models.text.path, modelParams) else {
             throw WorkerError.failed("can't load \(models.text.path)")
         }
@@ -75,7 +82,13 @@ public final class LlamaEmbedder: Embedder {
         var media: OpaquePointer?
         if let mediaFile = models.media, !textOnly {
             var mediaParams = mtmd_context_params_default()
+            #if arch(x86_64)
+            // Same as the text model above: Intel iGPUs make the encoder's Metal path one synchronized
+            // copy per operator, far slower than the CPU.
+            mediaParams.use_gpu = false
+            #else
             mediaParams.use_gpu = true
+            #endif
             mediaParams.print_timings = false
             mediaParams.warmup = true
             mediaParams.image_min_tokens = 1      // never rescale: images arrive at their final size (ImageSizing)
