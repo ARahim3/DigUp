@@ -42,6 +42,7 @@ final class IndexService: @unchecked Sendable {
     private let modelReady: () -> Bool
     private let newFilesLimit: Int
     private let linger: Double
+    private let resumePending: Bool
 
     private let lock = NSLock()
     private var syncRequested = true       // the first thing it does
@@ -51,7 +52,7 @@ final class IndexService: @unchecked Sendable {
     private let wake = DispatchSemaphore(value: 0)
 
     init(main: Part, code: Part?, model: SharedEmbedder, modelReady: @escaping () -> Bool, backfill: Bool,
-         newFilesLimit: Int, linger: Double) {
+         newFilesLimit: Int, linger: Double, resumePending: Bool = false) {
         self.main = main
         self.code = code
         self.model = model
@@ -59,6 +60,7 @@ final class IndexService: @unchecked Sendable {
         self.backfillAllowed = backfill
         self.newFilesLimit = newFilesLimit
         self.linger = linger
+        self.resumePending = resumePending
     }
 
     private var parts: [Part] { [main] + (code.map { [$0] } ?? []) }
@@ -79,8 +81,19 @@ final class IndexService: @unchecked Sendable {
             return 1
         }
         Thread.detachNewThread { [self] in readCommands() }
+        if resumePending, modelReady(), lock.withLock({ backfillAllowed }) {
+            // shortcut: resume an already reconciled queue once; normal sync follows to discover later changes.
+            _ = availableRoots(main)
+            emitCounts("idle")
+            guard run(main, only: nil, yieldToSync: false) else {
+                finish()
+                emit(["event": "exit"])
+                return 1
+            }
+        }
         var newFiles = Set<Int64>(), newCode = Set<Int64>()
         while true {
+            if lock.withLock({ stopRequested }) { break }
             if lock.withLock({ () -> Bool in defer { syncRequested = false }; return syncRequested }) {
                 sync(main, into: &newFiles)
             }
@@ -187,15 +200,19 @@ final class IndexService: @unchecked Sendable {
 
     /// Embeds a part's pending files (`only` some). False when indexing has to stop (the worker died, or the index was
     /// built with other settings).
-    private func run(_ part: Part, only ids: Set<Int64>?) -> Bool {
+    func run(_ part: Part, only ids: Set<Int64>?, yieldToSync: Bool = true) -> Bool {
         let started = Date()
         let isNew = ids != nil
+        var madeProgress = false
         do {
             let states = try part.indexer.run(only: ids, shouldStop: { [self] in
                 lock.withLock {
-                    syncRequested || stopRequested || (!isNew && !backfillAllowed) || (part.code && codeSyncRequested)
+                    // A sync queued during a slow crawl must not prevent the first batch from running.
+                    stopRequested || (!isNew && !backfillAllowed)
+                        || (yieldToSync && madeProgress && (syncRequested || (part.code && codeSyncRequested)))
                 }
             }, onEvent: { event in
+                madeProgress = true
                 emit(["event": "file", "new": isNew, "done": event.done, "total": event.total, "path": event.path,
                       "kind": event.kind.rawValue, "state": event.state, "seconds": event.seconds,
                       "note": event.note ?? "", "code": part.code])
@@ -213,12 +230,17 @@ final class IndexService: @unchecked Sendable {
 
     /// The rest of long files (`Indexer.finishLongFiles`), yielding as the backfill does. False when indexing has to
     /// stop.
-    private func finishLongFiles() -> Bool {
+    func finishLongFiles() -> Bool {
         let started = Date()
+        var madeProgress = false
         do {
             let states = try main.indexer.finishLongFiles(shouldStop: { [self] in
-                lock.withLock { syncRequested || codeSyncRequested && code != nil || stopRequested || !backfillAllowed }
+                lock.withLock {
+                    stopRequested || !backfillAllowed
+                        || (madeProgress && (syncRequested || (codeSyncRequested && code != nil)))
+                }
             }, onStep: { step in
+                madeProgress = true
                 emit(["event": "rest", "done": step.done, "total": step.total, "files": step.files, "path": step.path,
                       "kind": step.kind.rawValue, "state": step.state, "seconds": step.seconds, "note": step.note ?? ""])
             })
@@ -252,19 +274,23 @@ final class IndexService: @unchecked Sendable {
 
     private func readCommands() {
         while let line = readLine() {
-            lock.withLock {
-                switch line.trimmingCharacters(in: .whitespaces) {
-                case "sync": syncRequested = true
-                case "sync code": codeSyncRequested = true
-                case "stop": stopRequested = true
-                case "backfill on": backfillAllowed = true
-                case "backfill off": backfillAllowed = false
-                default: break
-                }
-            }
-            wake.signal()
+            receive(line)
         }
         lock.withLock { stopRequested = true }   // the app went away
+        wake.signal()
+    }
+
+    func receive(_ line: String) {
+        lock.withLock {
+            switch line.trimmingCharacters(in: .whitespaces) {
+            case "sync": syncRequested = true
+            case "sync code": codeSyncRequested = true
+            case "stop": stopRequested = true
+            case "backfill on": backfillAllowed = true
+            case "backfill off": backfillAllowed = false
+            default: break
+            }
+        }
         wake.signal()
     }
 

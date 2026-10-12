@@ -36,5 +36,6 @@ let package = Package(
         ),
         .testTarget(name: "DigUpKitTests", dependencies: ["DigUpKit"]),
         .testTarget(name: "LlamaRuntimeTests", dependencies: ["LlamaRuntime"]),
+        .testTarget(name: "digupTests", dependencies: ["digup"]),
     ]
 )
