@@ -51,8 +51,15 @@ if [[ "$(git -C "$SOURCE" rev-parse HEAD)" != "$COMMIT" ]]; then
   exit 1
 fi
 # Without the patch, every input token costs 1 MiB of logits that an embedding model never produces (262k vocabulary).
-if git -C "$SOURCE" apply --check "../../$PATCH" 2>/dev/null; then
+# A build that silently skipped the patch would still be stamped as patched and cached forever, so a patch that
+# does not apply (after a TAG bump) is an error, not a warning.
+if git -C "$SOURCE" apply --reverse --check "../../$PATCH" 2>/dev/null; then
+  :   # already applied: a previous run died between applying the patch and writing BUILD
+elif git -C "$SOURCE" apply --check "../../$PATCH" 2>/dev/null; then
   git -C "$SOURCE" apply "../../$PATCH"
+else
+  echo "$PATCH does not apply to $TAG: update the patch (or keep the old TAG) before building" >&2
+  exit 1
 fi
 
 if ! command -v cmake > /dev/null; then
