@@ -464,7 +464,7 @@ nonisolated final class Engine: @unchecked Sendable {
         }
         let process = Process()
         process.executableURL = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/digup")
-        var arguments = ["index-service", "--index", indexDirectory.path]
+        var arguments = ["index-service", "--index", indexDirectory.path, "--parent-pid", String(getpid())]
         if backfill { arguments.append("--backfill") }
         if pruneWanted { arguments.append("--prune") }
         for folder in excluded { arguments += ["--exclude", folder.path] }
@@ -919,6 +919,7 @@ nonisolated final class Engine: @unchecked Sendable {
         do {
             // The bundled helper runs the model (`digup worker`); DIGUP_WORKER_DIR swaps in another worker.
             var config = python ?? .helper(Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/digup"))
+            if python == nil { config.arguments += ["--parent-pid", String(getpid())] }
             config.environment["DIGUP_MODELS"] = modelsDirectory.path
             config.log = indexDirectory.appendingPathComponent("worker-query.log")
             config.qos = .userInitiated

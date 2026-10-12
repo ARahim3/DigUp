@@ -21,6 +21,7 @@ let usage = """
       digup worker [--text-only]              the model as a process (JSON lines; the app's query encoder)
 
     Options:
+      --parent-pid PID     app-owned helper: exit when this parent exits (omit for standalone CLI)
       --index DIR          index folder (default: ~/Library/Application Support/DigUp/index.noindex)
       --code               estimate, index or show the code index of these folders (code.sqlite in the index
                            folder): source files, their repos' docs and notebooks, minus what git ignores
@@ -51,7 +52,7 @@ struct Arguments {
     var lists: [String: [String]] = [:]
     var flags: Set<String> = []
     static let valued: Set<String> = ["--index", "--limit", "--kind", "-n", "--zgate", "--word-weight", "--new-limit",
-                                      "--linger", "--shot-tokens", "--code-stretch"]
+                                      "--linger", "--shot-tokens", "--code-stretch", "--parent-pid"]
     static let repeated: Set<String> = ["--exclude", "--exclude-ext", "--code-root", "--code-exclude"]
 
     init(_ raw: ArraySlice<String>) throws {
@@ -517,6 +518,26 @@ func evaluate(_ args: Arguments) throws {
           + "\(folded) expected \(folded == 1 ? "answer" : "answers") folded")
 }
 
+// App-owned helpers must not outlive the app, even during a crawl or model load, where EOF and a
+// cooperative stop are not observed yet. Standalone CLI runs remain independent of their parent.
+// Retain the source for the whole command and use a background queue (the main thread may be busy).
+var parentMonitor: (any DispatchSourceProcess)?
+
+@MainActor func watchParent(_ args: Arguments) throws {
+    guard let value = args.values["--parent-pid"] else { return }
+    guard let pid = pid_t(value), pid > 1 else { throw CLIError("--parent-pid needs a PID greater than 1") }
+    guard getppid() == pid else { exit(0) } // parent exited before the helper started
+    let source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit,
+                                                 queue: DispatchQueue(label: "digup.parent-exit", qos: .userInitiated))
+    // Do not wait for model-library exit handlers while inference/loading is in flight.
+    // The OS closes handles; SQLite rolls back any unfinished transaction on the next open.
+    source.setEventHandler { _exit(0) }
+    parentMonitor = source
+    source.activate()
+    // Cover the gap between checking the parent and registering the process source.
+    guard getppid() == pid else { exit(0) }
+}
+
 // MARK: Main
 
 do {
@@ -526,6 +547,7 @@ do {
         exit(0)
     }
     let args = try Arguments(raw.dropFirst())
+    try watchParent(args)
     switch command {
     case "estimate": try estimate(args)
     case "index": try index(args)
