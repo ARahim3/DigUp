@@ -4,7 +4,8 @@ import Foundation
 /// every platform: AppKit draws them only on a Mac.
 enum TextPDF {
     /// One page per string (US Letter, 12 pt, wrapped at about 80 characters a line).
-    static func write(_ pages: [String], to url: URL) throws {
+    /// `info` is the raw body of an optional PDF `/Info` dictionary, for metadata edge-case fixtures.
+    static func write(_ pages: [String], to url: URL, info: String? = nil) throws {
         var out = Data("%PDF-1.4\n".utf8)
         var offsets: [Int] = []
         func object(_ body: String) {
@@ -23,10 +24,19 @@ enum TextPDF {
                    + "/Contents \(5 + 2 * index) 0 R >>")
             object("<< /Length \(stream.utf8.count) >>\nstream\n\(stream)\nendstream")
         }
+        let infoObject: Int?
+        if let info {
+            object("<< \(info) >>")
+            infoObject = offsets.count
+        } else {
+            infoObject = nil
+        }
         let table = out.count
         var tail = "xref\n0 \(offsets.count + 1)\n0000000000 65535 f \n"
         for offset in offsets { tail += String(format: "%010d 00000 n \n", offset) }
-        tail += "trailer\n<< /Size \(offsets.count + 1) /Root 1 0 R >>\nstartxref\n\(table)\n%%EOF\n"
+        tail += "trailer\n<< /Size \(offsets.count + 1) /Root 1 0 R"
+        if let infoObject { tail += " /Info \(infoObject) 0 R" }
+        tail += " >>\nstartxref\n\(table)\n%%EOF\n"
         out += Data(tail.utf8)
         try out.write(to: url)
     }

@@ -2,6 +2,7 @@
 // Linux and Windows.
 #if canImport(AppKit)
 import AppKit
+import CoreGraphics
 import Foundation
 import ImageIO
 import PDFKit
@@ -159,8 +160,20 @@ extension PDFExtractor {
             }
             pages.append(Page(number: index + 1, text: text, imagePath: out.path, ocr: ocr, garbled: garbled))
         }
-        let title = document.documentAttributes?[PDFDocumentAttribute.titleAttribute] as? String
+        let title = title(of: url)
         return (pages, document.pageCount, title)
+    }
+
+    /// Reads only the PDF's `/Title` entry. `PDFDocument.documentAttributes` converts every `/Info` entry into an
+    /// NSDictionary; PDFKit can raise an uncaught NSException during that enumeration for some PDFs, which terminates
+    /// the indexing helper instead of letting the file be marked failed. A typed CoreGraphics lookup avoids converting
+    /// unrelated metadata and keeps that one file from stopping the queue.
+    private static func title(of url: URL) -> String? {
+        guard let metadataDocument = CGPDFDocument(url as CFURL), let info = metadataDocument.info else { return nil }
+        var pdfTitle: CGPDFStringRef?
+        guard CGPDFDictionaryGetString(info, "Title", &pdfTitle), let pdfTitle,
+              let title = CGPDFStringCopyTextString(pdfTitle) else { return nil }
+        return title as String
     }
 
     /// Page `number` (from 1) as a JPEG for a preview, fitted into a square of `pixels`.
