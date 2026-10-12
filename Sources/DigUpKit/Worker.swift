@@ -157,6 +157,10 @@ public final class EmbeddingWorker: Embedder {
 
     deinit { close() }
 
+    /// One vector per text. A failed input comes back as an empty vector: that is the intended failure
+    /// marker, which `IndexStore.addSegment` stores as NULL (`Searcher.reload` skips NULL vectors), so
+    /// callers still see the failure even though the per-input error string `Embedding` carries is dropped
+    /// here (the `[[Float]]` protocol signature is shared with `Sources/digup` and cannot carry it).
     public func embedTexts(_ texts: [String]) throws -> [[Float]] {
         guard !texts.isEmpty else { return [] }
         return try send("text", texts, budget: nil).map { $0.vector ?? [] }
