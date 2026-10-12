@@ -271,7 +271,7 @@ public final class Searcher {
                 .flatMap { $0.contains("«") ? excerpt($0, limit: 400) : nil }
             if snippet == nil, storedExcerpt == nil, loc == nil, let match = hit.keyword?.1,
                let text = match.snippet, text.contains("«") {
-                if segmentRows[match.segment]?.kind != SegmentKind.name.rawValue { snippet = excerpt(text, limit: 400) }
+                if segmentRows[match.segment]?.kind != .name { snippet = excerpt(text, limit: 400) }
             }
             hits.append(SearchHit(path: path, kind: kind, score: hit.score, z: hit.semantic?.z,
                                   cosine: hit.semantic?.cosine,
