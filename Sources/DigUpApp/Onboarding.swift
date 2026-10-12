@@ -76,6 +76,7 @@ final class OnboardingState {
     private(set) var hotkeyWorked = false
     var launchAtLogin: Bool
     var indexOnBattery: Bool
+    var indexInLowPowerMode: Bool
     /// File types to skip as typed ("heic, txt"): applied on Return, and on Continue (a click there doesn't end the
     /// field's editing).
     var skippedTypesText: String
@@ -103,6 +104,7 @@ final class OnboardingState {
         searchCode = !settings.codeRoots.isEmpty
         launchAtLogin = app.launchesAtLogin || app.suggestsLaunchAtLogin
         indexOnBattery = settings.indexOnBattery
+        indexInLowPowerMode = settings.indexInLowPowerMode
         skippedTypesText = settings.excludedTypes.joined(separator: ", ")
     }
 
@@ -170,6 +172,9 @@ final class OnboardingState {
 
     func finish() {
         if indexOnBattery != model.settings.indexOnBattery { app.setIndexOnBattery(indexOnBattery) }
+        if indexInLowPowerMode != model.settings.indexInLowPowerMode {
+            app.setIndexInLowPowerMode(indexInLowPowerMode)
+        }
         if launchAtLogin != app.launchesAtLogin { _ = app.setLaunchAtLogin(launchAtLogin) }
         log("onboarding: done (\(model.settings.roots.count) folders, login item \(launchAtLogin ? "on" : "off"))")
         close()
@@ -634,6 +639,9 @@ private struct ReadyStep: View {
                 Divider()
                 SwitchRow(title: AppSettings.batteryTitle, detail: AppSettings.batteryDetail,
                           isOn: $state.indexOnBattery)
+                Divider()
+                SwitchRow(title: AppSettings.lowPowerTitle, detail: AppSettings.lowPowerDetail,
+                          isOn: $state.indexInLowPowerMode)
             }
             .padding(20)
             .frame(maxWidth: 470, alignment: .leading)

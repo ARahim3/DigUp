@@ -1,33 +1,37 @@
 import Foundation
 import IOKit.ps
 
-/// When the big first pass (backfill) may run: with the Mac cool (thermal state nominal or fair), and on AC power if
-/// indexing on battery is off (it's on by default). Low Power Mode does not block it (MacBook Airs often leave that
-/// on). A few new files always index right away; they take seconds.
+/// When the big first pass (backfill) may run: with the Mac cool (thermal state nominal or fair), not in Low Power
+/// Mode unless indexing there is on (off by default: MacBook Airs can get hot), and on AC power if indexing on
+/// battery is off (on by default). A few new files always index right away; they take seconds.
 ///
-/// Event-driven: power-source and thermal changes call `onChange`; nothing polls.
+/// Event-driven: power-source, thermal and Low Power Mode changes call `onChange`; nothing polls.
 final class PowerPolicy {
     private var indexOnBattery: Bool
+    private var indexInLowPowerMode: Bool
     private let onChange: (String?) -> Void
     nonisolated(unsafe) private var powerSource: CFRunLoopSource?   // main thread, and deinit
     nonisolated(unsafe) private var observers: [NSObjectProtocol] = []
     private(set) var blocker: String?
 
     /// `onChange` gets why the backfill has to wait, or nil when it may run.
-    init(indexOnBattery: Bool, onChange: @escaping (String?) -> Void) {
+    init(indexOnBattery: Bool, indexInLowPowerMode: Bool, onChange: @escaping (String?) -> Void) {
         self.indexOnBattery = indexOnBattery
+        self.indexInLowPowerMode = indexInLowPowerMode
         self.onChange = onChange
-        blocker = Self.backfillBlocker(indexOnBattery: indexOnBattery)
+        blocker = Self.backfillBlocker(indexOnBattery: indexOnBattery, indexInLowPowerMode: indexInLowPowerMode)
 
         let me = Unmanaged.passUnretained(self).toOpaque()
         if let source = IOPSNotificationCreateRunLoopSource(powerSourceChanged, me)?.takeRetainedValue() {
             CFRunLoopAddSource(CFRunLoopGetMain(), source, .defaultMode)
             powerSource = source
         }
-        observers.append(NotificationCenter.default.addObserver(
-            forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.reevaluate() }
-        })
+        for name in [ProcessInfo.thermalStateDidChangeNotification, Notification.Name.NSProcessInfoPowerStateDidChange] {
+            observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) {
+                [weak self] _ in
+                MainActor.assumeIsolated { self?.reevaluate() }
+            })
+        }
     }
 
     deinit {
@@ -41,16 +45,24 @@ final class PowerPolicy {
         reevaluate()
     }
 
+    /// The "index in Low Power Mode" setting changed.
+    func setIndexInLowPowerMode(_ on: Bool) {
+        indexInLowPowerMode = on
+        reevaluate()
+    }
+
     fileprivate func reevaluate() {
-        let now = Self.backfillBlocker(indexOnBattery: indexOnBattery)
+        let now = Self.backfillBlocker(indexOnBattery: indexOnBattery, indexInLowPowerMode: indexInLowPowerMode)
         guard now != blocker else { return }
         blocker = now
         log("power: backfill \(now.map { "waits (\($0))" } ?? "may run")")
         onChange(now)
     }
 
-    nonisolated static func backfillBlocker(indexOnBattery: Bool) -> String? {
-        switch ProcessInfo.processInfo.thermalState {
+    nonisolated static func backfillBlocker(indexOnBattery: Bool, indexInLowPowerMode: Bool) -> String? {
+        let info = ProcessInfo.processInfo
+        if !indexInLowPowerMode, info.isLowPowerModeEnabled { return "Low Power Mode" }
+        switch info.thermalState {
         case .serious, .critical: return "Mac is warm"
         default: break
         }

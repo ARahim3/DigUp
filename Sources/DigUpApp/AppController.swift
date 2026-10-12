@@ -28,7 +28,8 @@ final class AppController {
         let download = ModelDownload(folder: settings.modelsDirectory)
         let model = AppModel(settings: settings, download: download)
         var engineRef: Engine?
-        let power = PowerPolicy(indexOnBattery: settings.indexOnBattery) { blocker in
+        let power = PowerPolicy(indexOnBattery: settings.indexOnBattery,
+                                indexInLowPowerMode: settings.indexInLowPowerMode) { blocker in
             engineRef?.setBackfillBlocker(blocker)
         }
         log("power: \(PowerPolicy.onACPower() ? "AC" : "battery"), backfill \(power.blocker.map { "waits (\($0))" } ?? "may run")")
@@ -181,6 +182,12 @@ final class AppController {
         AppSettings.save(indexOnBattery: on)
         model.settings.indexOnBattery = on
         power.setIndexOnBattery(on)
+    }
+
+    func setIndexInLowPowerMode(_ on: Bool) {
+        AppSettings.save(indexInLowPowerMode: on)
+        model.settings.indexInLowPowerMode = on
+        power.setIndexInLowPowerMode(on)
     }
 
     /// Asks for folders with the standard open panel (as a sheet when there's a window).
