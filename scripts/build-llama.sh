@@ -13,6 +13,13 @@ PATCH=scripts/llama.cpp-no-logits.patch
 SOURCE=Vendor/llama.cpp
 OUT=Vendor/llama
 STAMP="$TAG $(shasum -a 256 "$PATCH" | cut -c1-12)"
+# x86-64 hosts: GGML_NATIVE=OFF leaves the CPU backend at the SSE2 baseline. Kaby Lake R and newer carry
+# AVX2/FMA/F16C/BMI2 (check: sysctl machdep.cpu.leaf7_features), roughly doubling embedding throughput.
+SIMD_FLAGS=""
+if [[ "$(uname -m)" == "x86_64" ]]; then
+  SIMD_FLAGS="-DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_BMI2=ON"
+  STAMP="$STAMP x86-avx2"
+fi
 if [[ -f "$OUT/lib/libllamacpp.a" && "$(cat "$OUT/BUILD" 2>/dev/null)" == "$STAMP" ]]; then
   exit 0
 fi
@@ -41,7 +48,7 @@ fi
 GENERATOR=$(command -v ninja > /dev/null && echo Ninja || echo "Unix Makefiles")
 # Only the libraries: no tools, no server, nothing downloaded at build time.
 cmake -S "$SOURCE" -B Vendor/llama-build -G "$GENERATOR" -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
-  -DBUILD_SHARED_LIBS=OFF -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_NATIVE=OFF -DLLAMA_BUILD_MTMD=ON \
+  -DBUILD_SHARED_LIBS=OFF -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_NATIVE=OFF $SIMD_FLAGS -DLLAMA_BUILD_MTMD=ON \
   -DLLAMA_BUILD_COMMON=OFF -DLLAMA_BUILD_TOOLS=OFF -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_EXAMPLES=OFF \
   -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_APP=OFF -DLLAMA_BUILD_UI=OFF -DLLAMA_OPENSSL=OFF > /dev/null
 cmake --build Vendor/llama-build --config Release -j "$(sysctl -n hw.ncpu)" --target llama mtmd > /dev/null
