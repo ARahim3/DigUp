@@ -3,6 +3,7 @@
 # TTS speech clips, system sounds, and short videos cut into 6 s "moments".
 #   ./make_media.sh <out_dir>
 set -euo pipefail
+shopt -s nullglob   # a missing sample-picture folder must not hand sips a literal glob
 M="${1:?usage: make_media.sh <out_dir>}"; HERE="$(cd "$(dirname "$0")" && pwd)"
 mkdir -p "$M/img" "$M/shots" "$M/audio" "$M/audio_trunc" "$M/video"
 
@@ -14,8 +15,11 @@ done
 
 DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}" swift "$HERE/make_screenshots.swift" "$M/shots"
 
-# The default system voice renders silence from a script; Samantha works.
-say_wav() { say -v Samantha -o "$M/audio/tmp.aiff" "$2"; ffmpeg -loglevel error -y -i "$M/audio/tmp.aiff" -ac 1 -ar 16000 "$M/audio/$1.wav"; rm "$M/audio/tmp.aiff"; }
+# The default system voice renders silence from a script; prefer Samantha, else any en_US voice.
+VOICE=$(say -v '?' | awk '/Samantha/ {print $1; exit}')
+VOICE=${VOICE:-$(say -v '?' | awk '/en_US/ {print $1; exit}')}
+[[ -n "$VOICE" ]] || { echo "no en_US speech voice available (say -v '?')" >&2; exit 1; }
+say_wav() { say -v "$VOICE" -o "$M/audio/tmp.aiff" "$2"; ffmpeg -loglevel error -y -i "$M/audio/tmp.aiff" -ac 1 -ar 16000 "$M/audio/$1.wav"; rm "$M/audio/tmp.aiff"; }
 say_wav speech_groceries "Don't forget to buy milk, eggs and bread on the way home tomorrow."
 say_wav speech_revenue "Our quarterly revenue grew by twenty percent, driven by strong sales in Europe."
 say_wav speech_flight_delay "Attention passengers. The flight to Tokyo has been delayed by two hours because of a storm."

@@ -8,6 +8,7 @@
 #   scripts/make-testbed.sh [dir]        default: ~/DigUpTestbed
 # Delete it any time: rm -rf ~/DigUpTestbed
 set -euo pipefail
+shopt -s nullglob   # the screenshots glob below is empty until make_screenshots.swift has run
 TB="${1:-$HOME/DigUpTestbed}"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
