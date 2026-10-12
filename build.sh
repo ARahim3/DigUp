@@ -25,8 +25,7 @@ fi
 scripts/build-llama.sh
 
 # Both executables: the app, and the `digup` CLI, which the app runs as its indexing helper and query encoder.
-swift build -c release --product DigUpApp
-swift build -c release --product digup
+swift build -c release --product DigUpApp --product digup
 BIN_DIR="$(swift build -c release --show-bin-path)"
 
 # The app icon ("One space", moss; Resources/AppIcon/README.md): macOS 26 draws the layered AppIcon.icon (compiled into
@@ -51,7 +50,10 @@ cp Resources/AppIcon/tray.png Resources/AppIcon/tray-dim.png Resources/AppIcon/t
 # sandboxed apps and its headers for building against it: left out.
 FW="$APP/Contents/Frameworks/Sparkle.framework"
 mkdir -p "$APP/Contents/Frameworks"
-ditto .build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework "$FW"
+# Located by pattern, not one hardcoded slice path: Sparkle packaging changes the folder name between releases.
+SPARKLE=$(find .build/artifacts/sparkle -type d -path '*/Sparkle.xcframework/*/Sparkle.framework' -not -path '*/Versions/*' | head -1)
+[[ -n "$SPARKLE" ]] || { echo "Sparkle.framework not found under .build/artifacts/sparkle (does the Swift package resolve it?)" >&2; exit 1; }
+ditto "$SPARKLE" "$FW"
 for part in XPCServices Headers PrivateHeaders Modules; do rm -rf "${FW:?}/$part" "${FW:?}/Versions/B/$part"; done
 
 PLIST="$APP/Contents/Info.plist"
@@ -65,7 +67,7 @@ PLIST="$APP/Contents/Info.plist"
 # Nested code first, then the bundle. The helper needs no entitlements: llama.cpp compiles its Metal shaders at run
 # time through Metal's own compiler service, which the hardened runtime allows (checked 2026-10-08). The app's one
 # entitlement lets it ask QuickTime Player to open a recording at a moment.
-IDENTITY="${SIGN_ID:-$( [[ -f .sign-id ]] && head -1 .sign-id || echo - )}"
+IDENTITY="${SIGN_ID:-$( [[ -s .sign-id ]] && head -1 .sign-id || echo - )}"
 TIMESTAMP=$([[ "${RELEASE:-}" == 1 ]] && echo --timestamp || echo --timestamp=none)
 codesign --force --sign "$IDENTITY" --options runtime $TIMESTAMP "$APP/Contents/Helpers/digup"
 # Sparkle comes ad-hoc signed: its helpers, then the framework, with this identity (the app may only load code signed

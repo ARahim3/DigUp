@@ -10,6 +10,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${SIGN_ID:?set SIGN_ID to a Developer ID Application identity (security find-identity -v -p codesigning)}"
 : "${NOTARY_PROFILE:?set NOTARY_PROFILE to a notarytool keychain profile (see the top of this script)}"
+# Checked now, not after a multi-minute build and notarization: Sparkle's key is needed to sign the DMG.
+if [[ -n "${APPCAST:-}" && -z "${SPARKLE_KEY_FILE:-}" ]]; then
+  security find-generic-password -s "Sparkle EdDSA key" > /dev/null 2>&1 \
+    || { echo "Sparkle EdDSA key not in the login keychain (run Sparkle's generate_keys once, or set SPARKLE_KEY_FILE=<path>)." >&2; exit 1; }
+fi
 VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" Resources/Info.plist)
 APP=build.noindex/DigUp.app
 OUT=build.noindex/release
@@ -17,11 +22,12 @@ rm -rf "$OUT"
 mkdir -p "$OUT"
 
 RELEASE=1 ./build.sh
-codesign --verify --strict --deep --verbose=2 "$APP"
+# --deep is deprecated; build.sh signs each nested item explicitly, so verify them explicitly too.
+codesign --verify --strict --verbose=2 "$APP/Contents/Helpers/digup" "$APP/Contents/Frameworks/Sparkle.framework" "$APP"
 
 # The app itself is notarized and stapled first, so a copy dragged out of the DMG passes Gatekeeper offline too.
 ditto -c -k --keepParent "$APP" "$OUT/DigUp.zip"
-xcrun notarytool submit "$OUT/DigUp.zip" --keychain-profile "$NOTARY_PROFILE" --wait
+xcrun notarytool submit "$OUT/DigUp.zip" --keychain-profile "$NOTARY_PROFILE" --wait --output "$OUT/notary-app.json"
 xcrun stapler staple "$APP"
 rm "$OUT/DigUp.zip"
 
@@ -34,12 +40,17 @@ DMG="$OUT/DigUp-$VERSION.dmg"
 hdiutil create -quiet -volname "DigUp" -srcfolder "$STAGE" -fs HFS+ -format ULFO -ov "$DMG"
 rm -rf "$STAGE"
 codesign --force --sign "$SIGN_ID" --timestamp "$DMG"
-xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
+xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait --output "$OUT/notary-dmg.json"
 xcrun stapler staple "$DMG"
 
 spctl --assess --type execute --verbose=2 "$APP"
 spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
 if [[ -n "${APPCAST:-}" ]]; then
-  scripts/appcast.py "$DMG" "$APPCAST" ${NOTES:+--notes "$NOTES"}
+  scripts/appcast.py "$DMG" "$APPCAST" ${NOTES:+--notes "$NOTES"} ${SPARKLE_KEY_FILE:+--key-file "$SPARKLE_KEY_FILE"}
+elif [[ "${SKIP_APPCAST:-}" == 1 ]]; then
+  echo "APPCAST skipped (SKIP_APPCAST=1): this DMG is not Sparkle-signed; in-app updates will not see it."
+else
+  echo "Set APPCAST=<path to appcast.xml> to Sparkle-sign the DMG, or SKIP_APPCAST=1 to build without a feed." >&2
+  exit 1
 fi
 echo "Released $DMG ($(du -h "$DMG" | cut -f1))"

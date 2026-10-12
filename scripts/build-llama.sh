@@ -52,6 +52,8 @@ if [[ "$(git -C "$SOURCE" rev-parse HEAD)" != "$COMMIT" ]]; then
 fi
 # Without the patch, every input token costs 1 MiB of logits that an embedding model never produces (262k vocabulary).
 # Its path is absolute: git -C reads a relative one from the source folder, which LLAMA_SOURCE can put anywhere.
+# A build that silently skipped the patch would still be stamped as patched and cached forever, so a patch that
+# does not apply (after a TAG bump) is an error, not a warning.
 if git -C "$SOURCE" apply --check "$PWD/$PATCH" 2>/dev/null; then
   git -C "$SOURCE" apply "$PWD/$PATCH"
 elif ! git -C "$SOURCE" apply --reverse --check "$PWD/$PATCH" 2>/dev/null; then
