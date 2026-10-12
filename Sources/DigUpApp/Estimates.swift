@@ -32,7 +32,7 @@ enum Estimates {
                     update: @escaping @MainActor @Sendable (FolderEstimate) -> Void) {
         let process = Process()
         process.executableURL = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/digup")
-        var arguments = ["estimate", "--json"]
+        var arguments = ["estimate", "--json", "--parent-pid", String(getpid())]
         if code { arguments.append("--code") }
         for folder in excluded { arguments += ["--exclude", folder.path] }
         if !types.isEmpty { arguments += ["--exclude-ext", types.joined(separator: ",")] }
