@@ -1,0 +1,36 @@
+# Lint the shell scripts and the Python worker on Ubuntu: shellcheck and ruff. The build/test CI (ci.yml) does not
+# lint, so this runs alongside it on every pull request and push to main.
+name: Lint
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: shellcheck + ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install shellcheck and ruff
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          python3 -m pip install --quiet --user ruff
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: shellcheck
+        run: |
+          set -euo pipefail
+          shopt -s globstar nullglob
+          shellcheck -S warning build.sh scripts/**/*.sh
+
+      - name: ruff
+        run: ruff check worker/ scripts/appcast.py
