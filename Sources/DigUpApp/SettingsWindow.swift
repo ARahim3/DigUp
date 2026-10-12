@@ -261,6 +261,9 @@ private struct FolderSettings: View {
     @Bindable var state: SettingsState
     @State private var removing: Engine.RootSummary?
 
+    /// Height of a typical FolderStatusRow (icon, name, path, kind counts): four fit at once.
+    private static let folderRowHeight: CGFloat = 56
+
     var body: some View {
         Form {
             Section {
@@ -271,9 +274,21 @@ private struct FolderSettings: View {
                     if summaries.isEmpty {
                         Text("No folders yet. Add the ones DigUp should search.")
                             .foregroundStyle(.secondary)
-                    }
-                    ForEach(summaries) { summary in
-                        FolderStatusRow(summary: summary) { removing = summary }
+                    } else if summaries.count > 4 {
+                        // Four folders show at once; the rest scroll inside the list. Rows vary in height
+                        // (kind counts, status lines), so the cap is four typical rows, not a measured four.
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 10) {
+                                ForEach(summaries) { summary in
+                                    FolderStatusRow(summary: summary) { removing = summary }
+                                }
+                            }
+                        }
+                        .frame(maxHeight: 4 * Self.folderRowHeight)
+                    } else {
+                        ForEach(summaries) { summary in
+                            FolderStatusRow(summary: summary) { removing = summary }
+                        }
                     }
                 } else {
                     ProgressView().controlSize(.small).frame(maxWidth: .infinity)
