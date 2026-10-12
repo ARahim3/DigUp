@@ -43,7 +43,7 @@
 	<key>NSRemovableVolumesUsageDescription</key>
 	<string>DigUp indexes the folders you choose so you can search them by describing what's inside. Everything stays on this Mac.</string>
 	<key>SUEnableAutomaticChecks</key>
-	<true/>
+	<false/>
 	<key>SUFeedURL</key>
 	<string>https://raw.githubusercontent.com/ARahim3/DigUp/main/appcast.xml</string>
 	<key>SUPublicEDKey</key>
