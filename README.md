@@ -83,7 +83,7 @@ files that only live in the cloud. You can skip more folders or file types in Se
 it never changes, moves or uploads them.
 
 The first pass takes a few minutes for a few hundred files and can take an hour for a big Downloads folder. That
-happens once, on battery too unless you tell it to wait for a charger, and it pauses in Low Power Mode. After that, a
+happens once, on battery too unless you tell it to wait for a charger, and it pauses when the Mac is warm. After that, a
 new file is searchable a second or two after it lands.
 
 ## Code

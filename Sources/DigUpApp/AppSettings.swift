@@ -23,7 +23,7 @@ nonisolated struct AppSettings: Sendable {
     var modelsDirectory: URL
     var hotkey: String
     /// On (the default), the big first pass of a folder (the backfill) runs on battery too; off, it waits for a
-    /// charger. New files always index right away, and Low Power Mode or a hot Mac make the backfill wait either way.
+    /// charger. New files always index right away, and a hot Mac makes the backfill wait either way.
     var indexOnBattery: Bool
     /// The query encoder (~0.25 GB) exits after this long without a query; the next panel open starts it again.
     var encoderIdleSeconds: Double

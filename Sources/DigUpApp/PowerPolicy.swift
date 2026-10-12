@@ -1,11 +1,11 @@
 import Foundation
 import IOKit.ps
 
-/// When the big first pass (backfill) may run: with the Mac cool (thermal state nominal or fair), not in Low Power
-/// Mode, and on AC power if indexing on battery is off (it's on by default). A few new files always index right away;
-/// they take seconds.
+/// When the big first pass (backfill) may run: with the Mac cool (thermal state nominal or fair), and on AC power if
+/// indexing on battery is off (it's on by default). Low Power Mode does not block it (MacBook Airs often leave that
+/// on). A few new files always index right away; they take seconds.
 ///
-/// Event-driven: power-source, thermal and Low Power Mode changes call `onChange`; nothing polls.
+/// Event-driven: power-source and thermal changes call `onChange`; nothing polls.
 final class PowerPolicy {
     private var indexOnBattery: Bool
     private let onChange: (String?) -> Void
@@ -24,12 +24,10 @@ final class PowerPolicy {
             CFRunLoopAddSource(CFRunLoopGetMain(), source, .defaultMode)
             powerSource = source
         }
-        for name in [ProcessInfo.thermalStateDidChangeNotification, Notification.Name.NSProcessInfoPowerStateDidChange] {
-            observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) {
-                [weak self] _ in
-                MainActor.assumeIsolated { self?.reevaluate() }
-            })
-        }
+        observers.append(NotificationCenter.default.addObserver(
+            forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reevaluate() }
+        })
     }
 
     deinit {
@@ -52,9 +50,7 @@ final class PowerPolicy {
     }
 
     nonisolated static func backfillBlocker(indexOnBattery: Bool) -> String? {
-        let info = ProcessInfo.processInfo
-        if info.isLowPowerModeEnabled { return "Low Power Mode" }
-        switch info.thermalState {
+        switch ProcessInfo.processInfo.thermalState {
         case .serious, .critical: return "Mac is warm"
         default: break
         }
