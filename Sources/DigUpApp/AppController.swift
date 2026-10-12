@@ -15,6 +15,7 @@ final class AppController {
     let hotkeys = HotkeyCenter()
     let updates: Updates
     private let power: PowerPolicy
+    private let hours: HoursPolicy
     private(set) var panel: SearchPanelController!
     private(set) var searchWindow: SearchWindowController!
     private(set) var settingsWindow: SettingsWindowController!
@@ -32,7 +33,11 @@ final class AppController {
             engineRef?.setBackfillBlocker(blocker)
         }
         log("power: \(PowerPolicy.onACPower() ? "AC" : "battery"), backfill \(power.blocker.map { "waits (\($0))" } ?? "may run")")
-        let engine = Engine(settings: settings, backfillBlocker: power.blocker) { status in
+        let hours = HoursPolicy(hours: settings.indexingHours) { blocker in
+            engineRef?.setHoursBlocker(blocker)
+        }
+        if settings.indexingHours.enabled { log("hours: indexing \(hours.blocker.map { "waits (\($0))" } ?? "may run")") }
+        let engine = Engine(settings: settings, backfillBlocker: power.blocker, hoursBlocker: hours.blocker) { status in
             let before = model.statusLine
             model.status = status
             if model.statusLine != before { log("status: \(model.statusLine)") }
@@ -41,6 +46,7 @@ final class AppController {
         self.download = download
         self.model = model
         self.power = power
+        self.hours = hours
         self.engine = engine
         updates = Updates(model: model)
     }
@@ -181,6 +187,12 @@ final class AppController {
         AppSettings.save(indexOnBattery: on)
         model.settings.indexOnBattery = on
         power.setIndexOnBattery(on)
+    }
+
+    func setIndexingHours(_ indexingHours: IndexingHours) {
+        AppSettings.save(indexingHours: indexingHours)
+        model.settings.indexingHours = indexingHours
+        hours.setHours(indexingHours)
     }
 
     /// Asks for folders with the standard open panel (as a sheet when there's a window).

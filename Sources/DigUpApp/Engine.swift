@@ -31,6 +31,8 @@ nonisolated struct EngineStatus: Sendable, Equatable {
     var vectors = 0
     var paused = false
     var waitingFor: String?   // why the backfill waits ("on battery"), if it does
+    /// Outside the indexing hours (`HoursPolicy`): nothing is read until they start ("until 01:00").
+    var waitingForHours: String?
     /// The helper found no model yet (it's downloading): files are found and named, nothing gets embedded.
     var waitingForModel = false
     /// Chosen folders that aren't there right now (an unplugged drive): skipped, and their files kept.
@@ -119,6 +121,7 @@ nonisolated final class Engine: @unchecked Sendable {
     // Any thread, under `lock`
     private var paused = false
     private var backfillBlocker: String?
+    private var hoursBlocker: String?
     private var roots: [URL]
     private var excluded: [URL]
     private var excludedTypes: [String]
@@ -151,8 +154,9 @@ nonisolated final class Engine: @unchecked Sendable {
     private var statusPostPending = false
     private let onStatus: @MainActor @Sendable (EngineStatus) -> Void
 
-    /// `backfillBlocker`: why the first full pass has to wait (see `PowerPolicy`), or nil.
-    init(settings: AppSettings, backfillBlocker: String?,
+    /// `backfillBlocker`: why the first full pass has to wait (see `PowerPolicy`), or nil. `hoursBlocker`: why no
+    /// indexing may run now (see `HoursPolicy`), or nil.
+    init(settings: AppSettings, backfillBlocker: String?, hoursBlocker: String? = nil,
          onStatus: @escaping @MainActor @Sendable (EngineStatus) -> Void) {
         indexDirectory = settings.indexDirectory
         modelsDirectory = settings.modelsDirectory
@@ -165,8 +169,10 @@ nonisolated final class Engine: @unchecked Sendable {
         codeQuietSeconds = settings.codeQuietSeconds
         pruneWanted = !settings.roots.isEmpty
         self.backfillBlocker = backfillBlocker
+        self.hoursBlocker = hoursBlocker
         self.onStatus = onStatus
         status.waitingFor = backfillBlocker
+        status.waitingForHours = hoursBlocker
     }
 
     // MARK: Status
@@ -449,12 +455,14 @@ nonisolated final class Engine: @unchecked Sendable {
         if helper != nil { send("sync") } else { startHelper() }
     }
 
-    /// Starts `digup index-service` unless one is running (or indexing is paused). It syncs first, indexes up to
+    /// Starts `digup index-service` unless one is running (or indexing is paused, or it's outside the indexing hours:
+    /// folder changes then wait, and the helper's first sync picks them all up once the hours start). It syncs first,
+    /// indexes up to
     /// 50 new files on any power source, then the backfill if the power policy allows; it exits a minute after
     /// its last file. Before the model has downloaded it only syncs (file names become searchable) and exits.
     private func startHelper() {
         let (roots, excluded, types, paused, backfill): ([URL], [URL], [String], Bool, Bool) = lock.withLock {
-            (self.roots, self.excluded, self.excludedTypes, self.paused, backfillBlocker == nil)
+            (self.roots, self.excluded, self.excludedTypes, self.paused || hoursBlocker != nil, backfillBlocker == nil)
         }
         let (codeRoots, codeExcluded) = lock.withLock { (self.codeRoots, self.codeExcluded) }
         guard helper == nil, !paused else { return }
@@ -700,6 +708,17 @@ nonisolated final class Engine: @unchecked Sendable {
         log(paused ? "indexing paused" : "indexing resumed")
         indexQueue.async { [self] in
             if paused { send("stop") } else { startHelper() }
+        }
+    }
+
+    /// From `HoursPolicy`: why no indexing may run now ("until 01:00"), or nil once the hours start. Like Pause, it
+    /// takes effect after the current batch; kept apart from Pause, so neither undoes the other.
+    func setHoursBlocker(_ reason: String?) {
+        lock.withLock { hoursBlocker = reason }
+        update { $0.waitingForHours = reason }
+        log(reason.map { "indexing waits \($0)" } ?? "indexing hours started")
+        indexQueue.async { [self] in
+            if reason != nil { send("stop") } else { startHelper() }
         }
     }
 

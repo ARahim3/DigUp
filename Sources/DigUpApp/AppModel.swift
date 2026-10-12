@@ -43,15 +43,17 @@ final class AppModel {
             }
             let waiting = "\(status.pending.formatted()) \(status.pending == 1 ? "file" : "files") waiting"
             if status.pending > 0, status.paused { return "Paused · \(waiting)" }
+            if status.pending > 0, let hours = status.waitingForHours { return "\(waiting) · \(hours)" }
             if status.pending > 0, let reason = status.waitingFor { return "\(waiting) · \(reason)" }
             if status.pending > 0 { return "\(waiting) to be indexed" }
             if status.unfinished > 0 {
                 let rest = "\(status.unfinished.formatted()) long \(status.unfinished == 1 ? "file" : "files") to finish"
                 if status.paused { return "Paused · \(rest)" }
+                if let hours = status.waitingForHours { return "\(rest) · \(hours)" }
                 if let reason = status.waitingFor { return "\(rest) · \(reason)" }
             }
             return "\(status.searchable.formatted()) \(status.searchable == 1 ? "file" : "files") indexed"
-                + (status.paused ? " · paused" : "")
+                + (status.paused ? " · paused" : status.waitingForHours.map { " · waits \($0)" } ?? "")
         }
     }
 
@@ -91,6 +93,9 @@ final class AppModel {
         }
         let waiting = code.pending > 0 ? " · \(code.pending.formatted()) waiting" : ""
         if code.pending > 0, status.paused { return "Paused · \(code.pending.formatted()) code files waiting" }
+        if code.pending > 0, let hours = status.waitingForHours {
+            return "\(code.pending.formatted()) code files waiting · \(hours)"
+        }
         if code.pending > 0, let reason = status.waitingFor { return "\(code.pending.formatted()) code files waiting · \(reason)" }
         return "\(code.searchable.formatted()) code \(code.searchable == 1 ? "file" : "files") indexed" + waiting
     }
@@ -102,6 +107,7 @@ final class AppModel {
             return "Indexing \(Int(Double(done) / Double(total) * 100))%"
         }
         if status.paused, status.pending > 0 { return "Indexing paused" }
+        if let hours = status.waitingForHours, status.pending > 0 { return "Indexing waits \(hours)" }
         return nil
     }
 

@@ -25,6 +25,8 @@ nonisolated struct AppSettings: Sendable {
     /// On (the default), the big first pass of a folder (the backfill) runs on battery too; off, it waits for a
     /// charger. New files always index right away, and Low Power Mode or a hot Mac make the backfill wait either way.
     var indexOnBattery: Bool
+    /// When set, files are read only in these hours of the day (`IndexingHours`); off by default.
+    var indexingHours: IndexingHours
     /// The query encoder (~0.25 GB) exits after this long without a query; the next panel open starts it again.
     var encoderIdleSeconds: Double
     /// Onboarding was finished (or closed after choosing folders); it doesn't open by itself again.
@@ -48,6 +50,11 @@ nonisolated struct AppSettings: Sendable {
     static let batteryTitle = "Index on battery power"
     static let batteryDetail = "When it's off, a folder's first pass waits for a charger. New files always go in right away."
 
+    /// The indexing hours switch, in Settings.
+    static let hoursTitle = "Index only at set hours"
+    static let hoursDetail = "Outside these hours DigUp reads no files, new ones included, and doesn't check the folders. "
+        + "Changes are picked up when the hours start. Search works at any time."
+
     /// Where settings are saved. Reads see launch arguments first either way. (UserDefaults is thread-safe.)
     nonisolated(unsafe) static let defaults: UserDefaults = {
         guard let suite = UserDefaults.standard.string(forKey: "defaultsSuite"), !suite.isEmpty,
@@ -67,6 +74,12 @@ nonisolated struct AppSettings: Sendable {
             modelsDirectory: defaults.string(forKey: "modelsDir").map(folderURL) ?? ModelFiles.installed,
             hotkey: defaults.string(forKey: "hotkey") ?? defaultHotkey,
             indexOnBattery: defaults.object(forKey: "indexOnBattery") == nil || defaults.bool(forKey: "indexOnBattery"),
+            indexingHours: IndexingHours(
+                enabled: defaults.bool(forKey: "indexingHoursEnabled"),
+                start: defaults.object(forKey: "indexingHoursStart") == nil
+                    ? IndexingHours.defaultStart : defaults.integer(forKey: "indexingHoursStart"),
+                end: defaults.object(forKey: "indexingHoursEnd") == nil
+                    ? IndexingHours.defaultEnd : defaults.integer(forKey: "indexingHoursEnd")),
             encoderIdleSeconds: defaults.object(forKey: "encoderIdleSeconds") == nil
                 ? 600 : max(1, defaults.double(forKey: "encoderIdleSeconds")),
             onboarded: defaults.bool(forKey: "onboarded"),
@@ -109,6 +122,12 @@ nonisolated struct AppSettings: Sendable {
 
     static func save(indexOnBattery: Bool) {
         defaults.set(indexOnBattery, forKey: "indexOnBattery")
+    }
+
+    static func save(indexingHours: IndexingHours) {
+        defaults.set(indexingHours.enabled, forKey: "indexingHoursEnabled")
+        defaults.set(indexingHours.start, forKey: "indexingHoursStart")
+        defaults.set(indexingHours.end, forKey: "indexingHoursEnd")
     }
 
     static func saveOnboarded() {

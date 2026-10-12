@@ -334,6 +334,7 @@ private struct FolderSettings: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                IndexingHoursRow(hours: state.model.settings.indexingHours) { state.app.setIndexingHours($0) }
             }
         }
         .formStyle(.grouped)
@@ -358,6 +359,50 @@ private struct FolderSettings: View {
 }
 
 /// Extensions typed as "heic, txt": applied on Return or when the field loses focus.
+/// "Index only at set hours", and the hours when it's on.
+private struct IndexingHoursRow: View {
+    let hours: IndexingHours
+    let change: (IndexingHours) -> Void
+
+    var body: some View {
+        Toggle(isOn: Binding(get: { hours.enabled }, set: { on in change(with { $0.enabled = on }) })) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(AppSettings.hoursTitle)
+                Text(AppSettings.hoursDetail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        if hours.enabled {
+            HStack(spacing: 16) {
+                DatePicker("From", selection: time(\.start), displayedComponents: .hourAndMinute)
+                DatePicker("To", selection: time(\.end), displayedComponents: .hourAndMinute)
+                Spacer()
+            }
+        }
+    }
+
+    private func with(_ edit: (inout IndexingHours) -> Void) -> IndexingHours {
+        var copy = hours
+        edit(&copy)
+        return copy
+    }
+
+    /// Minutes after midnight, as the time of day a DatePicker shows.
+    private func time(_ keyPath: WritableKeyPath<IndexingHours, Int>) -> Binding<Date> {
+        Binding(
+            get: {
+                let minute = hours[keyPath: keyPath]
+                return Calendar.current.date(bySettingHour: minute / 60, minute: minute % 60, second: 0, of: Date()) ?? Date()
+            },
+            set: { date in
+                let parts = Calendar.current.dateComponents([.hour, .minute], from: date)
+                change(with { $0[keyPath: keyPath] = (parts.hour ?? 0) * 60 + (parts.minute ?? 0) })
+            })
+    }
+}
+
 private struct TypeExclusions: View {
     let types: [String]
     let apply: (String) -> Void
