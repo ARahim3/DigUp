@@ -13,6 +13,10 @@ public final class Database {
     }
 
     let handle: OpaquePointer
+    /// Nesting depth of `transaction(_:)`; only the outermost call begins/commits the SQL transaction.
+    private var transactionDepth = 0
+    /// Prepared statements keyed by SQL text, reused across queries.
+    private var statementCache: [String: Statement] = [:]
 
     public init(path: String) throws {
         var db: OpaquePointer?
@@ -51,22 +55,41 @@ public final class Database {
 
     /// Runs `sql` with `values` bound and calls `row` for each result row.
     public func query(_ sql: String, _ values: [SQLValue] = [], row: (Statement) throws -> Void = { _ in }) throws {
-        let statement = try Statement(self, sql)
+        let statement = try cachedStatement(sql)
+        try statement.reset()
         try statement.bind(values)
         while try statement.step() { try row(statement) }
     }
 
+    /// Returns a cached prepared statement for `sql`, preparing (and caching) it on first use.
+    /// Statements hold only the raw handle, so the cache never keeps `self` alive.
+    private func cachedStatement(_ sql: String) throws -> Statement {
+        if let cached = statementCache[sql] { return cached }
+        let statement = try Statement(handle: handle, sql: sql)
+        statementCache[sql] = statement
+        return statement
+    }
+
     public func run(_ sql: String, _ values: [SQLValue] = []) throws { try query(sql, values) }
 
+    /// Reentrant: nested calls run their body inside the outermost transaction.
     @discardableResult
     public func transaction<T>(_ body: () throws -> T) throws -> T {
+        guard transactionDepth == 0 else {
+            transactionDepth += 1
+            defer { transactionDepth -= 1 }
+            return try body()
+        }
         try execute("BEGIN IMMEDIATE")
+        transactionDepth = 1
         do {
             let result = try body()
             try execute("COMMIT")
+            transactionDepth = 0
             return result
         } catch {
             try? execute("ROLLBACK")
+            transactionDepth = 0
             throw error
         }
     }
@@ -84,18 +107,29 @@ public enum SQLValue {
 
 public final class Statement {
     private let statement: OpaquePointer
-    private let db: Database
+    /// Raw connection handle (not the Database object) so a Database-owned statement cache
+    /// cannot form a retain cycle that prevents Database.deinit from running.
+    private let handle: OpaquePointer
 
-    init(_ db: Database, _ sql: String) throws {
+    init(handle: OpaquePointer, sql: String) throws {
         var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db.handle, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
-            throw Database.Failure(message: "\(db.errorMessage) (in: \(sql.prefix(160)))")
+        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+            throw Database.Failure(message: "\(String(cString: sqlite3_errmsg(handle))) (in: \(sql.prefix(160)))")
         }
         self.statement = statement
-        self.db = db
+        self.handle = handle
     }
 
     deinit { sqlite3_finalize(statement) }
+
+    var errorMessage: String { String(cString: sqlite3_errmsg(handle)) }
+
+    /// Resets the statement and clears previous bindings so it can be reused from the cache.
+    func reset() throws {
+        let status = sqlite3_reset(statement)
+        sqlite3_clear_bindings(statement)
+        guard status == SQLITE_OK else { throw Database.Failure(message: errorMessage) }
+    }
 
     func bind(_ values: [SQLValue]) throws {
         for (offset, value) in values.enumerated() {
@@ -109,7 +143,7 @@ public final class Statement {
                 status = data.withUnsafeBytes { sqlite3_bind_blob(statement, index, $0.baseAddress, Int32($0.count), transient) }
             case .null: status = sqlite3_bind_null(statement, index)
             }
-            guard status == SQLITE_OK else { throw Database.Failure(message: db.errorMessage) }
+            guard status == SQLITE_OK else { throw Database.Failure(message: errorMessage) }
         }
     }
 
@@ -117,7 +151,7 @@ public final class Statement {
         switch sqlite3_step(statement) {
         case SQLITE_ROW: return true
         case SQLITE_DONE: return false
-        default: throw Database.Failure(message: db.errorMessage)
+        default: throw Database.Failure(message: errorMessage)
         }
     }
 
