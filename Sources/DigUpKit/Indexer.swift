@@ -242,7 +242,12 @@ public final class Indexer {
             let modelWasRunning = worker != nil
             let results = try autoreleasepool { try commit(prepared) }
             let seconds = Date().timeIntervalSince(started)
-            if modelWasRunning { measure(prepared, seconds: seconds) }   // else it's seconds of the model starting
+            if let worker {
+                // A first document batch may start the model; subtract its reported load and warm-up time, not the
+                // whole batch, so measured chunk costs remain useful when that batch contains many documents.
+                let startup = modelWasRunning ? 0 : worker.info.loadSeconds ?? 0
+                measure(prepared, seconds: max(0, seconds - startup))
+            }
             committed(index, job, results, seconds / Double(job.files.count))
         }
     }
@@ -253,10 +258,10 @@ public final class Indexer {
         case .images(let screenshot, let ready):
             measured.add(screenshot ? "screenshot" : "image", units: Double(ready.count), seconds: seconds)
         case .pdf(let pages, _, _, _): measured.add("pdfPage", units: Double(pages.count), seconds: seconds)
-        case .doc(let chunks, _, _, _):
+        case .documents(let documents):
             // Chunks with a vector: a data dump's go to keyword search only and take next to nothing, which isn't
             // what a chunk of prose costs (the estimate can't tell them apart from a file's size).
-            let worded = chunks.filter(SearchText.hasWords).count
+            let worded = documents.reduce(0) { $0 + $1.chunks.filter(SearchText.hasWords).count }
             if worded > 0 { measured.add("docChunk", units: Double(worded), seconds: seconds) }
         case .audio(_, let duration): measured.add("audioSecond", units: duration, seconds: seconds)
         case .video(_, _, let duration): measured.add("videoSecond", units: duration, seconds: seconds)
@@ -265,14 +270,17 @@ public final class Indexer {
         }
     }
 
-    /// Files read and embedded together (images 8 at a time, other files one by one), or one step of a long file
-    /// (`step`: the pages of a PDF or the chunks of a document to read, from 0). The first step comes with the file.
+    /// Files read and embedded together (images 8 at a time, documents 16 at a time, other files one by one), or one
+    /// step of a long file (`step`: the pages of a PDF or chunks of a document to read, from 0). The first step comes
+    /// with the file.
     struct Job: Sendable {
         let files: [FileRecord]
         var step: Range<Int>?
     }
 
-    /// Images and screenshots go to the model 8 at a time; other files one by one.
+    static let documentBatchSize = 16   // matches LlamaEmbedder's maximum sequence count
+
+    /// Images and screenshots go to the model 8 at a time, documents 16 at a time; other files one by one.
     static func batches(_ queue: [FileRecord]) -> [[FileRecord]] {
         var batches: [[FileRecord]] = []
         var index = 0
@@ -281,6 +289,11 @@ public final class Indexer {
             if batch[0].kind == .image || batch[0].kind == .screenshot {
                 while index + batch.count < queue.count, batch.count < 8,
                       queue[index + batch.count].kind == batch[0].kind {
+                    batch.append(queue[index + batch.count])
+                }
+            } else if batch[0].kind == .doc {
+                while index + batch.count < queue.count, batch.count < documentBatchSize,
+                      queue[index + batch.count].kind == .doc {
                     batch.append(queue[index + batch.count])
                 }
             }
@@ -343,8 +356,8 @@ public final class Indexer {
         case images(screenshot: Bool, ready: [ReadyImage])
         /// `read`: the pages read (from 0) of the PDF's `total`.
         case pdf(pages: [PDFExtractor.Page], read: Range<Int>, total: Int, title: String?)
-        /// `chunks`: the ones in `read` (from 0) of the document's `total` (counted up to `IndexOptions.maxChunks` + 1).
-        case doc(chunks: [String], read: Range<Int>, total: Int, characters: Int)
+        /// Each document's chunks are read together, but retain their file slot and range for independent commits.
+        case documents([Document])
         case audio(pieces: [MediaPiece], duration: Double)
         case video(frames: [MediaPiece], sound: [MediaPiece], duration: Double)
         case code(CodeExtractor.File)
@@ -354,6 +367,14 @@ public final class Indexer {
         let slot: Int
         let image: ImageExtractor.Prepared
         let ocr: String
+    }
+
+    struct Document: Sendable {
+        let slot: Int
+        let chunks: [String]
+        let read: Range<Int>
+        let total: Int
+        let characters: Int
     }
 
     /// A batch being prepared on the preparation queue.
@@ -438,12 +459,26 @@ public final class Indexer {
                 }, minText: options.minPageText, renderPixels: 1400, to: folder)
                 prepared.payload = .pdf(pages: read.pages, read: wanted, total: read.total, title: read.title)
             case .doc:
-                // The chunks are cut the same way every time, so a later step goes on where the last one stopped.
-                let text = try DocExtractor.text(of: url)
-                let chunks = DocExtractor.chunks(text, limit: options.maxChunks + 1)
-                let read = (job.step ?? 0..<options.docStep).clamped(to: 0..<min(chunks.count, options.maxChunks))
-                prepared.payload = .doc(chunks: Array(chunks[read]), read: read, total: chunks.count,
-                                        characters: text.count)
+                var documents: [Document] = []
+                for (slot, file) in batch.enumerated() {
+                    startReading(file.path)
+                    do {
+                        // The chunks are cut the same way every time, so a later step goes on where it stopped.
+                        let text = try DocExtractor.text(of: URL(fileURLWithPath: file.path))
+                        let chunks = DocExtractor.chunks(text, limit: options.maxChunks + 1)
+                        let read = (job.step ?? 0..<options.docStep)
+                            .clamped(to: 0..<min(chunks.count, options.maxChunks))
+                        documents.append(Document(slot: slot, chunks: Array(chunks[read]), read: read,
+                                                  total: chunks.count, characters: text.count))
+                    } catch let error as ExtractError {
+                        let state: String
+                        if case .leftOut = error { state = "skipped" } else { state = "failed" }
+                        prepared.outcomes[slot] = Outcome(state: state, detail: "\(error)")
+                    } catch {
+                        prepared.outcomes[slot] = Outcome(state: "failed", detail: "\(error)")
+                    }
+                }
+                prepared.payload = .documents(documents)
             case .audio:
                 let (window, hop) = (options.audioWindow, options.audioHop)
                 let (pieces, duration) = try runBlocking {
@@ -502,9 +537,8 @@ public final class Indexer {
                 try images(batch, screenshot: screenshot, ready: ready, results: &results)
             case .pdf(let pages, let read, let total, let title):
                 results[0] = try pdf(batch[0], pages: pages, read: read, total: total, title: title, later: later)
-            case .doc(let chunks, let read, let total, let characters):
-                results[0] = try doc(batch[0], chunks: chunks, read: read, total: total, characters: characters,
-                                     later: later)
+            case .documents(let documents):
+                try self.documents(batch, documents: documents, later: later, results: &results)
             case .audio(let pieces, let duration):
                 results[0] = try audio(batch[0], pieces: pieces, duration: duration)
             case .video(let frames, let sound, let duration):
@@ -625,38 +659,69 @@ public final class Indexer {
         return (unread ? "partial" : "done", "\(span), \(imagePages.count) as images" + (ocr > 0 ? ", \(ocr) read by OCR" : ""))
     }
 
-    /// Chunks `read` of a document (all of a short one, a step of a long one), the way `pdf` reads pages.
-    private func doc(_ file: FileRecord, chunks: [String], read: Range<Int>, total: Int, characters: Int, later: Bool)
-        throws -> (String, String?) {
-        guard total > 0 else {
-            try store.finish(file.id, state: "skipped", detail: "no text")
-            return ("skipped", "no text")
+    /// Embeds chunks from multiple documents in one call, then commits each document independently.
+    private func documents(_ batch: [FileRecord], documents: [Document], later: Bool,
+                           results: inout [(String, String?)]) throws {
+        struct Target {
+            let slot: Int
+            let chunk: Int
         }
-        let title = URL(fileURLWithPath: file.path).deletingPathExtension().lastPathComponent
-        // Text that's mostly digits (a data dump saved as .txt) gets keyword search only.
-        let worded = chunks.indices.filter { SearchText.hasWords(chunks[$0]) }
-        let vectors = worded.isEmpty ? [] : try fullWorker().embedTexts(worded.map {
-            Prompts.document(title: title, text: chunks[$0])
-        })
-        let vector = Dictionary(uniqueKeysWithValues: zip(worded, vectors))
-        let end = min(total, options.maxChunks)
-        let unread = read.upperBound < end
-        try store.db.transaction {
-            for (offset, chunk) in chunks.enumerated() {
-                try store.addSegment(file: file.id, kind: .chunk, modality: .text,
-                                     loc: Double(read.lowerBound + offset + 1), excerpt: excerpt(chunk), text: chunk,
-                                     vector: vector[offset])
+
+        var prompts: [String] = []
+        var targets: [Target] = []
+        for document in documents {
+            let title = URL(fileURLWithPath: batch[document.slot].path).deletingPathExtension().lastPathComponent
+            for (offset, chunk) in document.chunks.enumerated() where SearchText.hasWords(chunk) {
+                prompts.append(Prompts.document(title: title, text: chunk))
+                targets.append(Target(slot: document.slot, chunk: offset))
             }
-            var info = ["chunks": "\(end)", "chars": "\(characters)"]
-            info["read_to"] = unread ? "\(read.upperBound)" : nil
-            info["read_end"] = unread ? "\(end)" : nil
-            let detail = unread ? "read to chunk \(read.upperBound) of \(end)" : end < total ? "the first \(end) chunks" : nil
-            try store.finish(file.id, state: unread ? "partial" : "done", detail: detail, info: info)
         }
-        let span = later ? "chunks \(read.lowerBound + 1)–\(read.upperBound) of \(end)"
-            : unread ? "\(chunks.count) of \(end) chunks" : "\(chunks.count) chunks"
-        return (unread ? "partial" : "done",
-                span + (worded.count < chunks.count ? ", \(chunks.count - worded.count) for keywords only" : ""))
+        let embedded = prompts.isEmpty ? [] : try fullWorker().embedTexts(prompts)
+        var vectors: [Int: [Int: [Float]]] = [:]
+        for (target, vector) in zip(targets, embedded) {
+            vectors[target.slot, default: [:]][target.chunk] = vector
+        }
+
+        for document in documents {
+            let file = batch[document.slot]
+            guard document.total > 0 else {
+                try store.finish(file.id, state: "skipped", detail: "no text")
+                results[document.slot] = ("skipped", "no text")
+                continue
+            }
+            let end = min(document.total, options.maxChunks)
+            let unread = document.read.upperBound < end
+            let worded = document.chunks.filter(SearchText.hasWords).count
+            do {
+                try store.db.transaction {
+                    for (offset, chunk) in document.chunks.enumerated() {
+                        try store.addSegment(file: file.id, kind: .chunk, modality: .text,
+                                             loc: Double(document.read.lowerBound + offset + 1), excerpt: excerpt(chunk),
+                                             text: chunk, vector: vectors[document.slot]?[offset])
+                    }
+                    var info = later ? try store.info(of: file.id) : [:]
+                    info["chunks"] = "\(end)"
+                    info["chars"] = "\(document.characters)"
+                    info["read_to"] = unread ? "\(document.read.upperBound)" : nil
+                    info["read_end"] = unread ? "\(end)" : nil
+                    let detail = unread ? "read to chunk \(document.read.upperBound) of \(end)"
+                        : end < document.total ? "the first \(end) chunks" : nil
+                    try store.finish(file.id, state: unread ? "partial" : "done", detail: detail, info: info)
+                }
+                let span = later ? "chunks \(document.read.lowerBound + 1)–\(document.read.upperBound) of \(end)"
+                    : unread ? "\(document.chunks.count) of \(end) chunks" : "\(document.chunks.count) chunks"
+                results[document.slot] = (unread ? "partial" : "done",
+                    span + (worded < document.chunks.count
+                            ? ", \(document.chunks.count - worded) for keywords only" : ""))
+            } catch let error as WorkerError {
+                throw error
+            } catch let error as IndexerError {
+                throw error
+            } catch {
+                try store.finish(file.id, state: "failed", detail: "\(error)")
+                results[document.slot] = ("failed", "\(error)")
+            }
+        }
     }
 
     /// A code file's stretches of lines (a notebook's of cells), each embedded with the file's path in its repo as its
