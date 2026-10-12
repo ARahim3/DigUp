@@ -41,5 +41,5 @@ enum QuickLookController {
 
     // The data-source answers both windows shared, in one place.
     static func itemCount(for url: URL?) -> Int { url == nil ? 0 : 1 }
-    static func item(for url: URL?) -> (any QLPreviewItem)? { url as NSURL }
+    static func item(for url: URL?) -> (any QLPreviewItem)? { url.map { $0 as NSURL } }
 }
