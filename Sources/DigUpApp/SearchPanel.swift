@@ -79,7 +79,7 @@ final class SearchPanelController {
 
     var isVisible: Bool { window?.isVisible == true && !fading }
     var windowNumber: Int { window?.windowNumber ?? 0 }
-    var isPreviewing: Bool { QLPreviewPanel.sharedPreviewPanelExists() && QLPreviewPanel.shared().isVisible }
+    var isPreviewing: Bool { QuickLookController.isShowing }
     /// The selectable rows in order: strong results group by group, the fold, then the weaker ones if unfolded.
     var rowIDs: [String] {
         results.groups.flatMap { $0.rows.map(\.id) }
@@ -131,9 +131,7 @@ final class SearchPanelController {
     }
 
     func hide() {
-        if QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared().isVisible {
-            QLPreviewPanel.shared().orderOut(nil)
-        }
+        QuickLookController.hide()
         removeKeyMonitor()
         PreviewPlayback.shared.stop()
         if let activity { ProcessInfo.processInfo.endActivity(activity) }
@@ -230,7 +228,7 @@ final class SearchPanelController {
         }
         self.phase = phase
         resizeWindow()
-        if QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared().isVisible { updateQuickLook() }
+        if QuickLookController.isShowing { updateQuickLook() }
     }
 
     func toggleWeaker() {
@@ -298,10 +296,10 @@ final class SearchPanelController {
         // An input method is composing (Japanese, Chinese…): ↩, the arrows and Esc are its keys until it's done.
         guard let press = KeyCommands.press(event, field: field) else { return false }
         let modifiers = press.modifiers
-        let previewing = QLPreviewPanel.sharedPreviewPanelExists() && QLPreviewPanel.shared().isVisible
+        let previewing = QuickLookController.isShowing
         switch press.keyCode {
         case KeyCommands.escape:  // Esc
-            if previewing { QLPreviewPanel.shared().orderOut(nil) } else { dismiss() }
+            if previewing { QuickLookController.hide() } else { dismiss() }
             return true
         case KeyCommands.downArrow, KeyCommands.upArrow:  // ↓ ↑
             guard modifiers.isEmpty else { return false }
@@ -345,7 +343,7 @@ final class SearchPanelController {
         guard !ids.isEmpty else { return }
         let index = selection.flatMap { ids.firstIndex(of: $0) } ?? -1
         selection = ids[max(0, min(ids.count - 1, index + step))]
-        if QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared().isVisible { updateQuickLook() }
+        if QuickLookController.isShowing { updateQuickLook() }
     }
 
     func select(_ row: ResultRow) {
@@ -421,20 +419,12 @@ final class SearchPanelController {
     // MARK: Quick Look
 
     func toggleQuickLook() {
-        let panel = QLPreviewPanel.shared()!
-        if QLPreviewPanel.sharedPreviewPanelExists(), panel.isVisible {
-            panel.orderOut(nil)
-        } else if selectedRow != nil {
-            updateQuickLook()
-            panel.makeKeyAndOrderFront(nil)
-        }
+        QuickLookController.toggle(on: window, row: selectedRow)
     }
 
     /// Quick Look shows the selected result at its page or moment.
     private func updateQuickLook() {
-        window?.previewURL = selectedRow?.url
-        QLPreviewPanel.shared().reloadData()
-        QuickLookMoment.show(selectedRow, in: QLPreviewPanel.shared())
+        QuickLookController.update(on: window, row: selectedRow)
     }
 
     // MARK: Window
@@ -511,7 +501,7 @@ final class SearchPanelController {
 }
 
 /// The floating panel. Unlike most floating panels it becomes key, because you type into it.
-final class SearchPanelWindow: NSPanel, QLPreviewPanelDataSource {
+final class SearchPanelWindow: NSPanel, QLPreviewPanelDataSource, QuickLookHost {
     /// What Space / ⌘Y previews.
     var previewURL: URL?
 
@@ -552,10 +542,10 @@ final class SearchPanelWindow: NSPanel, QLPreviewPanelDataSource {
     }
 
     func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
-        previewURL == nil ? 0 : 1
+        QuickLookController.itemCount(for: previewURL)
     }
 
     func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> (any QLPreviewItem)! {
-        previewURL as NSURL?
+        QuickLookController.item(for: previewURL)
     }
 }

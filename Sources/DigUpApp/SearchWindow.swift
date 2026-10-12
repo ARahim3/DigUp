@@ -61,9 +61,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        if QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared().isVisible {
-            QLPreviewPanel.shared().orderOut(nil)
-        }
+        QuickLookController.hide()
         removeKeyMonitor()
         PreviewPlayback.shared.stop()
         window?.contentView = nil
@@ -82,7 +80,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, let window else { return event }
             // Keys typed here, or in Quick Look while this window is the one showing it (not the panel's).
-            let previewing = QLPreviewPanel.sharedPreviewPanelExists() && QLPreviewPanel.shared().isVisible
+            let previewing = QuickLookController.isShowing
                 && event.window === QLPreviewPanel.shared() && QLPreviewPanel.shared().dataSource === window
             guard event.window === window || previewing else { return event }
             return handle(event) ? nil : event
@@ -107,7 +105,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate {
         // An input method is composing (Japanese, Chinese…): ↩, the arrows and Esc are its keys until it's done.
         guard let press = KeyCommands.press(event, field: search.field) else { return false }
         let modifiers = press.modifiers
-        let previewing = QLPreviewPanel.sharedPreviewPanelExists() && QLPreviewPanel.shared().isVisible
+        let previewing = QuickLookController.isShowing
         switch press.keyCode {
         case KeyCommands.downArrow, KeyCommands.upArrow:   // ↓ ↑
             guard modifiers.isEmpty else { return false }
@@ -139,7 +137,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate {
             NSPasteboard.general.writeObjects([row.url as NSURL])
         case KeyCommands.escape:   // Esc
             if previewing {
-                QLPreviewPanel.shared().orderOut(nil)
+                QuickLookController.hide()
             } else if !search.query.isEmpty {
                 search.query = ""
             } else {
@@ -148,30 +146,22 @@ final class SearchWindowController: NSObject, NSWindowDelegate {
         default:
             return false
         }
-        if QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared().isVisible { updateQuickLook() }
+        if QuickLookController.isShowing { updateQuickLook() }
         return true
     }
 
     func toggleQuickLook() {
-        let panel = QLPreviewPanel.shared()!
-        if QLPreviewPanel.sharedPreviewPanelExists(), panel.isVisible {
-            panel.orderOut(nil)
-        } else if search.selectedRow != nil {
-            updateQuickLook()
-            panel.makeKeyAndOrderFront(nil)
-        }
+        QuickLookController.toggle(on: window, row: search.selectedRow)
     }
 
     /// Quick Look shows the selected result at its page or moment.
     private func updateQuickLook() {
-        window?.previewURL = search.selectedRow?.url
-        QLPreviewPanel.shared().reloadData()
-        QuickLookMoment.show(search.selectedRow, in: QLPreviewPanel.shared())
+        QuickLookController.update(on: window, row: search.selectedRow)
     }
 }
 
 /// A window that hands Quick Look the selected file (Space / ⌘Y).
-final class QuickLookWindow: NSWindow, QLPreviewPanelDataSource {
+final class QuickLookWindow: NSWindow, QLPreviewPanelDataSource, QuickLookHost {
     var previewURL: URL?
 
     nonisolated override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool { true }
@@ -185,11 +175,11 @@ final class QuickLookWindow: NSWindow, QLPreviewPanelDataSource {
     }
 
     func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
-        previewURL == nil ? 0 : 1
+        QuickLookController.itemCount(for: previewURL)
     }
 
     func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> (any QLPreviewItem)! {
-        previewURL as NSURL?
+        QuickLookController.item(for: previewURL)
     }
 }
 
