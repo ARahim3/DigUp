@@ -1,0 +1,71 @@
+# Pull-request and main-branch CI: build the Swift package and run the engine tests, plus lint the shell scripts
+# and the Python worker.
+#
+# LlamaRuntimeTests needs Vendor/llama (scripts/build-llama.sh). The build job restores it from a cache keyed on
+# build-llama.sh + the no-logits patch (the same stamp the script itself records in Vendor/llama/BUILD), so a PR
+# without a Vendor change reuses the cached static library instead of rebuilding llama.cpp; on a cache miss the
+# script builds it once and the cache stores it for later runs. `swift test --filter DigUpKitTests` runs the
+# engine suite; LlamaRuntimeTests (ReferenceVectorTests) runs nightly, where the full build is affordable.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  swift:
+    name: Swift build & test (macOS 14)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Vendor/llama is gitignored; cache it so the PR job doesn't rebuild llama.cpp on every push.
+      # The key mirrors scripts/build-llama.sh's own stamp (TAG + patch hash): when either changes,
+      # build-llama.sh rebuilds and the new result is cached under the new key.
+      - name: Restore Vendor/llama
+        id: vendor-llama
+        uses: actions/cache@0057f5226d7840867acc45c3ffef26bf51eefc47 # v4.0.2
+        with:
+          path: Vendor/llama
+          key: >-
+            vendor-llama-${{ runner.os }}-${{
+            hashFiles('scripts/build-llama.sh', 'scripts/llama.cpp-no-logits.patch') }}
+
+      - name: Build llama.cpp (no-op when the cache hit)
+        run: ./scripts/build-llama.sh
+
+      - name: swift build
+        run: swift build -c release
+
+      - name: swift test
+        # LlamaRuntimeTests is covered by the pinned reference vectors but needs the full runtime build;
+        # the PR job runs the engine suite, and the same command runs nightly for everything.
+        run: swift test --skip LlamaRuntimeTests
+
+  lint:
+    name: Lint (shellcheck + ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install shellcheck and ruff
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          python3 -m pip install --quiet --user ruff
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: shellcheck
+        run: |
+          set -euo pipefail
+          shopt -s globstar nullglob
+          shellcheck -S warning build.sh scripts/**/*.sh
+
+      - name: ruff
+        run: ruff check worker/ scripts/appcast.py

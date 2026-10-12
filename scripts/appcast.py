@@ -17,6 +17,7 @@ import plistlib
 import re
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SIGN_UPDATE = os.path.join(ROOT, ".build/artifacts/sparkle/Sparkle/bin/sign_update")
@@ -27,6 +28,20 @@ SKELETON = """<?xml version="1.0" encoding="utf-8"?>
   </channel>
 </rss>
 """
+
+
+def download_base(root, version):
+    """The download URL for this version, from the origin remote so forks get their own URLs."""
+    try:
+        remote = subprocess.run(["git", "-C", root, "remote", "get-url", "origin"],
+                                check=True, capture_output=True, text=True).stdout.strip()
+        repo = re.sub(r"^(?:https?://|git@)", "", remote)
+        repo = re.sub(r"\.git$", "", repo).replace(":", "/", 1)
+        if repo.count("/") == 2 and repo.startswith("github.com"):
+            return f"https://{repo}/releases/download/v{version}/"
+    except Exception:
+        pass
+    return f"https://github.com/ARahim3/DigUp/releases/download/v{version}/"
 
 
 def main():
@@ -50,12 +65,13 @@ def main():
     if not re.fullmatch(r'sparkle:edSignature="[^"]+" length="\d+"', signature):
         sys.exit(f"sign_update said: {signature}")
 
-    base = os.environ.get("DOWNLOAD_BASE", f"https://github.com/ARahim3/DigUp/releases/download/v{version}/")
+    base = os.environ.get("DOWNLOAD_BASE") or download_base(ROOT, version)
     url = base.rstrip("/") + "/" + os.path.basename(args.dmg)
     notes = ""
     if args.notes:
         with open(args.notes) as f:
-            notes = f"\n      <description><![CDATA[{f.read().strip()}]]></description>"
+            body = f.read().strip().replace("]]>", "]]]]><![CDATA[>")   # keep the CDATA section closed
+        notes = f"\n      <description><![CDATA[{body}]]></description>"
     item = f"""    <item>
       <title>{version}</title>
       <pubDate>{email.utils.formatdate(usegmt=True)}</pubDate>
@@ -66,12 +82,20 @@ def main():
     </item>
 """
 
-    feed = open(args.appcast).read() if os.path.exists(args.appcast) else SKELETON
+    if os.path.exists(args.appcast):
+        with open(args.appcast) as f:
+            feed = f.read()
+    else:
+        feed = SKELETON
     # Running a release again replaces its item.
     feed = re.sub(r"    <item>\n(?:(?!</item>).)*?<sparkle:version>" + re.escape(build) + r"</sparkle:version>.*?</item>\n",
                   "", feed, flags=re.S)
     # Newest first: after the channel's title.
     feed = re.sub(r"(<channel>\n\s*<title>[^<]*</title>\n)", lambda m: m.group(1) + item, feed, count=1)
+    try:
+        ET.fromstring(feed)
+    except ET.ParseError as error:
+        sys.exit(f"the new appcast would not parse ({error}); {args.appcast} left unchanged")
     with open(args.appcast, "w") as f:
         f.write(feed)
     print(f"{args.appcast}: {version} ({build}) → {url}")
