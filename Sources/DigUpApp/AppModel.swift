@@ -73,7 +73,7 @@ final class AppModel {
         }
     }
 
-    /// 0…1 for the menubar ring and progress bars: the model download, then an indexing pass or the rest of long files.
+    /// 0…1 for the menubar ring and progress bars: the model download, then the pending queue or long files.
     var progress: Double? {
         if download.isActive { return download.fraction }
         switch status.activity {

@@ -7,6 +7,7 @@ nonisolated struct EngineStatus: Sendable, Equatable {
         case starting
         case idle
         case syncing
+        /// Progress through the pending-file queue, across syncs and helper passes.
         case indexing(done: Int, total: Int)
         /// The rest of long PDFs and documents (`Indexer.finishLongFiles`): `done` of the `total` pages and chunks this
         /// pass set out to read, `files` long files still unfinished.
@@ -98,6 +99,7 @@ nonisolated final class Engine: @unchecked Sendable {
     private var helperInput: FileHandle?
     private var helperStarted = Date()
     private var helperOutput = Data()
+    private var indexProgress = IndexProgress()
     /// The folders changed while a helper ran: start a new one with them when it's gone.
     private var restartHelper = false
     /// When the helper's watchdog ended it lately (`stoppedOnFile`).
@@ -586,12 +588,16 @@ nonisolated final class Engine: @unchecked Sendable {
                 syncWantedAt = nil
             }
             applyCounts(event)
-            if int("new") > 0 { update { $0.activity = .indexing(done: 0, total: int("new")) } }
+            indexProgress.sync(pending: int("pending"))
+            if int("new") > 0 {
+                let progress = indexProgress.progress()
+                update { $0.activity = .indexing(done: progress.done, total: progress.total) }
+            }
             log("sync: \(int("added")) new · \(int("changed")) changed · \(int("moved")) moved · "
                 + "\(int("removed")) removed · \(int("unchanged")) unchanged in \(int("ms")) ms")
         case "file":
-            let (done, total) = (int("done"), int("total"))
-            update { $0.activity = .indexing(done: done, total: total) }
+            let progress = indexProgress.progress(passDone: int("done"))
+            update { $0.activity = .indexing(done: progress.done, total: progress.total) }
             if event["new"] as? Bool == true, let path = event["path"] as? String {
                 log(String(format: "index: %@ %@ in %.2f s", (path as NSString).lastPathComponent,
                            event["state"] as? String ?? "?", event["seconds"] as? Double ?? 0))
@@ -606,8 +612,15 @@ nonisolated final class Engine: @unchecked Sendable {
             let what = event["rest"] as? Bool == true ? "the rest of long files"
                 : event["new"] as? Bool == true ? "new files" : "backfill"
             log("index: \(what): \(states) in \(int("ms")) ms")
+            if event["rest"] as? Bool != true {
+                let processed = (event["states"] as? [String: Int] ?? [:]).values.reduce(0, +)
+                indexProgress.processed(processed)
+                let progress = indexProgress.progress()
+                update { $0.activity = .indexing(done: progress.done, total: progress.total) }
+            }
         case "idle":
             applyCounts(event)
+            if int("pending") == 0 { indexProgress.reset() }
             update { $0.activity = .idle }
             refreshSearcher(force: true)
         case "waiting":
