@@ -38,7 +38,6 @@ final class NotionExtractorTests: XCTestCase {
             throw XCTSkip("Notion Desktop not installed on this machine")
         }
         let pages = try NotionExtractor.extractPages()
-        // Notion's internal personal_home_page block must not appear in results.
         for p in pages {
             XCTAssertFalse(p.title.lowercased().contains("personal_home"),
                            "personal_home_page blocks must be excluded from results")
@@ -50,7 +49,6 @@ final class NotionExtractorTests: XCTestCase {
             throw XCTSkip("Notion Desktop not installed on this machine")
         }
         let all = try NotionExtractor.extractPages(since: 0)
-        // Ask for pages modified in the far future — should return nothing.
         let future = Date().timeIntervalSince1970 + 86400 * 365 * 100
         let none = try NotionExtractor.extractPages(since: future)
         XCTAssertFalse(all.isEmpty)
@@ -62,9 +60,19 @@ final class NotionExtractorTests: XCTestCase {
             throw XCTSkip("Notion Desktop not installed on this machine")
         }
         let pages = try NotionExtractor.extractPages()
-        // At least some pages should have body text from child blocks.
         let pagesWithBody = pages.filter { !$0.text.isEmpty }
         XCTAssertFalse(pagesWithBody.isEmpty,
                        "Recursive traversal should extract child block text for at least one page")
+    }
+
+    func testTrashedPagesAreExcluded() throws {
+        guard NotionExtractor.isNotionInstalled else {
+            throw XCTSkip("Notion Desktop not installed on this machine")
+        }
+        let pages = try NotionExtractor.extractPages()
+        let pageIDs = Set(pages.map(\.id))
+        // Known trashed duplicate: 3d693c99-de15-80d8-9556-cd136cab3042
+        XCTAssertFalse(pageIDs.contains("3d693c99-de15-80d8-9556-cd136cab3042"),
+                       "Pages inside trashed collections/pages must be excluded")
     }
 }

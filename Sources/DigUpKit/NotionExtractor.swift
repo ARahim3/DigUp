@@ -41,15 +41,11 @@ public enum NotionExtractor {
     /// Block types that are page boundaries: traversed for breadcrumbs but not added as body text.
     private static let pageTypes: Set<String> = ["page", "collection_view_page", "personal_home_page"]
 
-    /// Block types whose text is extracted and included in the page body.
-    /// Container types (column, toggle, callout, table, etc.) are traversed into but only
-    /// contribute text if they carry a `title` field (e.g. callout, toggle summary).
-    private static let containerTypes: Set<String> = ["column", "column_list", "table"]
-
     // MARK: - Public API
 
     /// Extracts active pages from Notion's local SQLite database in read-only mode.
     /// Opens the database with `SQLITE_OPEN_READONLY` so it never locks while Notion is running.
+    /// Automatically ignores deleted pages and pages nested inside trashed containers.
     ///
     /// - Parameter databasePath: Path to `notion.db`. Defaults to the standard Notion Desktop location.
     /// - Parameter modifiedSince: Unix timestamp in seconds. Only pages edited after this time are returned.
@@ -66,8 +62,75 @@ public enum NotionExtractor {
         }
         defer { sqlite3_close(db) }
 
-        // Load the entire block table once — one round-trip for the whole workspace.
-        // At ~10k blocks this is under 120 ms and lets us walk the tree in memory.
+        struct AncestorMeta {
+            let parentID: String?
+            let parentTable: String?
+            let alive: Bool
+            let inTrash: Bool
+        }
+
+        // 1. Load block ancestor metadata (including deleted/trashed blocks to detect trashed trees)
+        var blockMeta: [String: AncestorMeta] = [:]
+        let metaSql = """
+            SELECT id, parent_id, parent_table, alive, moved_to_trash_time, archived_time
+            FROM block
+        """
+        var metaStmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, metaSql, -1, &metaStmt, nil) == SQLITE_OK, let stmt = metaStmt {
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                guard let idPtr = sqlite3_column_text(stmt, 0) else { continue }
+                let id = String(cString: idPtr)
+                let parentID = sqlite3_column_text(stmt, 1).map { String(cString: $0) }
+                let parentTable = sqlite3_column_text(stmt, 2).map { String(cString: $0) }
+                let alive = sqlite3_column_int(stmt, 3) == 1
+                let hasTrashTime = sqlite3_column_type(stmt, 4) != SQLITE_NULL
+                let hasArchivedTime = sqlite3_column_type(stmt, 5) != SQLITE_NULL
+                blockMeta[id] = AncestorMeta(parentID: parentID, parentTable: parentTable,
+                                             alive: alive, inTrash: hasTrashTime || hasArchivedTime)
+            }
+            sqlite3_finalize(stmt)
+        }
+
+        // 2. Load collection ancestor metadata (collections can also be deleted/trashed)
+        var collectionMeta: [String: AncestorMeta] = [:]
+        let colSql = """
+            SELECT id, parent_id, parent_table, alive, moved_to_trash_time
+            FROM collection
+        """
+        var colStmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, colSql, -1, &colStmt, nil) == SQLITE_OK, let stmt = colStmt {
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                guard let idPtr = sqlite3_column_text(stmt, 0) else { continue }
+                let id = String(cString: idPtr)
+                let parentID = sqlite3_column_text(stmt, 1).map { String(cString: $0) }
+                let parentTable = sqlite3_column_text(stmt, 2).map { String(cString: $0) }
+                let alive = sqlite3_column_int(stmt, 3) == 1
+                let hasTrashTime = sqlite3_column_type(stmt, 4) != SQLITE_NULL
+                collectionMeta[id] = AncestorMeta(parentID: parentID, parentTable: parentTable,
+                                                  alive: alive, inTrash: hasTrashTime)
+            }
+            sqlite3_finalize(stmt)
+        }
+
+        func isDescendantOfTrash(id: String, table: String = "block") -> Bool {
+            var currID = id
+            var currTable = table
+            var visited: Set<String> = []
+            while !visited.contains(currID) {
+                visited.insert(currID)
+                let meta = (currTable == "block") ? blockMeta[currID] : collectionMeta[currID]
+                guard let m = meta else { break }
+                if !m.alive || m.inTrash {
+                    return true
+                }
+                guard let pid = m.parentID, let ptable = m.parentTable else { break }
+                currID = pid
+                currTable = ptable
+            }
+            return false
+        }
+
+        // 3. Load active blocks and build the in-memory tree
         let sql = """
             SELECT id, type, parent_id, parent_table, properties, last_edited_time
             FROM block
@@ -84,13 +147,11 @@ public enum NotionExtractor {
             let type: String
             let parentID: String?
             let parentTable: String?
-            let title: String       // text extracted from `properties.title`
-            let lastEdited: Double  // milliseconds since epoch (0 when NULL)
+            let title: String
+            let lastEdited: Double
         }
 
-        // blockMap: id → RawBlock for O(1) parent lookups and tree traversal
         var blockMap: [String: RawBlock] = [:]
-        // childrenOf: parentID → [childID] for top-down recursive traversal
         var childrenOf: [String: [String]] = [:]
         var pageIDs: [String] = []
 
@@ -98,25 +159,28 @@ public enum NotionExtractor {
             guard let idPtr = sqlite3_column_text(statement, 0),
                   let typePtr = sqlite3_column_text(statement, 1) else { continue }
             let id = String(cString: idPtr)
+
+            // Skip any block whose container or ancestor has been trashed
+            if isDescendantOfTrash(id: id, table: "block") {
+                continue
+            }
+
             let type = String(cString: typePtr)
             let parentID = sqlite3_column_text(statement, 2).map { String(cString: $0) }
             let parentTable = sqlite3_column_text(statement, 3).map { String(cString: $0) }
             let props = sqlite3_column_text(statement, 4).map { String(cString: $0) }
-            let lastEdited = sqlite3_column_double(statement, 5)   // 0.0 for NULL — safe
+            let lastEdited = sqlite3_column_double(statement, 5)
 
             let title = extractTitle(from: props)
             blockMap[id] = RawBlock(id: id, type: type, parentID: parentID, parentTable: parentTable,
                                     title: title, lastEdited: lastEdited)
 
-            // Build the parent→children index for all blocks
             if let pid = parentID {
                 childrenOf[pid, default: []].append(id)
             }
 
-            // A page qualifies if it has a non-empty title and was edited after the cutoff.
-            // personal_home_page is Notion's internal home block, not a user page.
             if pageTypes.contains(type) && type != "personal_home_page" && !title.isEmpty {
-                if lastEdited >= modifiedSince * 1000 {  // convert caller's seconds to ms
+                if lastEdited >= modifiedSince * 1000 {
                     pageIDs.append(id)
                 }
             }
@@ -126,14 +190,13 @@ public enum NotionExtractor {
         for pid in pageIDs {
             guard let root = blockMap[pid] else { continue }
             let crumbs = buildBreadcrumbs(for: pid, in: blockMap)
-            // Full recursive traversal — every nested block type is walked
             let body = collectText(under: pid, in: blockMap, childrenOf: childrenOf).joined(separator: "\n")
             pages.append(Page(
                 id: pid,
                 title: root.title,
                 path: crumbs,
                 text: body,
-                modified: root.lastEdited / 1000.0   // return seconds to callers
+                modified: root.lastEdited / 1000.0
             ))
         }
         return pages
@@ -141,18 +204,15 @@ public enum NotionExtractor {
 
     // MARK: - Helpers
 
-    /// Extracts the plain-text content of Notion's `properties.title` rich-text array.
     private static func extractTitle(from propertiesJSON: String?) -> String {
         guard let data = propertiesJSON?.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let titleArray = json["title"] as? [[Any]] else { return "" }
-        // Each element is [text, optional_annotations...]; we only need element[0].
         return titleArray.compactMap { $0.first as? String }
                          .joined(separator: " ")
                          .trimmingCharacters(in: .whitespaces)
     }
 
-    /// Walks ancestors to build a "Parent / Grandparent" breadcrumb string.
     private static func buildBreadcrumbs(for pageID: String, in map: [String: RawBlock],
                                          maxDepth: Int = 8) -> String {
         var crumbs: [String] = []
@@ -172,12 +232,6 @@ public enum NotionExtractor {
         return crumbs.reversed().joined(separator: " / ")
     }
 
-    /// Recursively collects text from every block under `pageID`.
-    ///
-    /// - Traverses into container blocks (columns, toggles, callouts, tables, etc.)
-    ///   so no nested text is missed.
-    /// - Does **not** cross page boundaries — sub-pages are skipped (they are indexed separately).
-    /// - Capped at `maxDepth` levels to guard against any malformed circular references.
     private static func collectText(under pageID: String,
                                     in map: [String: RawBlock],
                                     childrenOf: [String: [String]],
@@ -187,13 +241,10 @@ public enum NotionExtractor {
         var texts: [String] = []
         for childID in childrenOf[pageID] ?? [] {
             guard let block = map[childID] else { continue }
-            // Stop at page boundaries — sub-pages are their own index entries.
             if pageTypes.contains(block.type) { continue }
-            // Add the block's own text (empty for pure containers like column_list).
             if !block.title.isEmpty {
                 texts.append(block.title)
             }
-            // Always recurse — even container blocks can have text-bearing children.
             texts.append(contentsOf: collectText(under: childID, in: map,
                                                  childrenOf: childrenOf,
                                                  depth: depth + 1, maxDepth: maxDepth))
