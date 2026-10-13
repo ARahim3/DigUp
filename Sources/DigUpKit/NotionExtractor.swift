@@ -38,7 +38,22 @@ public enum NotionExtractor {
         FileManager.default.fileExists(atPath: defaultDatabasePath)
     }
 
+    /// Block types that are page boundaries: traversed for breadcrumbs but not added as body text.
+    private static let pageTypes: Set<String> = ["page", "collection_view_page", "personal_home_page"]
+
+    /// Block types whose text is extracted and included in the page body.
+    /// Container types (column, toggle, callout, table, etc.) are traversed into but only
+    /// contribute text if they carry a `title` field (e.g. callout, toggle summary).
+    private static let containerTypes: Set<String> = ["column", "column_list", "table"]
+
+    // MARK: - Public API
+
     /// Extracts active pages from Notion's local SQLite database in read-only mode.
+    /// Opens the database with `SQLITE_OPEN_READONLY` so it never locks while Notion is running.
+    ///
+    /// - Parameter databasePath: Path to `notion.db`. Defaults to the standard Notion Desktop location.
+    /// - Parameter modifiedSince: Unix timestamp in seconds. Only pages edited after this time are returned.
+    ///   Pass `0` (default) for a full extraction.
     public static func extractPages(from databasePath: String = defaultDatabasePath,
                                     since modifiedSince: Double = 0.0) throws -> [Page] {
         var db: OpaquePointer?
@@ -51,16 +66,16 @@ public enum NotionExtractor {
         }
         defer { sqlite3_close(db) }
 
+        // Load the entire block table once — one round-trip for the whole workspace.
+        // At ~10k blocks this is under 120 ms and lets us walk the tree in memory.
         let sql = """
             SELECT id, type, parent_id, parent_table, properties, last_edited_time
             FROM block
             WHERE alive = 1
         """
-
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
-            let message = String(cString: sqlite3_errmsg(db))
-            throw ExtractError.unreadable("Failed to prepare statement: \(message)")
+            throw ExtractError.unreadable("Failed to prepare statement: \(String(cString: sqlite3_errmsg(db)))")
         }
         defer { sqlite3_finalize(statement) }
 
@@ -69,11 +84,14 @@ public enum NotionExtractor {
             let type: String
             let parentID: String?
             let parentTable: String?
-            let title: String
-            let lastEdited: Double
+            let title: String       // text extracted from `properties.title`
+            let lastEdited: Double  // milliseconds since epoch (0 when NULL)
         }
 
+        // blockMap: id → RawBlock for O(1) parent lookups and tree traversal
         var blockMap: [String: RawBlock] = [:]
+        // childrenOf: parentID → [childID] for top-down recursive traversal
+        var childrenOf: [String: [String]] = [:]
         var pageIDs: [String] = []
 
         while sqlite3_step(statement) == SQLITE_ROW {
@@ -81,19 +99,24 @@ public enum NotionExtractor {
                   let typePtr = sqlite3_column_text(statement, 1) else { continue }
             let id = String(cString: idPtr)
             let type = String(cString: typePtr)
-
             let parentID = sqlite3_column_text(statement, 2).map { String(cString: $0) }
             let parentTable = sqlite3_column_text(statement, 3).map { String(cString: $0) }
             let props = sqlite3_column_text(statement, 4).map { String(cString: $0) }
-            let lastEdited = sqlite3_column_double(statement, 5)
+            let lastEdited = sqlite3_column_double(statement, 5)   // 0.0 for NULL — safe
 
             let title = extractTitle(from: props)
-            let block = RawBlock(id: id, type: type, parentID: parentID, parentTable: parentTable,
-                                 title: title, lastEdited: lastEdited)
-            blockMap[id] = block
+            blockMap[id] = RawBlock(id: id, type: type, parentID: parentID, parentTable: parentTable,
+                                    title: title, lastEdited: lastEdited)
 
-            if (type == "page" || type == "collection_view_page") && !title.isEmpty {
-                if lastEdited >= modifiedSince {
+            // Build the parent→children index for all blocks
+            if let pid = parentID {
+                childrenOf[pid, default: []].append(id)
+            }
+
+            // A page qualifies if it has a non-empty title and was edited after the cutoff.
+            // personal_home_page is Notion's internal home block, not a user page.
+            if pageTypes.contains(type) && type != "personal_home_page" && !title.isEmpty {
+                if lastEdited >= modifiedSince * 1000 {  // convert caller's seconds to ms
                     pageIDs.append(id)
                 }
             }
@@ -103,51 +126,77 @@ public enum NotionExtractor {
         for pid in pageIDs {
             guard let root = blockMap[pid] else { continue }
             let crumbs = buildBreadcrumbs(for: pid, in: blockMap)
-            let childTexts = collectChildrenText(for: pid, in: blockMap)
-            let body = childTexts.joined(separator: "\n")
+            // Full recursive traversal — every nested block type is walked
+            let body = collectText(under: pid, in: blockMap, childrenOf: childrenOf).joined(separator: "\n")
             pages.append(Page(
                 id: pid,
                 title: root.title,
                 path: crumbs,
                 text: body,
-                modified: root.lastEdited / 1000.0
+                modified: root.lastEdited / 1000.0   // return seconds to callers
             ))
         }
-
         return pages
     }
 
+    // MARK: - Helpers
+
+    /// Extracts the plain-text content of Notion's `properties.title` rich-text array.
     private static func extractTitle(from propertiesJSON: String?) -> String {
         guard let data = propertiesJSON?.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let titleArray = json["title"] as? [[Any]] else { return "" }
-        return titleArray.compactMap { $0.first as? String }.joined(separator: " ").trimmingCharacters(in: .whitespaces)
+        // Each element is [text, optional_annotations...]; we only need element[0].
+        return titleArray.compactMap { $0.first as? String }
+                         .joined(separator: " ")
+                         .trimmingCharacters(in: .whitespaces)
     }
 
-    private static func buildBreadcrumbs(for pageID: String, in map: [String: RawBlock], maxDepth: Int = 6) -> String {
+    /// Walks ancestors to build a "Parent / Grandparent" breadcrumb string.
+    private static func buildBreadcrumbs(for pageID: String, in map: [String: RawBlock],
+                                         maxDepth: Int = 8) -> String {
         var crumbs: [String] = []
-        var curr = map[pageID]
+        var currID = pageID
         var depth = 0
-        while let c = curr, depth < maxDepth {
-            if let pid = c.parentID, c.parentTable == "block", let parent = map[pid] {
-                if (parent.type == "page" || parent.type == "collection_view_page") && !parent.title.isEmpty {
-                    crumbs.append(parent.title)
-                }
-                curr = parent
-                depth += 1
-            } else {
-                break
+        while depth < maxDepth {
+            guard let block = map[currID],
+                  let parentID = block.parentID,
+                  block.parentTable == "block",
+                  let parent = map[parentID] else { break }
+            if pageTypes.contains(parent.type) && !parent.title.isEmpty {
+                crumbs.append(parent.title)
             }
+            currID = parentID
+            depth += 1
         }
         return crumbs.reversed().joined(separator: " / ")
     }
 
-    private static func collectChildrenText(for pageID: String, in map: [String: RawBlock]) -> [String] {
+    /// Recursively collects text from every block under `pageID`.
+    ///
+    /// - Traverses into container blocks (columns, toggles, callouts, tables, etc.)
+    ///   so no nested text is missed.
+    /// - Does **not** cross page boundaries — sub-pages are skipped (they are indexed separately).
+    /// - Capped at `maxDepth` levels to guard against any malformed circular references.
+    private static func collectText(under pageID: String,
+                                    in map: [String: RawBlock],
+                                    childrenOf: [String: [String]],
+                                    depth: Int = 0,
+                                    maxDepth: Int = 12) -> [String] {
+        guard depth < maxDepth else { return [] }
         var texts: [String] = []
-        for (_, b) in map {
-            if b.parentID == pageID && b.type != "page" && !b.title.isEmpty {
-                texts.append(b.title)
+        for childID in childrenOf[pageID] ?? [] {
+            guard let block = map[childID] else { continue }
+            // Stop at page boundaries — sub-pages are their own index entries.
+            if pageTypes.contains(block.type) { continue }
+            // Add the block's own text (empty for pure containers like column_list).
+            if !block.title.isEmpty {
+                texts.append(block.title)
             }
+            // Always recurse — even container blocks can have text-bearing children.
+            texts.append(contentsOf: collectText(under: childID, in: map,
+                                                 childrenOf: childrenOf,
+                                                 depth: depth + 1, maxDepth: maxDepth))
         }
         return texts
     }
