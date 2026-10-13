@@ -98,6 +98,7 @@ nonisolated final class Engine: @unchecked Sendable {
     private var helperInput: FileHandle?
     private var helperStarted = Date()
     private var helperOutput = Data()
+    private var helperRestartPolicy = HelperRestartPolicy()
     /// The folders changed while a helper ran: start a new one with them when it's gone.
     private var restartHelper = false
     /// When the helper's watchdog ended it lately (`stoppedOnFile`).
@@ -482,9 +483,14 @@ nonisolated final class Engine: @unchecked Sendable {
             (self.roots, self.excluded, self.excludedTypes, self.paused || heldUntil != nil, backfillBlocker == nil)
         }
         let (codeRoots, codeExcluded) = lock.withLock { (self.codeRoots, self.codeExcluded) }
-        guard helper == nil, !paused else {
+        guard !paused else {
             // Paused, or outside the set hours: the next start syncs. Launched outside them, it never started.
             if helper == nil { update { if case .starting = $0.activity { $0.activity = .idle } } }
+            return
+        }
+        guard helper == nil else {
+            // Resume can arrive before the old helper finishes a stop (or its timeout ends it).
+            helperRestartPolicy.requestStart()
             return
         }
         guard !roots.isEmpty || !codeRoots.isEmpty || pruneWanted else {
@@ -548,8 +554,9 @@ nonisolated final class Engine: @unchecked Sendable {
     /// stuck in one file never gets to the next, and Pause or a change of folders has to work anyway. What it was
     /// reading is read again next time.
     private func stopHelper(within seconds: Double = 15) {
-        send("stop")
         guard let process = helper else { return }
+        helperRestartPolicy.requestStop()
+        send("stop")
         indexQueue.asyncAfter(deadline: .now() + seconds) { [self] in
             guard helper === process, process.isRunning else { return }
             log("indexer: still running \(Int(seconds)) s after stop; ending it")
@@ -558,6 +565,7 @@ nonisolated final class Engine: @unchecked Sendable {
     }
 
     private func send(_ command: String) {
+        if command != "stop" { helperRestartPolicy.requestStart() }
         do {
             try helperInput?.write(contentsOf: Data((command + "\n").utf8))
         } catch {
@@ -705,6 +713,7 @@ nonisolated final class Engine: @unchecked Sendable {
     }
 
     private func helperExited(status: Int32) {
+        let resumeAfterStop = helperRestartPolicy.helperExited()
         helper = nil
         helperInput = nil
         log("indexer: exited (\(status)) after \(ms(since: helperStarted))")
@@ -718,8 +727,8 @@ nonisolated final class Engine: @unchecked Sendable {
         refreshCodeSearcher(force: true)
         returnFreedMemory()
         removeCodeIndexIfAsked()
-        if restartHelper {
-            // The folders changed: a new helper with the new ones.
+        if restartHelper || resumeAfterStop {
+            // The folders changed, or indexing resumed while the old helper was stopping.
             restartHelper = false
             startHelper()
         } else if status == Self.stoppedOnFile {
