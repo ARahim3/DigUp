@@ -54,11 +54,11 @@ import Testing
         indexer.costsFolder = folder
         _ = try indexer.sync([notes])
         _ = try indexer.run()
-        // Three notes of one chunk each; the first job started the model, which isn't what a chunk costs.
-        #expect(MeasuredCosts.load(from: folder).tallies["docChunk"]?.units == 2)
+        // Three notes of one chunk each; the model's startup is excluded, while every chunk in its first batch counts.
+        #expect(MeasuredCosts.load(from: folder).tallies["docChunk"]?.units == 3)
         MeasuredCosts.setSpeed(MeasuredCosts.Speed(embedding: 1.5, ocr: 1), in: folder)
         let saved = MeasuredCosts.load(from: folder)
         #expect(saved.speed == MeasuredCosts.Speed(embedding: 1.5, ocr: 1))
-        #expect(saved.tallies["docChunk"]?.units == 2)   // the speed joined what was there
+        #expect(saved.tallies["docChunk"]?.units == 3)   // the speed joined what was there
     }
 }
