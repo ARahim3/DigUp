@@ -532,8 +532,17 @@ function report() {
   debugPending = false;
   // Dev snapshots (index.html?big): the selected result's big preview, as Space shows it.
   if (new URLSearchParams(location.search).has("big")) toggleBig();
-  setTimeout(() => {
+  setTimeout(async () => {
     const big = $preview.querySelector("img, video, audio, .passage");
+    const media = big && (big.tagName === "AUDIO" || big.tagName === "VIDEO");
+    // A sound or a video plays through GStreamer on Linux: wait until it has read the file's metadata, or failed.
+    if (media && big.readyState < 1 && !big.error) {
+      await new Promise((resolve) => {
+        big.addEventListener("loadedmetadata", resolve, { once: true });
+        big.addEventListener("error", resolve, { once: true });
+        setTimeout(resolve, 30000);
+      });
+    }
     const thumbs = [...$list.querySelectorAll("img.thumb")];
     invoke("debug_report", {
       report: {
@@ -544,7 +553,8 @@ function report() {
         selected: state.selection && nameOf(state.selection),
         preview: big && {
           tag: big.tagName.toLowerCase(),
-          loaded: big.tagName === "IMG" ? big.complete && big.naturalWidth > 0 : null,
+          loaded: big.tagName === "IMG" ? big.complete && big.naturalWidth > 0 : media ? big.readyState >= 1 : null,
+          error: media && big.error ? big.error.code : null,
           size: big.tagName === "IMG" ? `${big.naturalWidth}x${big.naturalHeight}` : null,
           text: big.classList.contains("passage") ? big.textContent.slice(0, 80) : null,
         },

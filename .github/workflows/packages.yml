@@ -3,8 +3,8 @@
 # built and released on a Mac (scripts/release.sh). llama.cpp gets its Vulkan backend beside the CPU ones (the Vulkan
 # SDK's shader compiler is what makes scripts/build-llama.sh build it): a computer whose GPU runs the model faster than
 # its processor uses it (`digup speed --model` decides), any other the processor. Each package is then installed and
-# launched once, hidden (scripts/check-*-package.sh): the .deb and the AppImage on Ubuntu 22.04 and 24.04 and Debian 12,
-# the installer on Windows. With the update signing key in the repository's secrets, the installer and the AppImage
+# launched, hidden (scripts/check-*-package.sh): the AppImage and the .deb on Ubuntu 22.04 and 24.04 and Debian 12, the
+# installer on Windows. With the update signing key in the repository's secrets, the installer and the AppImage
 # come with the .sig files the update feed needs (scripts/update-feed.py).
 name: Packages
 
@@ -101,8 +101,8 @@ jobs:
             shell/src-tauri/target/release/bundle/appimage/*.AppImage.sig
 
   linux-check:
-    # The packages installed where people will: a bare container of each distribution (the .deb brings what it needs),
-    # then a hidden first launch.
+    # The packages where people will run them, in a bare container of each distribution: the AppImage first, with only
+    # the libraries any desktop has, then the .deb (which brings what it needs); each with a hidden first launch.
     needs: linux
     runs-on: ubuntu-24.04
     strategy:
@@ -130,14 +130,21 @@ jobs:
         with:
           path: models
           key: embeddinggemma-2-q8_0-bfcd298
+      - name: The AppImage
+        # Before the .deb installs the system's WebKit and GStreamer: the AppImage must bring its own. Installed first are
+        # the libraries AppImages leave to the system, which any desktop has (ALSA's is libasound2t64 on Ubuntu 24.04).
+        run: |
+          asound=libasound2
+          apt-cache show libasound2t64 > /dev/null 2>&1 && asound=libasound2t64
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends libx11-6 libx11-xcb1 libxcb1 \
+            libfontconfig1 libfreetype6 libharfbuzz0b libfribidi0 libwayland-client0 libgbm1 libdrm2 libgl1 libegl1 \
+            libgles2 libexpat1 $asound
+          chmod +x packages/appimage/*.AppImage
+          MODELS="$PWD/models" scripts/check-linux-package.sh packages/appimage/*.AppImage
       - name: The .deb
         run: |
           DEBIAN_FRONTEND=noninteractive apt-get install -y -q ./packages/deb/*.deb
           MODELS="$PWD/models" scripts/check-linux-package.sh /usr/bin/digup-shell
-      - name: The AppImage
-        run: |
-          chmod +x packages/appimage/*.AppImage
-          MODELS="$PWD/models" scripts/check-linux-package.sh packages/appimage/*.AppImage
       - name: The update signature
         # Signed with the repository's key (once its secrets are set), the AppImage's signature must match the public key
         # installed copies check updates with (tauri.conf.json), or no update could ever be installed.
