@@ -1,5 +1,5 @@
 // Word-processor files without the Cocoa text system (Linux, Windows): docx and odt from the XML inside their zip
-// (miniz, Vendor/miniz), rtf stripped of its control words. Legacy .doc isn't read here.
+// (miniz, Vendor/miniz), rtf stripped of its control words. Linux can read legacy .doc through LibreOffice Writer.
 #if !canImport(AppKit)
 import CMiniz
 import Foundation
@@ -15,10 +15,48 @@ extension DocExtractor {
                                               breaks: ["text:line-break"], spaces: ["text:tab", "text:s"]))
         case "rtf":
             return RTF.text(try readText(url))
+        #if os(Linux)
+        case "doc":
+            return try legacyWordText(of: url)
+        #endif
         default:
             throw ExtractError.unreadable("legacy Word (.doc) files aren't read on this system")
         }
     }
+
+    #if os(Linux)
+    /// LibreOffice is optional. Keep each conversion in its own directory and profile: indexing can run in parallel,
+    /// and a user's open Writer must not own the headless process or receive the document.
+    private static func legacyWordText(of url: URL) throws -> String {
+        let work = FileManager.default.temporaryDirectory.appendingPathComponent("DigUp-doc-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: work) }
+        let profile = work.appendingPathComponent("profile", isDirectory: true)
+        let output = work.appendingPathComponent(url.deletingPathExtension().lastPathComponent + ".txt")
+        let paths = (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":")
+            .map { String($0) + "/soffice" }
+        guard let soffice = (["/usr/bin/soffice"] + paths).first(where: FileManager.default.isExecutableFile) else {
+            throw ExtractError.unreadable("legacy Word (.doc) files need LibreOffice Writer")
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: soffice)
+        process.arguments = ["-env:UserInstallation=\(profile.absoluteString)", "--headless",
+                             "--convert-to", "txt:Text (encoded):UTF8", "--outdir", work.path, url.path]
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch {
+            throw ExtractError.unreadable("legacy Word (.doc) files need LibreOffice Writer")
+        }
+        process.waitUntilExit()
+        guard process.terminationStatus == 0, let data = try? Data(contentsOf: output),
+              let text = String(data: data, encoding: .utf8) else {
+            throw ExtractError.unreadable("LibreOffice Writer couldn't convert this .doc file")
+        }
+        // The UTF-8 text filter emits a BOM; it is not part of the document.
+        return text.hasPrefix("\u{FEFF}") ? String(text.dropFirst()) : text
+    }
+    #endif
 
     /// Word-processing XML as the little HTML `plainText` reads: paragraph ends become `</p>`, breaks `<br>`, tabs and
     /// spaces a space; every other tag is stripped there.
