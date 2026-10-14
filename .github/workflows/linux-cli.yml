@@ -23,7 +23,7 @@ jobs:
       - name: System tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq cmake ninja-build curl python3 ffmpeg libreoffice-writer
+          sudo apt-get install -y -qq cmake ninja-build curl libcurl4-openssl-dev python3 ffmpeg libreoffice-writer
       - name: Swift 6.2
         uses: swift-actions/setup-swift@v2
         with:
