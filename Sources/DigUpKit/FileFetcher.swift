@@ -24,6 +24,9 @@ public final class FileFetcher: NSObject, URLSessionDataDelegate, @unchecked Sen
     private var written: Int64 = 0
     private var problem: (message: String, retry: Bool)?
     private var reported = Date.distantPast
+    #if canImport(FoundationNetworking)
+    nonisolated(unsafe) private static var finished: [URLSession] = []
+    #endif
 
     public init(file: ModelFiles.File, folder: URL, progress: @escaping @Sendable (Int64) -> Void,
          waiting: @escaping @Sendable () -> Void, done: @escaping @Sendable (Outcome) -> Void) {
@@ -133,7 +136,15 @@ public final class FileFetcher: NSObject, URLSessionDataDelegate, @unchecked Sen
     public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         try? handle?.close()
         handle = nil
+        #if canImport(FoundationNetworking)
+        // swift-corelibs-foundation: invalidating (and freeing) a session from inside its own delegate callback
+        // frees its curl multi handle while still in use ("_MultiHandle deallocated with non-zero retain count").
+        // Keep it alive and let it go once this callback has returned.
+        Self.finished.append(session)
+        DispatchQueue.global().asyncAfter(deadline: .now() + 1) { session.finishTasksAndInvalidate() }
+        #else
         session.finishTasksAndInvalidate()
+        #endif
         progress(written)
         if let problem {
             done(.failed(problem.message, retry: problem.retry))
