@@ -7,7 +7,7 @@
 # time (GGML_BACKEND_DL): the CPU variants always, CUDA when nvcc is found (CUDACXX, or on PATH; CUDA_ARCHS picks the GPU
 # architectures, default native), else Vulkan when its SDK is. LLAMA_SOURCE / LLAMA_BUILD point at an existing clone and
 # build folder. On Windows it runs in Git for Windows' bash inside the MSVC environment (vcvars64) and
-# leaves DLLs with their import libraries.
+# leaves DLLs with their import libraries. DIGUP_CPU_ONLY=1 forces a portable CPU-only build for Linux archives.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 TAG=b11461   # the first tags with EmbeddingGemma 2 (text + vision + audio) are b11452+
@@ -22,6 +22,8 @@ OUT=Vendor/llama
 OS=$(uname -s)
 if [[ $OS == Darwin ]]; then
   FLAVOR=metal
+elif [[ "${DIGUP_CPU_ONLY:-0}" == 1 ]]; then
+  FLAVOR=cpu
 elif command -v "${CUDACXX:-nvcc}" > /dev/null; then
   FLAVOR=cuda
 elif command -v glslc > /dev/null; then
@@ -83,9 +85,9 @@ else
     export CC=cl CXX=cl   # MSVC, not whatever else bash finds first
   fi
   case $FLAVOR in
-    cuda) GPU=(-DGGML_CUDA=ON "-DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS:-native}") ;;
-    vulkan) GPU=(-DGGML_VULKAN=ON) ;;
-    *) GPU=() ;;
+    cuda) GPU=(-DGGML_CUDA=ON -DGGML_VULKAN=OFF "-DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS:-native}") ;;
+    vulkan) GPU=(-DGGML_CUDA=OFF -DGGML_VULKAN=ON) ;;
+    *) GPU=(-DGGML_CUDA=OFF -DGGML_VULKAN=OFF) ;;
   esac
   # Shared libraries, the backends as modules (every CPU variant, so one build fits any x86-64 or arm64 machine).
   cmake -S "$SOURCE" -B "$BUILD" -G "$GENERATOR" -DCMAKE_BUILD_TYPE=Release \

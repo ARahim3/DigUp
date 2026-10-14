@@ -145,7 +145,8 @@ holds the queries ranking changes are measured with.
 **How is this different from Spotlight?** Spotlight finds files by their names, text and metadata. DigUp also finds
 them by what they show or say, and takes you to the page or moment. The two work fine side by side.
 
-**Windows or Linux?** Both are on the way.
+**Windows or Linux?** Both are on the way. An experimental Linux CLI source build is described in
+[docs/linux.md](docs/linux.md); there is no downloadable Linux app yet.
 
 **Why is the download 865 MB?** That's the model: the text part (310 MB) and the image and audio encoders (555 MB).
 The app itself is about 20 MB.
