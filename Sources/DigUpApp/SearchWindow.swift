@@ -27,6 +27,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate {
             search.filter = kind
             search.query = query
         }
+        AppLauncher.shared.refresh()
+        search.appsChanged()
         app.present(window)
         if !AppController.offscreen { window.makeFirstResponder(search.field) }
         installKeyMonitor()
@@ -263,6 +265,16 @@ final class SearchModel {
         navigated = true
     }
 
+    /// Merge local apps without waiting for the file encoder or disturbing a selection made with the arrows.
+    func appsChanged() {
+        let typed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let apps = !isCode && !typed.isEmpty ? AppLauncher.shared.matches(typed) : []
+        counts[.apps] = apps.count
+        results = results.withApps(filter == nil ? apps : [])
+        if !results.isEmpty { hasResults = true }
+        if !navigated || !rows.contains(where: { $0.id == selection }) { selection = rows.first?.id }
+    }
+
     private func run() {
         generation += 1
         let current = generation
@@ -285,6 +297,11 @@ final class SearchModel {
             codePhase = engine.hasCode ? .codeHint : .codeOff
             return
         }
+        results = .empty
+        counts = [:]
+        hasResults = false
+        showWeaker = false
+        appsChanged()
         engine.prewarm()
         engine.embedAhead(text, code: code)
         let filter = self.filter
@@ -317,6 +334,7 @@ final class SearchModel {
             for hit in all.prefix(Searcher.strongCount(all)) { counts[ResultGroupKind(hit.kind), default: 0] += 1 }
             self.counts = counts
             results = ResultSet(shown, query: text)
+            appsChanged()
             showWeaker = false
             if !rows.contains(where: { $0.id == selection }) { selection = rows.first?.id }
             hasResults = true
@@ -418,7 +436,7 @@ struct SearchWindowView: View {
     }
 
     @ViewBuilder private var content: some View {
-        if !model.hasFolders {
+        if !model.hasFolders && search.results.isEmpty {
             VStack(spacing: 0) {
                 BrandMark()
                 Text("Choose folders to search").font(.system(size: 20, weight: .bold)).padding(.top, 18)
@@ -618,7 +636,7 @@ private struct GridCell: View {
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay(alignment: .topLeading) {
-                if row.kind != .image && row.kind != .screenshot {
+                if !row.isApp && row.kind != .image && row.kind != .screenshot {
                     Image(systemName: row.kind.symbol)
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(.white)
@@ -648,7 +666,7 @@ private struct GridCell: View {
         }
         .contentShape(Rectangle())
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(row.kind.title), \(row.name), \(row.reason)")
+        .accessibilityLabel("\(row.kindTitle), \(row.name), \(row.reason)")
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
@@ -767,7 +785,10 @@ private struct MomentThumbnail: View {
 
     var body: some View {
         Group {
-            if let image {
+            if row.isApp {
+                Image(nsImage: NSWorkspace.shared.icon(forFile: row.iconURL.path))
+                    .resizable().scaledToFit().frame(width: 64, height: 64)
+            } else if let image {
                 // A page shows its top (its title), anything else its middle.
                 Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: row.page == nil ? .center : .top)
@@ -778,6 +799,7 @@ private struct MomentThumbnail: View {
             }
         }
         .task(id: row.previewKey) {
+            guard !row.isApp else { return }
             let side: CGFloat = 230
             image = Previews.shared.cached(row, side: side)
             if image == nil { image = await Previews.shared.load(row, side: side, scale: scale) }
