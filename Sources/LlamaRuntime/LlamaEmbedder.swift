@@ -144,10 +144,52 @@ public final class LlamaEmbedder: Embedder {
         return vectors
     }
 
+    /// Images are read and resized on other cores a few ahead of the one being encoded, and up to `maxSequences` of them
+    /// share a text-model pass, as texts do. Each is still its own sequence, so its vector is the one it gets alone.
     public func embedImages(_ paths: [String], budget: Int) throws -> [Embedding] {
-        guard media != nil else { throw WorkerError.failed("this embedder was started text-only") }
+        guard let media else { throw WorkerError.failed("this embedder was started text-only") }
         guard Self.budgets.contains(budget) else { throw WorkerError.failed("budget must be one of \(Self.budgets)") }
-        return paths.map { path in embedding { try embedMedia(path, image: true, budget: budget) } }
+        let handle = MediaHandle(pointer: media)
+        let loader = ImageLoader(count: paths.count) { index in
+            try Self.load(paths[index], image: true, budget: budget, media: handle.pointer)
+        }
+        var embeddings = [Embedding?](repeating: nil, count: paths.count)
+        var batched: [Int] = []
+        func flush() {
+            guard !batched.isEmpty else { return }
+            do {
+                for (index, vector) in zip(batched, try run()) { embeddings[index] = Embedding(vector: vector, error: nil) }
+            } catch {
+                for index in batched { embeddings[index] = Self.failure(error) }
+            }
+            batched.removeAll()
+        }
+        reset()
+        for index in paths.indices {
+            do {
+                let bitmap = try loader.take(index)
+                defer { mtmd_bitmap_free(bitmap) }
+                let input = try prepare(bitmap, path: paths[index])
+                if sequences == Self.maxSequences || tokens + input.count > maxTokens { flush() }
+                do {
+                    try append(input)
+                } catch {
+                    // A half-added input can't be taken back out of the batch: the others go again one at a time.
+                    let again = batched
+                    batched.removeAll()
+                    reset()
+                    for other in again {
+                        embeddings[other] = embedding { try embedMedia(paths[other], image: true, budget: budget) }
+                    }
+                    throw error
+                }
+                batched.append(index)
+            } catch {
+                embeddings[index] = Self.failure(error)
+            }
+        }
+        flush()
+        return embeddings.map { $0 ?? Embedding(vector: nil, error: "not embedded") }
     }
 
     public func embedAudio(_ paths: [String]) throws -> [Embedding] {
@@ -160,15 +202,39 @@ public final class LlamaEmbedder: Embedder {
         do {
             return Embedding(vector: try make(), error: nil)
         } catch {
-            return Embedding(vector: nil, error: String("\(error)".prefix(300)))
+            return Self.failure(error)
         }
+    }
+
+    private static func failure(_ error: Error) -> Embedding {
+        Embedding(vector: nil, error: String("\(error)".prefix(300)))
     }
 
     // MARK: Media
 
     private func embedMedia(_ path: String, image: Bool, budget: Int) throws -> [Float] {
-        let bitmap = try load(path, image: image, budget: budget)
+        let bitmap = try Self.load(path, image: image, budget: budget, media: media)
         defer { mtmd_bitmap_free(bitmap) }
+        let input = try prepare(bitmap, path: path)
+        reset()
+        try append(input)
+        return try run()[0]
+    }
+
+    /// One input as the text model takes it: token ids and encoder rows, in order.
+    private struct Input {
+        enum Part {
+            case tokens([llama_token])
+            case rows(UnsafeMutablePointer<Float>, count: Int)
+        }
+
+        var parts: [Part] = []
+        var count = 0
+    }
+
+    /// Frames a bitmap as `<bos> <|image> … <image|> <eos>` (or the audio markers) and runs its encoder. The rows are
+    /// mtmd's and last until the next encode, so the input goes into the batch before another one is prepared.
+    private func prepare(_ bitmap: OpaquePointer, path: String) throws -> Input {
         let chunks = mtmd_input_chunks_init()
         defer { mtmd_input_chunks_free(chunks) }
         var bitmaps: [OpaquePointer?] = [bitmap]
@@ -177,27 +243,42 @@ public final class LlamaEmbedder: Embedder {
             return mtmd_tokenize(media, chunks, &text, &bitmaps, 1)
         }
         guard status == 0 else { throw LlamaError("can't tokenize \(path) (\(status))") }
-        reset()
-        begin()
+        var input = Input()
         for index in 0..<mtmd_input_chunks_size(chunks) {
             let chunk = mtmd_input_chunks_get(chunks, index)
             if mtmd_input_chunk_get_type(chunk) == MTMD_INPUT_CHUNK_TYPE_TEXT {
                 var count = 0
                 guard let tokens = mtmd_input_chunk_get_tokens_text(chunk, &count) else { continue }
-                for i in 0..<count { try add(token: tokens[i]) }
+                input.parts.append(.tokens(Array(UnsafeBufferPointer(start: tokens, count: count))))
+                input.count += count
             } else {
                 guard mtmd_encode_chunk(media, chunk) == 0, let rows = mtmd_get_output_embd(media) else {
                     throw LlamaError("the encoder failed on \(path)")
                 }
-                try add(rows: rows, count: mtmd_input_chunk_get_n_tokens(chunk))
+                let count = mtmd_input_chunk_get_n_tokens(chunk)
+                input.parts.append(.rows(rows, count: count))
+                input.count += count
             }
         }
-        return try run()[0]
+        return input
+    }
+
+    /// Adds an input to the batch as its own sequence.
+    private func append(_ input: Input) throws {
+        begin()
+        for part in input.parts {
+            switch part {
+            case .tokens(let ids):
+                for id in ids { try add(token: id) }
+            case .rows(let rows, let count):
+                try add(rows: rows, count: count)
+            }
+        }
     }
 
     /// Reads an image or audio file with mtmd's helpers (stb_image, miniaudio at 16 kHz), resizes images for `budget`
-    /// and cuts audio at 30 s. The caller frees the bitmap.
-    private func load(_ path: String, image: Bool, budget: Int) throws -> OpaquePointer {
+    /// and cuts audio at 30 s. The caller frees the bitmap. Safe from any thread: the helpers only read `media`.
+    private static func load(_ path: String, image: Bool, budget: Int, media: OpaquePointer?) throws -> OpaquePointer {
         #if os(Windows)
         // mtmd opens a path with fopen, which on Windows reads it in the ANSI code page (a temp folder under a Bengali
         // user name wouldn't open), so the bytes go in instead: its file variant reads them into a buffer the same way.
@@ -380,6 +461,65 @@ public final class LlamaEmbedder: Embedder {
         }.joined(separator: ", ") + (cpuOnly && gpuFound ? " (the GPU left out: the processor was faster here)" : ""))
     }
     #endif
+}
+
+/// mtmd's context for `ImageLoader`'s threads, which only read it.
+private struct MediaHandle: @unchecked Sendable {
+    let pointer: OpaquePointer
+}
+
+/// Reads images on a few threads while the caller encodes, keeping at most `ahead` decoded and not yet taken. The
+/// caller takes every index once, in order; a bitmap left behind is freed with the loader.
+private final class ImageLoader: @unchecked Sendable {
+    private let count: Int
+    private let ahead: Int
+    private let load: @Sendable (Int) throws -> OpaquePointer
+    private let condition = NSCondition()
+    private var loaded: [Int: Result<OpaquePointer, Error>] = [:]
+    private var started = 0
+    private var taken = 0
+
+    init(count: Int, ahead: Int = 8, threads: Int = 4, load: @escaping @Sendable (Int) throws -> OpaquePointer) {
+        self.count = count
+        self.ahead = ahead
+        self.load = load
+        for _ in 0..<min(threads, count) {
+            DispatchQueue.global().async { self.work() }
+        }
+    }
+
+    deinit {
+        for case .success(let bitmap) in loaded.values { mtmd_bitmap_free(bitmap) }
+    }
+
+    func take(_ index: Int) throws -> OpaquePointer {
+        condition.lock()
+        defer { condition.unlock() }
+        while loaded[index] == nil { condition.wait() }
+        let result = loaded.removeValue(forKey: index)!
+        taken = index + 1
+        condition.broadcast()
+        return try result.get()
+    }
+
+    private func work() {
+        while let index = claim() {
+            let result = Result { try load(index) }
+            condition.lock()
+            loaded[index] = result
+            condition.broadcast()
+            condition.unlock()
+        }
+    }
+
+    private func claim() -> Int? {
+        condition.lock()
+        defer { condition.unlock() }
+        while started < count, started >= taken + ahead { condition.wait() }
+        guard started < count else { return nil }
+        started += 1
+        return started - 1
+    }
 }
 
 /// A problem with one input (it gets no vector; its neighbours go on).
