@@ -225,6 +225,7 @@ public final class Indexer {
         defer {
             // A job prepared for a run that stopped early: throw its files away.
             if let ahead { try? FileManager.default.removeItem(at: ahead.wait().folder) }
+            preparing.sync { documents.clear() }
             if let costsFolder, !measured.tallies.isEmpty {
                 MeasuredCosts.merge(measured, into: costsFolder)
                 measured = MeasuredCosts()
@@ -374,6 +375,7 @@ public final class Indexer {
     }
 
     private let preparing = DispatchQueue(label: "DigUp.prepare", qos: .utility)
+    private let documents = DocumentCache()
     private var jobsPrepared = 0   // names the scratch folders
 
     /// The file being read (extracted) right now, and since when: for a watchdog. Apple's frameworks have run away on
@@ -391,14 +393,15 @@ public final class Indexer {
     private func prepare(_ job: Job) -> PendingBatch {
         let pending = PendingBatch()
         jobsPrepared += 1
-        let (options, folder) = (options, scratch.appendingPathComponent("batch-\(jobsPrepared)"))
+        let (options, folder, documents) = (options, scratch.appendingPathComponent("batch-\(jobsPrepared)"), documents)
         preparing.async {
-            pending.fulfill(Self.prepare(job, options: options, into: folder))
+            pending.fulfill(Self.prepare(job, options: options, into: folder, documents: documents))
         }
         return pending
     }
 
-    static func prepare(_ job: Job, options: IndexOptions, into folder: URL) -> Prepared {
+    static func prepare(_ job: Job, options: IndexOptions, into folder: URL,
+                        documents: DocumentCache = DocumentCache()) -> Prepared {
         let batch = job.files
         var prepared = Prepared(batch: batch, step: job.step, folder: folder)
         let url = URL(fileURLWithPath: batch[0].path)
@@ -439,11 +442,11 @@ public final class Indexer {
                 prepared.payload = .pdf(pages: read.pages, read: wanted, total: read.total, title: read.title)
             case .doc:
                 // The chunks are cut the same way every time, so a later step goes on where the last one stopped.
-                let text = try DocExtractor.text(of: url)
-                let chunks = DocExtractor.chunks(text, limit: options.maxChunks + 1)
+                let document = try documents.read(url, limit: options.maxChunks + 1)
+                let chunks = document.chunks
                 let read = (job.step ?? 0..<options.docStep).clamped(to: 0..<min(chunks.count, options.maxChunks))
                 prepared.payload = .doc(chunks: Array(chunks[read]), read: read, total: chunks.count,
-                                        characters: text.count)
+                                        characters: document.characters)
             case .audio:
                 let (window, hop) = (options.audioWindow, options.audioHop)
                 let (pieces, duration) = try runBlocking {

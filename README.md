@@ -123,6 +123,10 @@ Exact-word matches get a boost, because no embedding holds an invoice number exa
 The index remembers which model version made its vectors. An update that leaves the vectors unchanged keeps your
 index, and a test checks every llama.cpp update against stored reference vectors before it ships.
 
+Indexing reuses prepared SQL and reads the pending queue in index order. Later steps of a long document reuse its
+split text for that run, checking file metadata before each reuse. Existing indexes gain the queue index without
+re-embedding files. See [indexing benchmarks](docs/index-performance.md) for measurements and how to repeat them.
+
 ## Build from source
 
 You'll need Xcode 26, git, and CMake (or `uv`) for llama.cpp. If `xcode-select -p` shows the Command Line Tools,
