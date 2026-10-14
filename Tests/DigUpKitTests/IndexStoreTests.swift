@@ -19,6 +19,29 @@ import WinSDK
         Candidate(path: path, kind: .image, size: 10, mtime: 1, inode: inode, device: 1)
     }
 
+    @Test func queueMigrationPreservesTextAndUsesIndexOrder() throws {
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let old = try IndexStore(directory: folder)
+        for (i, kind) in [FileKind.doc, .screenshot, .image, .pdf].enumerated() {
+            let id = try old.insert(Candidate(path: "/a/\(i)", kind: kind, size: 10, mtime: Double(i),
+                                              inode: UInt64(i), device: 1))
+            try old.addSegment(file: id, kind: .chunk, modality: .text, text: "migration keeps this text")
+        }
+        try old.db.execute("DROP INDEX files_queue; PRAGMA user_version = 5")
+        let migrated = try IndexStore(directory: folder)
+        #expect(try migrated.pending(limit: 3).map(\.kind) == [.screenshot, .image, .pdf])
+        var matches = 0
+        try migrated.db.query("SELECT COUNT(*) FROM fts WHERE fts MATCH 'migration'") { matches = Int($0.int(0)) }
+        #expect(matches == 4)
+        var plan: [String] = []
+        try migrated.db.query("""
+            EXPLAIN QUERY PLAN SELECT id FROM files WHERE state = 'pending'
+            ORDER BY \(FileKind.indexingOrderSQL), mtime DESC LIMIT 40
+            """) { plan.append($0.text(3) ?? "") }
+        #expect(plan.contains { $0.contains("files_queue") })
+        #expect(!plan.contains { $0.contains("TEMP B-TREE") })
+    }
+
     @Test func pruneKeepsOnlyChosenFolders() throws {
         let store = try IndexStore(directory: folder)
         try store.insert(file("/a/x.png", inode: 1))

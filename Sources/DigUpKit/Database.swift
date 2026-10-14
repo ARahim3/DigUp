@@ -13,6 +13,10 @@ public final class Database {
     }
 
     let handle: OpaquePointer
+    // Checked out while a query runs, so a row callback can execute the same SQL recursively.
+    // Dynamic IN lists must not grow this cache without a bound.
+    private var statements: [String: OpaquePointer] = [:]
+    private static let statementLimit = 64
 
     public init(path: String) throws {
         var db: OpaquePointer?
@@ -38,7 +42,10 @@ public final class Database {
         }
     }
 
-    deinit { sqlite3_close_v2(handle) }
+    deinit {
+        for statement in statements.values { sqlite3_finalize(statement) }
+        sqlite3_close_v2(handle)
+    }
 
     public func execute(_ sql: String) throws {
         var error: UnsafeMutablePointer<CChar>?
@@ -51,7 +58,17 @@ public final class Database {
 
     /// Runs `sql` with `values` bound and calls `row` for each result row.
     public func query(_ sql: String, _ values: [SQLValue] = [], row: (Statement) throws -> Void = { _ in }) throws {
-        let statement = try Statement(self, sql)
+        var statement = try Statement(self, sql, prepared: statements.removeValue(forKey: sql))
+        defer {
+            // A caller can keep a row's Statement. Leave its ownership alone in that case.
+            if isKnownUniquelyReferenced(&statement) {
+                let prepared = statement.recycle()
+                if let previous = statements.removeValue(forKey: sql) { sqlite3_finalize(previous) }
+                if statements.count >= Self.statementLimit, let key = statements.keys.first,
+                   let evicted = statements.removeValue(forKey: key) { sqlite3_finalize(evicted) }
+                statements[sql] = prepared
+            }
+        }
         try statement.bind(values)
         while try statement.step() { try row(statement) }
     }
@@ -85,8 +102,14 @@ public enum SQLValue {
 public final class Statement {
     private let statement: OpaquePointer
     private let db: Database
+    private var ownsStatement = true
 
-    init(_ db: Database, _ sql: String) throws {
+    init(_ db: Database, _ sql: String, prepared: OpaquePointer? = nil) throws {
+        if let prepared {
+            statement = prepared
+            self.db = db
+            return
+        }
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db.handle, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
             throw Database.Failure(message: "\(db.errorMessage) (in: \(sql.prefix(160)))")
@@ -95,9 +118,20 @@ public final class Statement {
         self.db = db
     }
 
-    deinit { sqlite3_finalize(statement) }
+    deinit { if ownsStatement { sqlite3_finalize(statement) } }
+
+    fileprivate func recycle() -> OpaquePointer {
+        // reset can report the previous step's error, which query already propagated.
+        sqlite3_reset(statement)
+        sqlite3_clear_bindings(statement)
+        ownsStatement = false
+        return statement
+    }
 
     func bind(_ values: [SQLValue]) throws {
+        guard values.count == Int(sqlite3_bind_parameter_count(statement)) else {
+            throw Database.Failure(message: "expected \(sqlite3_bind_parameter_count(statement)) SQL values, got \(values.count)")
+        }
         for (offset, value) in values.enumerated() {
             let index = Int32(offset + 1)
             let status: Int32
