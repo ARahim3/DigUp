@@ -79,8 +79,9 @@ enum QuickLookMoment {
 
 extension Engine {
     /// Opens `row` in its app: a PDF with words from its page to search for, a recording at its moment when the app
-    /// can be told it (see `Opener`).
+    /// can be told it (see `Opener`). An app's row launches the app.
     func open(_ row: ResultRow) {
+        if row.isApp { return AppLauncher.shared.launch(row.url) }
         if row.kind == .code { return CodeEditor.current.open(row.url, line: row.codeLine) }
         guard let page = row.page else { return Opener.open(row, searching: nil) }
         let (url, words) = (row.url, row.foundWords + row.terms)

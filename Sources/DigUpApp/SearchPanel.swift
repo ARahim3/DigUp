@@ -18,7 +18,8 @@ enum SearchPhase: Equatable {
 ///
 /// Every keystroke shows keyword results at once (file names, OCR and document text, the last word as a prefix).
 /// After a short pause in typing the query is embedded and the full hybrid results replace them. Results far weaker
-/// than the best one are folded under "N weaker matches".
+/// than the best one are folded under "N weaker matches". Apps the query names (`AppLauncher`) come first, at once,
+/// so that ↩ launches one as in Spotlight.
 @Observable
 final class SearchPanelController {
     static let width: CGFloat = 780
@@ -54,6 +55,8 @@ final class SearchPanelController {
     /// The generation whose final (meaning) results are showing; late keyword results must not replace them.
     @ObservationIgnored private var finalGeneration = -1
     @ObservationIgnored private var meaningTask: Task<Void, Never>?
+    /// The apps the query names: the first group, whatever the index finds.
+    @ObservationIgnored private var apps: [ResultRow] = []
     @ObservationIgnored private var keyMonitor: Any?
     @ObservationIgnored private var mouseMonitor: Any?
     @ObservationIgnored private var resignObserver: NSObjectProtocol?
@@ -75,6 +78,8 @@ final class SearchPanelController {
         self.app = app
         model = app.model
         engine = app.engine
+        AppLauncher.shared.onChange = { [weak self] in self?.appsChanged() }
+        AppLauncher.shared.refresh()
     }
 
     var isVisible: Bool { window?.isVisible == true && !fading }
@@ -99,6 +104,7 @@ final class SearchPanelController {
         let started = Date()
         shownAt = started
         engine.prewarm()
+        AppLauncher.shared.refresh()
         let window = self.window ?? makeWindow()
         placeWindow(window)
         if AppController.offscreen { return }
@@ -169,6 +175,7 @@ final class SearchPanelController {
         isCode = codeText != nil
         let code = isCode
         let text = codeText ?? typed
+        apps = []
         guard !typed.isEmpty else {
             results = .empty
             selection = nil
@@ -184,6 +191,12 @@ final class SearchPanelController {
             resizeWindow()
             return
         }
+        // Apps by their names, now: ↩ launches the top one even before the index answers.
+        apps = code ? [] : AppLauncher.shared.matches(typed)
+        results = results.withApps(apps)
+        selection = rowIDs.first
+        if phase == .empty, !apps.isEmpty { phase = .words }
+        resizeWindow()
         // Words now. The last word is probably half-typed, so it matches as a prefix.
         Task {
             let started = Date()
@@ -223,6 +236,7 @@ final class SearchPanelController {
     private func show(_ hits: [SearchHit], query: String, phase: SearchPhase) {
         // Code is one group: it gets the room of all of them.
         results = ResultSet(hits, query: query, rowsPerGroup: isCode ? Self.rowsPerGroup * 3 : Self.rowsPerGroup)
+            .withApps(apps)
         if !navigated { showWeaker = false }
         // Follow the top hit until you pick something with the arrow keys.
         if !navigated || !rowIDs.contains(where: { $0 == selection }) {
@@ -231,6 +245,15 @@ final class SearchPanelController {
         self.phase = phase
         resizeWindow()
         if QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared().isVisible { updateQuickLook() }
+    }
+
+    /// The apps were read again and some came or went: the query's apps again.
+    private func appsChanged() {
+        let typed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !typed.isEmpty, !isCode else { return }
+        apps = AppLauncher.shared.matches(typed)
+        results = results.withApps(apps)
+        if !navigated || !rowIDs.contains(where: { $0 == selection }) { selection = rowIDs.first }
     }
 
     func toggleWeaker() {
