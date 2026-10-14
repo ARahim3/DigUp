@@ -43,9 +43,15 @@ public final class LlamaEmbedder: Embedder {
     private var sequences: Int32 = 0  // in `batch`
     private var tokens = 0            // in `batch`
     private var position: llama_pos = 0
+    #if canImport(CoreML)
+    private var vision: NeuralEngineVision?
+    private var layouts: [String: Layout] = [:]
+    #endif
 
-    /// `textOnly`: just the text model (queries). `log`: where llama.cpp's warnings and errors go (stderr when nil).
-    public init(models: LlamaModels, textOnly: Bool, log: URL? = nil) throws {
+    /// `textOnly`: just the text model (queries). `neuralEngine`: 70-token images encoded on the Neural Engine when its
+    /// files are there. `log`: where llama.cpp's warnings and errors go (stderr when nil).
+    public init(models: LlamaModels, textOnly: Bool, neuralEngine: Bool = LlamaEmbedder.neuralEngine,
+                log: URL? = nil) throws {
         let started = Date()
         LlamaLog.shared.send(to: log)
         _ = Self.backend
@@ -112,11 +118,24 @@ public final class LlamaEmbedder: Embedder {
             close()
             throw error
         }
+        #if canImport(CoreML)
+        if neuralEngine, !textOnly {
+            do {
+                guard let folder = NeuralEngineVision.locate() else {
+                    throw LlamaError("no \(NeuralEngineVision.package) from \(NeuralEngineVision.repository)")
+                }
+                vision = try NeuralEngineVision(folder: folder)
+            } catch {
+                LlamaLog.shared.line("frames stay on the GPU: \(error)")
+            }
+        }
+        #endif
         let seconds = (Date().timeIntervalSince(started) * 100).rounded() / 100
         info = WorkerInfo(model: info.model, revision: info.revision, runtime: info.runtime, dtype: info.dtype,
                           dim: info.dim, textOnly: textOnly, loadSeconds: seconds)
+        let frames = framesOnNeuralEngine ? ", frames on the Neural Engine" : ""
         LlamaLog.shared.line("ready in \(seconds) s (\(textOnly ? "text-only" : "full"), llama.cpp \(Self.buildTag), "
-                             + "vectors \(Self.vectorVersion))")
+                             + "vectors \(Self.vectorVersion)\(frames))")
     }
 
     deinit { close() }
@@ -144,21 +163,54 @@ public final class LlamaEmbedder: Embedder {
         return vectors
     }
 
-    /// Images are read and resized on other cores a few ahead of the one being encoded, and up to `maxSequences` of them
-    /// share a text-model pass, as texts do. Each is still its own sequence, so its vector is the one it gets alone.
+    /// Images are read and resized on other cores a few ahead of the one being encoded, and up to `maxSequences` of
+    /// them share a text-model pass, as texts do. Each is still its own sequence, so its vector is the one it gets
+    /// alone.
     public func embedImages(_ paths: [String], budget: Int) throws -> [Embedding] {
         guard let media else { throw WorkerError.failed("this embedder was started text-only") }
         guard Self.budgets.contains(budget) else { throw WorkerError.failed("budget must be one of \(Self.budgets)") }
         let handle = MediaHandle(pointer: media)
-        let loader = ImageLoader(count: paths.count) { index in
+        #if canImport(CoreML)
+        if budget == NeuralEngineVision.budget, let vision {
+            let encoder = LookAhead<EncodedImage>(count: paths.count, threads: 2) { index in
+                let bitmap = try Self.load(paths[index], image: true, budget: budget, media: handle.pointer)
+                defer { mtmd_bitmap_free(bitmap) }
+                let width = Int(mtmd_bitmap_get_nx(bitmap)), height = Int(mtmd_bitmap_get_ny(bitmap))
+                let rows = try vision.encode(mtmd_bitmap_get_data(bitmap), width: width, height: height)
+                return EncodedImage(rows: rows, width: width, height: height)
+            }
+            return embedBatched(paths, budget: budget) { index in
+                do {
+                    return try input(encoder.take(index))
+                } catch {
+                    // Whatever the Neural Engine couldn't take goes through llama.cpp's encoder instead.
+                    let bitmap = try Self.load(paths[index], image: true, budget: budget, media: handle.pointer)
+                    defer { mtmd_bitmap_free(bitmap) }
+                    return try prepare(bitmap, path: paths[index])
+                }
+            }
+        }
+        #endif
+        let loader = LookAhead<OpaquePointer>(count: paths.count, release: mtmd_bitmap_free) { index in
             try Self.load(paths[index], image: true, budget: budget, media: handle.pointer)
         }
+        return embedBatched(paths, budget: budget) { index in
+            let bitmap = try loader.take(index)
+            defer { mtmd_bitmap_free(bitmap) }
+            return try prepare(bitmap, path: paths[index])
+        }
+    }
+
+    /// Embeds `paths[i]` from `input(i)`, taken in order, packing the inputs into as few text-model passes as fit.
+    private func embedBatched(_ paths: [String], budget: Int, input make: (Int) throws -> Input) -> [Embedding] {
         var embeddings = [Embedding?](repeating: nil, count: paths.count)
         var batched: [Int] = []
         func flush() {
             guard !batched.isEmpty else { return }
             do {
-                for (index, vector) in zip(batched, try run()) { embeddings[index] = Embedding(vector: vector, error: nil) }
+                for (index, vector) in zip(batched, try run()) {
+                    embeddings[index] = Embedding(vector: vector, error: nil)
+                }
             } catch {
                 for index in batched { embeddings[index] = Self.failure(error) }
             }
@@ -167,9 +219,7 @@ public final class LlamaEmbedder: Embedder {
         reset()
         for index in paths.indices {
             do {
-                let bitmap = try loader.take(index)
-                defer { mtmd_bitmap_free(bitmap) }
-                let input = try prepare(bitmap, path: paths[index])
+                let input = try make(index)
                 if sequences == Self.maxSequences || tokens + input.count > maxTokens { flush() }
                 do {
                     try append(input)
@@ -226,6 +276,7 @@ public final class LlamaEmbedder: Embedder {
         enum Part {
             case tokens([llama_token])
             case rows(UnsafeMutablePointer<Float>, count: Int)
+            case ownRows([Float], count: Int)
         }
 
         var parts: [Part] = []
@@ -263,6 +314,67 @@ public final class LlamaEmbedder: Embedder {
         return input
     }
 
+    #if canImport(CoreML)
+    /// An image the Neural Engine encoded: its rows and the size it was encoded at.
+    private struct EncodedImage {
+        let rows: [Float]
+        let width: Int
+        let height: Int
+    }
+
+    /// The tokens mtmd puts around an image of one size, and how many encoder rows go between them.
+    private struct Layout {
+        let before: [llama_token]
+        let rows: Int
+        let after: [llama_token]
+    }
+
+    private func input(_ image: EncodedImage) throws -> Input {
+        let layout = try self.layout(width: image.width, height: image.height)
+        let count = image.rows.count / rowSize
+        guard count == layout.rows else {
+            throw LlamaError("the Neural Engine made \(count) rows where mtmd expects \(layout.rows)")
+        }
+        var input = Input()
+        input.parts = [.tokens(layout.before), .ownRows(image.rows, count: count), .tokens(layout.after)]
+        input.count = layout.before.count + count + layout.after.count
+        return input
+    }
+
+    /// Read once per image size from mtmd, by framing a blank image of that size (nothing is encoded).
+    private func layout(width: Int, height: Int) throws -> Layout {
+        let key = "\(width)x\(height)"
+        if let layout = layouts[key] { return layout }
+        let blank = [UInt8](repeating: 0, count: width * height * 3)
+        let bitmap = blank.withUnsafeBufferPointer { mtmd_bitmap_init(UInt32(width), UInt32(height), $0.baseAddress) }
+        guard let bitmap else { throw LlamaError("can't make a \(key) image") }
+        defer { mtmd_bitmap_free(bitmap) }
+        let chunks = mtmd_input_chunks_init()
+        defer { mtmd_input_chunks_free(chunks) }
+        var bitmaps: [OpaquePointer?] = [bitmap]
+        let status = String(cString: mtmd_default_marker()).withCString { marker in
+            var text = mtmd_input_text(text: marker, text_len: strlen(marker), add_special: true, parse_special: true)
+            return mtmd_tokenize(media, chunks, &text, &bitmaps, 1)
+        }
+        guard status == 0 else { throw LlamaError("can't frame a \(key) image (\(status))") }
+        var before: [llama_token] = [], after: [llama_token] = [], rows = 0
+        for index in 0..<mtmd_input_chunks_size(chunks) {
+            let chunk = mtmd_input_chunks_get(chunks, index)
+            if mtmd_input_chunk_get_type(chunk) == MTMD_INPUT_CHUNK_TYPE_TEXT {
+                var count = 0
+                guard let tokens = mtmd_input_chunk_get_tokens_text(chunk, &count) else { continue }
+                let ids = Array(UnsafeBufferPointer(start: tokens, count: count))
+                if rows == 0 { before += ids } else { after += ids }
+            } else {
+                rows = mtmd_input_chunk_get_n_tokens(chunk)
+            }
+        }
+        let layout = Layout(before: before, rows: rows, after: after)
+        layouts[key] = layout
+        return layout
+    }
+    #endif
+
     /// Adds an input to the batch as its own sequence.
     private func append(_ input: Input) throws {
         begin()
@@ -272,6 +384,8 @@ public final class LlamaEmbedder: Embedder {
                 for id in ids { try add(token: id) }
             case .rows(let rows, let count):
                 try add(rows: rows, count: count)
+            case .ownRows(var rows, let count):
+                try rows.withUnsafeMutableBufferPointer { try add(rows: $0.baseAddress!, count: count) }
             }
         }
     }
@@ -398,6 +512,20 @@ public final class LlamaEmbedder: Embedder {
     /// (`MeasuredCosts.Speed.device`; the helpers set it before the model loads), or `DIGUP_DEVICE=cpu`.
     nonisolated(unsafe) public static var cpuOnly = ProcessInfo.processInfo.environment["DIGUP_DEVICE"] == "cpu"
 
+    /// The default for `init(neuralEngine:)`: `DIGUP_NEURAL_ENGINE=1`. Off unless asked for; the helpers may set it
+    /// before the model loads.
+    nonisolated(unsafe) public static var neuralEngine =
+        ProcessInfo.processInfo.environment["DIGUP_NEURAL_ENGINE"] == "1"
+
+    /// Whether this embedder encodes 70-token images on the Neural Engine.
+    public var framesOnNeuralEngine: Bool {
+        #if canImport(CoreML)
+        vision != nil
+        #else
+        false
+        #endif
+    }
+
     /// A GPU llama.cpp can run on here (Metal on a Mac; CUDA or Vulkan elsewhere, when their backend loaded and found
     /// one), before `cpuOnly` leaves it out.
     public static let hasGPU: Bool = {
@@ -463,25 +591,28 @@ public final class LlamaEmbedder: Embedder {
     #endif
 }
 
-/// mtmd's context for `ImageLoader`'s threads, which only read it.
+/// mtmd's context for `LookAhead`'s threads, which only read it.
 private struct MediaHandle: @unchecked Sendable {
     let pointer: OpaquePointer
 }
 
-/// Reads images on a few threads while the caller encodes, keeping at most `ahead` decoded and not yet taken. The
-/// caller takes every index once, in order; a bitmap left behind is freed with the loader.
-private final class ImageLoader: @unchecked Sendable {
+/// Makes items on a few threads while the caller works on earlier ones, keeping at most `ahead` made and not yet
+/// taken. The caller takes every index once, in order; an item left behind goes to `release`.
+private final class LookAhead<Item>: @unchecked Sendable {
     private let count: Int
     private let ahead: Int
-    private let load: @Sendable (Int) throws -> OpaquePointer
+    private let load: @Sendable (Int) throws -> Item
+    private let release: (Item) -> Void
     private let condition = NSCondition()
-    private var loaded: [Int: Result<OpaquePointer, Error>] = [:]
+    private var loaded: [Int: Result<Item, Error>] = [:]
     private var started = 0
     private var taken = 0
 
-    init(count: Int, ahead: Int = 8, threads: Int = 4, load: @escaping @Sendable (Int) throws -> OpaquePointer) {
+    init(count: Int, ahead: Int = 8, threads: Int = 4, release: @escaping (Item) -> Void = { _ in },
+         load: @escaping @Sendable (Int) throws -> Item) {
         self.count = count
         self.ahead = ahead
+        self.release = release
         self.load = load
         for _ in 0..<min(threads, count) {
             DispatchQueue.global().async { self.work() }
@@ -489,10 +620,10 @@ private final class ImageLoader: @unchecked Sendable {
     }
 
     deinit {
-        for case .success(let bitmap) in loaded.values { mtmd_bitmap_free(bitmap) }
+        for case .success(let item) in loaded.values { release(item) }
     }
 
-    func take(_ index: Int) throws -> OpaquePointer {
+    func take(_ index: Int) throws -> Item {
         condition.lock()
         defer { condition.unlock() }
         while loaded[index] == nil { condition.wait() }
