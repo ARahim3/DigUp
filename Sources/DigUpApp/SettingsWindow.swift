@@ -222,7 +222,7 @@ private struct GeneralSettings: View {
                 Toggle(isOn: $searchApps) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Find apps by name")
-                        Text("Apps whose names you type come first in the search panel, and Return opens the top one.")
+                        Text("Apps whose names you type come first in search, and Return opens the top one.")
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)

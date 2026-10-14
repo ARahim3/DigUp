@@ -78,7 +78,6 @@ final class SearchPanelController {
         self.app = app
         model = app.model
         engine = app.engine
-        AppLauncher.shared.onChange = { [weak self] in self?.appsChanged() }
         AppLauncher.shared.refresh()
     }
 
@@ -248,7 +247,7 @@ final class SearchPanelController {
     }
 
     /// The apps were read again and some came or went: the query's apps again.
-    private func appsChanged() {
+    func appsChanged() {
         let typed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !typed.isEmpty, !isCode else { return }
         apps = AppLauncher.shared.matches(typed)

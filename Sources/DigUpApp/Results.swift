@@ -159,7 +159,7 @@ enum ResultGroupKind: CaseIterable {
     case screenshots, images, documents, video, audio
     /// Code search's results (the code index; a search of it never shows anything else).
     case code
-    /// Apps the query names (`AppLauncher`): the panel's first group, never in the window.
+    /// Apps the query names (`AppLauncher`): first in the panel and the window's All results.
     case apps
 
     /// The kinds of files the main index holds: the window's kind filters, ⌘2 to ⌘6.
@@ -254,6 +254,8 @@ struct ResultSet: Equatable {
     func withApps(_ apps: [ResultRow]) -> ResultSet {
         var set = self
         set.groups.removeAll { $0.kind == .apps }
+        set.ranked.removeAll { $0.isApp }
+        set.ranked.insert(contentsOf: apps, at: 0)
         if !apps.isEmpty { set.groups.insert(ResultGroup(kind: .apps, rows: apps, total: apps.count), at: 0) }
         return set
     }
