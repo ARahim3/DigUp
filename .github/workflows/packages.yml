@@ -26,12 +26,14 @@ jobs:
     container: ubuntu:22.04
     steps:
       - name: Build tools
+        # GStreamer's plugins are the ones the AppImage carries for WebKit's media player (scripts/package-linux.sh).
         run: |
           apt-get update -q
           DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends ca-certificates curl git gnupg \
             xz-utils unzip python3 binutils build-essential cmake ninja-build meson nasm pkg-config patchelf file \
             zlib1g-dev libcurl4-openssl-dev libxml2-dev libedit2 libsqlite3-0 libz3-dev libpython3-dev tzdata \
-            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev libvulkan1
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev libvulkan1 \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-gl gstreamer1.0-alsa
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref }}

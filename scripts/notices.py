@@ -188,8 +188,9 @@ def main():
                           "provides (its loader is linked into the app under the WebView2 SDK's license).")]
     else:
         parts += [section("The AppImage's libraries",
-                          "The AppImage also carries the libraries the app's window uses (GTK, WebKitGTK and what they "
-                          "need) from Ubuntu 22.04, each with its copyright file in usr/share/doc inside the AppImage. "
+                          "The AppImage also carries the libraries the app's window uses (GTK, WebKitGTK, GStreamer and "
+                          "the plugins it plays sound and video with, and what they need) from Ubuntu 22.04, each with "
+                          "its copyright file in usr/share/doc inside the AppImage. "
                           "Their source is Ubuntu's: https://packages.ubuntu.com/jammy. The .deb uses your system's "
                           "own copies instead.")]
     parts.append(rust_section(platform))

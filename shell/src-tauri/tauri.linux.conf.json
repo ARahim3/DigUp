@@ -9,6 +9,9 @@
         "recommends": [
           "libvulkan1"
         ]
+      },
+      "appimage": {
+        "bundleMediaFramework": true
       }
     }
   }

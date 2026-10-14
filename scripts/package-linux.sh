@@ -2,7 +2,8 @@
 # Builds DigUp for Linux as a .deb and an AppImage: the Tauri shell (shell/), with DigUp's helper, llama.cpp, PDFium and
 # ffmpeg inside. Run it on the CPU architecture the packages are for, after scripts/fetch-vendor.sh and
 # scripts/build-llama.sh. Needs Swift, Rust, Tauri's CLI (`cargo install tauri-cli --version "^2"`, else Node runs it from
-# npm), patchelf, and what scripts/build-ffmpeg.sh needs (it builds the small ffmpeg the packages carry):
+# npm), patchelf, GStreamer's plugins for the AppImage (gstreamer1.0-plugins-base, -plugins-good, -gl and -alsa), and
+# what scripts/build-ffmpeg.sh needs (it builds the small ffmpeg the packages carry):
 #   scripts/package-linux.sh       → shell/src-tauri/target/release/bundle/{deb,appimage}/
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -51,12 +52,33 @@ if [[ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
 fi
 # The license of everything the packages carry, beside the app (and the .deb's copyright file, below).
 python3 scripts/notices.py linux shell/src-tauri/THIRD-PARTY-NOTICES.txt
+# GStreamer's plugins for the AppImage, which then loads only its own (tauri.linux.conf.json's bundleMediaFramework
+# copies every plugin in GSTREAMER_PLUGINS_DIR): the ones WebKit's media player needs for sound and video. Not the build
+# system's whole folder, which also holds cameras, CDs, network streams and encoders, some linking GPL libraries.
+gstreamer=$(mktemp -d)
+gst_plugins=/usr/lib/$(uname -m)-linux-gnu/gstreamer-1.0
+plugins=(coreelements typefindfunctions playback app autodetect pulseaudio alsa audioconvert audioresample volume
+  audiofx opengl wavparse audioparsers mpg123 flac ogg vorbis opus theora vpx isomp4 matroska avi jpeg id3demux apetag)
+if [[ -f $gst_plugins/libgstvideoconvertscale.so ]]; then
+  plugins+=(videoconvertscale)   # one plugin from GStreamer 1.22 on
+else
+  plugins+=(videoconvert videoscale)
+fi
+for plugin in "${plugins[@]}"; do
+  cp "$gst_plugins/libgst$plugin.so" "$gstreamer/"
+done
+# Their packages' copyright files go in beside the ones linuxdeploy brings for the libraries.
+docs=
+for package in gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-gl gstreamer1.0-alsa; do
+  docs+="${docs:+,}\"/usr/share/doc/$package/copyright\":\"/usr/share/doc/$package/copyright\""
+done
 # Packages of an earlier build (another version) would be taken for this one's.
 rm -rf shell/src-tauri/target/release/bundle/deb shell/src-tauri/target/release/bundle/appimage
 # The helper folder goes in as the packages' resources here only: Tauri checks resources on every build.
 resources='{"helper/":"helper/","THIRD-PARTY-NOTICES.txt":"THIRD-PARTY-NOTICES.txt"}'
-(cd shell/src-tauri && "${tauri[@]}" build --bundles deb,appimage \
-  --config "{\"bundle\":{\"resources\":$resources$signing}}")
+(cd shell/src-tauri && GSTREAMER_PLUGINS_DIR="$gstreamer" "${tauri[@]}" build --bundles deb,appimage --config \
+  "{\"bundle\":{\"resources\":$resources$signing,\"linux\":{\"appimage\":{\"files\":{$docs}}}}}")
+rm -rf "$gstreamer"
 
 # Packed again with xz (Tauri's gzip makes it 51 MB, xz 32). Its name stays "dig-up" (Tauri's spelling of the product's
 # name): Debian and Ubuntu already have a "digup" (a digest updating tool), which would replace DigUp at the next update.
