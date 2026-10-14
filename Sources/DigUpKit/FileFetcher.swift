@@ -24,6 +24,13 @@ public final class FileFetcher: NSObject, URLSessionDataDelegate, @unchecked Sen
     private var written: Int64 = 0
     private var problem: (message: String, retry: Bool)?
     private var reported = Date.distantPast
+    #if canImport(FoundationNetworking)
+    // Every session made here lives until the process ends. Freeing one makes libcurl let go of the connection it still
+    // holds, and with some libcurl builds (Debian 13's, Ubuntu 26.04's) Foundation's handler for that runs after the
+    // session's curl handle is gone: "_MultiHandle deallocated with non-zero retain count", then an abort.
+    nonisolated(unsafe) private static var sessions: [URLSession] = []
+    private static let sessionsLock = NSLock()
+    #endif
 
     public init(file: ModelFiles.File, folder: URL, progress: @escaping @Sendable (Int64) -> Void,
          waiting: @escaping @Sendable () -> Void, done: @escaping @Sendable (Outcome) -> Void) {
@@ -57,6 +64,9 @@ public final class FileFetcher: NSObject, URLSessionDataDelegate, @unchecked Sen
         let queue = OperationQueue()
         queue.maxConcurrentOperationCount = 1
         let session = URLSession(configuration: configuration, delegate: self, delegateQueue: queue)
+        #if canImport(FoundationNetworking)
+        Self.sessionsLock.withLock { Self.sessions.append(session) }
+        #endif
         self.session = session
         var request = URLRequest(url: file.url)
         if written > 0 { request.setValue("bytes=\(written)-", forHTTPHeaderField: "Range") }
