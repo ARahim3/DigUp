@@ -22,6 +22,8 @@ struct ResultRow: Identifiable, Equatable {
     let info: [String: String]
     /// The query's words (`Searcher.terms`): what the preview highlights on a page or in a passage.
     let terms: [String]
+    /// An app the panel can launch (`AppLauncher`), not a file from the index: its `kind` means nothing.
+    let isApp: Bool
 
     init(_ hit: SearchHit, terms: [String] = []) {
         id = hit.path
@@ -47,6 +49,7 @@ struct ResultRow: Identifiable, Equatable {
         size = hit.size
         info = hit.info
         self.terms = terms
+        isApp = false
     }
 
     /// The name to show: left to right as Finder shows it, also when it starts in Arabic ("ملاحظة.md", not "md.ملاحظة").
@@ -115,6 +118,7 @@ struct ResultRow: Identifiable, Equatable {
     /// "Screenshot · Oct 1, 2026 · 1440 × 900 · 2.1 MB", "PDF · … · 463 pages, 120 read so far · 23 MB",
     /// "Python · 63 lines · Oct 1, 2026 · 2 KB"
     var details: String {
+        if isApp { return info["version"].map { "Application · version \($0)" } ?? "Application" }
         if kind == .code {
             var parts = [CodeExtractor.language(of: url.path)]
             if let cells = info["cells"].flatMap(Int.init) {
@@ -140,6 +144,9 @@ struct ResultRow: Identifiable, Equatable {
         return parts.joined(separator: " · ")
     }
 
+    /// "Screenshot", "PDF", "Application": what it is, for VoiceOver.
+    var kindTitle: String { isApp ? "Application" : kind.title }
+
     static func clock(_ seconds: Double) -> String {
         let total = Int(seconds)
         return total >= 3600 ? String(format: "%d:%02d:%02d", total / 3600, total / 60 % 60, total % 60)
@@ -152,6 +159,8 @@ enum ResultGroupKind: CaseIterable {
     case screenshots, images, documents, video, audio
     /// Code search's results (the code index; a search of it never shows anything else).
     case code
+    /// Apps the query names (`AppLauncher`): the panel's first group, never in the window.
+    case apps
 
     /// The kinds of files the main index holds: the window's kind filters, ⌘2 to ⌘6.
     static let files: [ResultGroupKind] = [.screenshots, .images, .documents, .video, .audio]
@@ -175,6 +184,7 @@ enum ResultGroupKind: CaseIterable {
         case .video: "Video"
         case .audio: "Audio"
         case .code: "Code"
+        case .apps: "Applications"
         }
     }
 
@@ -186,6 +196,7 @@ enum ResultGroupKind: CaseIterable {
         case .video: FileKind.video.symbol
         case .audio: FileKind.audio.symbol
         case .code: FileKind.code.symbol
+        case .apps: "square.grid.2x2"
         }
     }
 
@@ -197,6 +208,7 @@ enum ResultGroupKind: CaseIterable {
         case .video: [.video]
         case .audio: [.audio]
         case .code: [.code]
+        case .apps: []
         }
     }
 }
@@ -236,6 +248,14 @@ struct ResultSet: Equatable {
             ResultGroup(kind: $0, rows: Array(byGroup[$0]!.prefix(rowsPerGroup)), total: byGroup[$0]!.count)
         }
         weaker = hits.dropFirst(strong).map { ResultRow($0, terms: terms) }
+    }
+
+    /// The same results with `apps` as the first group, in place of the apps they had.
+    func withApps(_ apps: [ResultRow]) -> ResultSet {
+        var set = self
+        set.groups.removeAll { $0.kind == .apps }
+        if !apps.isEmpty { set.groups.insert(ResultGroup(kind: .apps, rows: apps, total: apps.count), at: 0) }
+        return set
     }
 
     var strongRows: [ResultRow] { groups.flatMap(\.rows) }

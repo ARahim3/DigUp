@@ -200,6 +200,13 @@ struct PreviewPicture: View {
                 Passage(row: row)
                     .frame(maxWidth: size.width, maxHeight: size.height)
                     .onTapGesture(count: 2, perform: open)
+            } else if row.isApp {
+                Image(nsImage: NSWorkspace.shared.icon(forFile: row.iconURL.path))
+                    .resizable()
+                    .frame(width: 128, height: 128)
+                    .contentShape(Rectangle())
+                    .onTapGesture(count: 2, perform: open)
+                    .frame(maxWidth: size.width, maxHeight: size.height)
             } else if row.moment != nil, let player = PreviewPlayback.shared.player,
                       PreviewPlayback.shared.isCurrent(row) {
                 PlayerView(player: player)
@@ -239,7 +246,7 @@ struct PreviewPicture: View {
         // without its controls.
         .onDisappear { if PreviewPlayback.shared.isCurrent(row) { PreviewPlayback.shared.stop() } }
         .task(id: Previews.shared.key(row, max(size.width, size.height))) {
-            guard row.segment != .chunk, row.kind != .code else { return }
+            guard row.segment != .chunk, row.kind != .code, !row.isApp else { return }
             let side = max(size.width, size.height)
             image = Previews.shared.cached(row, side: side)
             loaded = image != nil
