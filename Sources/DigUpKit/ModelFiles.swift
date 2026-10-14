@@ -40,6 +40,11 @@ public enum ModelFiles {
     /// The pinned revision's folder in the Hugging Face cache (`hf download` puts the files there): `$HF_HUB_CACHE`,
     /// `$HF_HOME/hub`, or `~/.cache/huggingface/hub`.
     public static var huggingFaceSnapshot: URL {
+        huggingFaceSnapshot(repository: repository, revision: revision)
+    }
+
+    /// A repository's folder at `revision` in the Hugging Face cache.
+    public static func huggingFaceSnapshot(repository: String, revision: String) -> URL {
         let environment = ProcessInfo.processInfo.environment
         let hub = environment["HF_HUB_CACHE"].map { URL(fileURLWithPath: $0) }
             ?? environment["HF_HOME"].map { URL(fileURLWithPath: $0).appendingPathComponent("hub") }
