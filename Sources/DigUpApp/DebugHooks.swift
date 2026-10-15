@@ -19,6 +19,8 @@ import SwiftUI
 ///     -debugType "a|b c"      then type each query (|-separated) into the field, one key every
 ///                             `-debugTypeInterval` seconds (default 0.09), waiting for its final results; the panel
 ///                             logs how long after the last keystroke they arrived
+///     -debugCompose YES       then compose 사업자 the way a Korean input method does (marked text) while results
+///                             arrive, and log whether the composition held
 ///     -debugSelect "<name>"   before the snapshot, select the first result whose name contains <name>
 ///     -debugPlay YES          after the snapshot, play the selected recording from its moment (muted) for 1.5 s and
 ///                             log where playback got to
@@ -42,7 +44,8 @@ import SwiftUI
 ///                             settings:general|folders|code|storage, settings:add (Folders with Add Folders open),
 ///                             settings:addcode (Code with its folders' sheet open),
 ///                             onboarding:welcome|folders|code|shortcut|ready
-///                             (-debugCloseWindow YES closes it afterwards, to measure what closing gives back)
+///                             (-debugCloseWindow YES closes it afterwards, to measure what closing gives back;
+///                             -debugWindowAfter S opens it S seconds after launch, once the helper has reported)
 ///     -debugChoices "open:real;click:real/videos;add:<path>"   before the snapshot, act on the folder list of
 ///                             onboarding's folder step or of Add Folders, then log what it would apply. Actions,
 ///                             `;`-separated: open:NAME (show a folder's subfolders), click:NAME (a folder's
@@ -51,6 +54,8 @@ import SwiftUI
 ///     -debugAdd YES           after the snapshot, press Add Folders' Add (or the code sheet's) and log what it applied
 ///     -debugFocus YES         with -debugWindow search: the field has the cursor (its ring shows) in the snapshot
 ///     -debugUpdateCheck YES   check for updates in the background a second after launch, as the daily check does
+///     -debugUseModelFiles a:b take these files as the model, as Use Files… does, a second after launch
+///     -debugHelperArgs "…"    more arguments for the indexing helper, in dev runs ("--time-limit 0")
 ///     -debugQuitAfter S       log the menu and quit S seconds after launch (a downloaded update installs on quit)
 ///     -debugWaitForIndex YES  wait for the model and an idle index with nothing waiting, then search for
 ///                             -debugQuery in the panel (<snapshot>-5-panel.png), as -debugOnboarding auto ends
@@ -105,6 +110,12 @@ enum DebugHooks {
                 app.applyCodeFolders(folders == "off" ? [] : folders.split(separator: ":").map {
                     AppSettings.folderURL(String($0))
                 }, excluded: [])
+            }
+        }
+        if let files = defaults.string(forKey: "debugUseModelFiles") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                log("debug: model files chosen: \(files)")
+                app.model.download.use(files.split(separator: ":").map { URL(fileURLWithPath: String($0)) })
             }
         }
         if defaults.bool(forKey: "debugUpdateCheck") {
@@ -222,7 +233,9 @@ enum DebugHooks {
                         quickLook(row, panel: panel, snapshot: snapshotPath("quicklook")) {
                             press(keys, app, describe: { panelState(panel) }) {
                                 type(typed, in: panel, every: interval) {
-                                    reshow(panel, times: defaults.integer(forKey: "debugReshow"), then: done)
+                                    compose(in: panel) {
+                                        reshow(panel, times: defaults.integer(forKey: "debugReshow"), then: done)
+                                    }
                                 }
                             }
                         }
@@ -287,7 +300,7 @@ enum DebugHooks {
         let defaults = UserDefaults.standard
         let started = Date()
         let parts = page.split(separator: ":").map(String.init)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5 + defaults.double(forKey: "debugWindowAfter")) {
             let loaded: () -> Bool
             let draw: (URL) throws -> Void
             let close: () -> Void
@@ -596,6 +609,38 @@ enum DebugHooks {
                 NSApp.postEvent(event, atStart: false)
             }
         }
+    }
+
+    /// -debugCompose YES: the calls a Korean input method makes while 사업자 is typed on the 2-Set keyboard (the syllable
+    /// in progress is marked text, committed when the next one starts), one key every 0.25 s while results come in.
+    /// Logs what the field ended with and how many keys found the composition cut short.
+    private static func compose(in panel: SearchPanelController, then done: @escaping () -> Void) {
+        guard UserDefaults.standard.bool(forKey: "debugCompose") else { return done() }
+        guard let editor = panel.field?.currentEditor() as? NSTextView else {
+            log("debug: compose: the field isn't being edited")
+            return done()
+        }
+        editor.selectAll(nil)
+        editor.delete(nil)
+        // Each key: what it commits (the finished syllable), then the new marked text.
+        let keys: [(commit: String, marked: String)] = [("", "ㅅ"), ("", "사"), ("", "상"), ("사", "어"), ("", "업"),
+                                                          ("업", "ㅈ"), ("", "자")]
+        let nowhere = NSRange(location: NSNotFound, length: 0)
+        var cut = 0
+        func press(_ index: Int) {
+            guard index < keys.count else {
+                log("debug: composed 사업자: the field says \"\(panel.field?.stringValue ?? "")\" (still marked: "
+                    + "\(editor.hasMarkedText())); the composition was cut short before \(cut) of \(keys.count - 1) keys")
+                return done()
+            }
+            if index > 0, !editor.hasMarkedText() { cut += 1 }
+            let key = keys[index]
+            if !key.commit.isEmpty { editor.insertText(key.commit, replacementRange: nowhere) }
+            editor.setMarkedText(key.marked, selectedRange: NSRange(location: (key.marked as NSString).length, length: 0),
+                                 replacementRange: nowhere)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { press(index + 1) }
+        }
+        press(0)
     }
 
     private static func characterEvent(_ character: String, modifiers: NSEvent.ModifierFlags, window: Int) -> NSEvent? {

@@ -1,0 +1,15 @@
+{
+  "version": "0.7.0-beta.1",
+  "notes": "The first beta of DigUp for Windows and Linux.",
+  "pub_date": "2026-10-14T17:23:50Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNjNXOS9wdUxYRld2cGo3enBuS3VLR0lobkhiallaWExjUVhxVUc0MW95SmYyVndSSmloYjZDL3RGNnQxM21ZY2RicVFoN25iUTQ3TlJOVGx1c3hCNyt4Umw3Qk5jSFFVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxOTk0MDUyCWZpbGU6RGlnVXBfMC43LjAtYmV0YS4xX3g2NC1zZXR1cC5leGUJdmVyc2lvbjowLjcuMC1iZXRhLjEKRGE3b3lFQzNIUW5ld3pKbm40MmRBTitlV2x5aFpyS0dPQXZVK0s2UHFTYWdZUzRtMVkwbjBqRzFwSzNobEpMMWdUM1B1WERQbGVLS2RhWjdPRmJ4Q0E9PQo=",
+      "url": "https://github.com/ARahim3/DigUp/releases/download/v0.7.0-beta.1/DigUp_0.7.0-beta.1_x64-setup.exe"
+    },
+    "linux-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNjNXOS9wdUxYRmJYM1NqTjU1bDBPTnpMa1BvaXpKaUVNc0NGcWh3aDE2VDlIZTFHQTY3Rlh6cXNoMzBlV3FtMUYwelB2K1JwMXprVVFuYlBwOXlNUXJiRFFVT21vTlFNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxOTkzMjQ4CWZpbGU6RGlnVXBfMC43LjAtYmV0YS4xX2FtZDY0LkFwcEltYWdlCXZlcnNpb246MC43LjAtYmV0YS4xClVWOWRBQTdSMklpOGZsNjlSOVF6SS9lT0o2UzVkdnNxTjI0WWRsUWs2Q1BGNmhIMTJ4WTV3bUVkOEo2bGpHV0ZJNEttenFlSUZMcG1sSGVqNmEzNkFnPT0K",
+      "url": "https://github.com/ARahim3/DigUp/releases/download/v0.7.0-beta.1/DigUp_0.7.0-beta.1_amd64.AppImage"
+    }
+  }
+}

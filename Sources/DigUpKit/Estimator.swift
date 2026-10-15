@@ -1,15 +1,14 @@
-import CoreGraphics
-import CoreServices
 import Foundation
 
 /// Seconds of indexing per unit, measured 2026-10-07 on an M4 Pro with llama.cpp (Q8_0), reading files while the
-/// model embeds (a full index of the 365-file testbed: 160 s, per-kind sums below). The app will calibrate these with
-/// a few seconds of real work on first launch.
+/// model embeds (a full index of the 365-file testbed: 160 s, per-kind sums below; measured again by indexing on
+/// 2026-10-12, `MeasuredCosts`, the same within 7% but for a chunk of prose, half what it was). Other machines start
+/// from these scaled by a speed check, then go by what indexing measures there (`MeasuredCosts.costs`).
 public struct Costs: Sendable {
     public var image = 0.12              // 140 tokens, decode included
     public var screenshot = 0.32         // 280 tokens; its OCR (0.24 s) runs alongside and sets the pace
     public var pdfPage = 0.09            // text pages are cheap, rendered scans cost an image
-    public var docChunk = 0.095
+    public var docChunk = 0.045          // 40 at a time (a data dump's go to keyword search only, nearly free)
     public var audioSecond = 0.0089      // a 30 s window every 25 s
     public var videoSecond = 0.019       // a 70-token keyframe per shot (at most one per 3 s) + the soundtrack
     /// A stretch of code (2026-10-09: 258 Swift and Objective-C files, 1,245 stretches in 45 s with the model's start).
@@ -41,6 +40,8 @@ public struct Estimate: Sendable {
     /// The code index (`IndexOptions.code`): its stretches of code, and about how big it gets on disk.
     public var codeStretches = 0
     public var bytes = 0.0
+    /// The first pass's seconds by kind (a progress bar's time left: what's still to come of each kind).
+    public var kindSeconds: [FileKind: Double] = [:]
 
     public init() {}
 
@@ -57,6 +58,7 @@ public struct Estimate: Sendable {
         sum.laterSeconds += b.laterSeconds
         sum.codeStretches += b.codeStretches
         sum.bytes += b.bytes
+        sum.kindSeconds.merge(b.kindSeconds, uniquingKeysWith: +)
         return sum
     }
 }
@@ -68,6 +70,8 @@ public enum Estimator {
         var estimate = Estimate()
         for file in candidates {
             estimate.files[file.kind, default: 0] += 1
+            let before = estimate.seconds
+            defer { estimate.kindSeconds[file.kind, default: 0] += estimate.seconds - before }
             switch file.kind {
             case .image: estimate.seconds += costs.image
             case .screenshot: estimate.seconds += costs.screenshot
@@ -128,20 +132,5 @@ public enum Estimator {
             groups[key, default: []].append(file)
         }
         return groups.mapValues { estimate($0, options: options, costs: costs) }
-    }
-
-    static func pages(of path: String) -> Int {
-        if let pages = spotlight(path, kMDItemNumberOfPages), pages > 0 { return Int(pages) }
-        return CGPDFDocument(URL(fileURLWithPath: path) as CFURL)?.numberOfPages ?? 1
-    }
-
-    static func duration(of path: String) -> Double {
-        if let seconds = spotlight(path, kMDItemDurationSeconds), seconds > 0 { return seconds }
-        return MediaInfo.duration(of: URL(fileURLWithPath: path)) ?? 0
-    }
-
-    private static func spotlight(_ path: String, _ attribute: CFString) -> Double? {
-        guard let item = MDItemCreate(kCFAllocatorDefault, path as CFString) else { return nil }
-        return (MDItemCopyAttribute(item, attribute) as? NSNumber)?.doubleValue
     }
 }

@@ -1,0 +1,50 @@
+[package]
+name = "digup-shell"
+version = "0.1.0"
+description = "DigUp for Windows and Linux: the tray icon, the hotkey and the search panel, over DigUp's helper"
+edition = "2021"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2.7.2", features = [] }
+
+[dependencies]
+tauri = { version = "2.12.3", features = ["tray-icon", "protocol-asset", "macos-private-api", "image-png"] }
+tauri-plugin-global-shortcut = "2.4.1"
+tauri-plugin-opener = "2.7.1"
+tauri-plugin-single-instance = "2.5.3"
+tauri-plugin-dialog = "2.8.2"
+tauri-plugin-autostart = "2.5.1"
+notify = "8.2.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["sync"] }
+tauri-plugin-updater = "2.13.3"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# A job object that ends the helpers with the shell, the taskbar's theme for the tray icon, and the local time for set
+# hours (already in Tauri's build on Windows).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects",
+                                              "Win32_System_Registry", "Win32_System_SystemInformation",
+                                              "Win32_UI_Shell", "Win32_System_DataExchange", "Win32_System_Memory"] }
+
+# GNOME's shortcut settings, `--toggle` handed to the running DigUp, and the panel's window on Wayland (all already in
+# Tauri's build on Linux).
+[target.'cfg(target_os = "linux")'.dependencies]
+gio = "0.18"
+gtk = "0.18"
+zbus = "5"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true
+
+# Dragging a result out of the window: the system's drag on Windows and the Mac (on Linux, WebKit's own drag does it).
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+drag = "2.1.1"

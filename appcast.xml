@@ -3,6 +3,23 @@
   <channel>
     <title>DigUp</title>
     <item>
+      <title>0.6.1</title>
+      <pubDate>Mon, 12 Oct 2026 16:24:21 GMT</pubDate>
+      <sparkle:version>12</sparkle:version>
+      <sparkle:shortVersionString>0.6.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[<p>Fixes for what people ran into in the first week, and a few additions.</p>
+<ul>
+<li>Korean, Japanese and Chinese typing works in the search field, and folders with accents or Korean in their names index again.</li>
+<li>A word that's in your files only as the start of a longer one ("Grok" in "Grok4") stays found after you stop typing.</li>
+<li>Indexing keeps going while your folders change, skips a file that runs away, and quits with DigUp.</li>
+<li>Scanned PDF pages are read with text recognition, so a number on a scan is found when you type it, and SVG pictures are read too.</li>
+<li>New in Settings: index only at set hours, and Use Files… for a model downloaded elsewhere.</li>
+<li>Time estimates fit your Mac, Settings scrolls with many folders, and the search panel fades in and out.</li>
+</ul>]]></description>
+      <enclosure url="https://github.com/ARahim3/DigUp/releases/download/v0.6.1/DigUp-0.6.1.dmg" sparkle:edSignature="p9j9jk9/TZSt0R3cJvK4Vq29GM/F7HG7EfTHVrUZZtK3wnyc+LDThaiLgYxJxs1NSZlMBGC65/Lj+kKR7O8+Ag==" length="8722704" type="application/octet-stream"/>
+    </item>
+    <item>
       <title>0.6.0</title>
       <pubDate>Fri, 09 Oct 2026 14:23:08 GMT</pubDate>
       <sparkle:version>11</sparkle:version>

@@ -1,0 +1,6 @@
+# Windows: the C runtime linked into DigUp.exe, so it starts on a PC without the Visual C++ runtime installed.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

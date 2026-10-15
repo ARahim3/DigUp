@@ -43,6 +43,12 @@ final class AppModel {
             }
             let waiting = "\(status.pending.formatted()) \(status.pending == 1 ? "file" : "files") waiting"
             if status.pending > 0, status.paused { return "Paused · \(waiting)" }
+            if let until = status.heldUntil, !status.paused {
+                // Outside the set hours: what's known to wait, and when indexing starts again.
+                let when = "indexing from \(until.formatted(date: .omitted, time: .shortened))"
+                if status.pending > 0 { return "\(waiting) · \(when)" }
+                return "\(status.searchable.formatted()) \(status.searchable == 1 ? "file" : "files") indexed · \(when)"
+            }
             if status.pending > 0, let reason = status.waitingFor { return "\(waiting) · \(reason)" }
             if status.pending > 0 { return "\(waiting) to be indexed" }
             if status.unfinished > 0 {
@@ -92,6 +98,15 @@ final class AppModel {
         let waiting = code.pending > 0 ? " · \(code.pending.formatted()) waiting" : ""
         if code.pending > 0, status.paused { return "Paused · \(code.pending.formatted()) code files waiting" }
         if code.pending > 0, let reason = status.waitingFor { return "\(code.pending.formatted()) code files waiting · \(reason)" }
+        if code.pending > 0, let until = status.heldUntil {
+            return "\(code.pending.formatted()) code files waiting · indexing from "
+                + until.formatted(date: .omitted, time: .shortened)
+        }
+        // Code is read once the other folders have nothing waiting (the helper's order).
+        if code.pending > 0, status.pending > 0 {
+            let files = "\(code.pending.formatted()) code \(code.pending == 1 ? "file" : "files")"
+            return files + " waiting · read after your other files"
+        }
         return "\(code.searchable.formatted()) code \(code.searchable == 1 ? "file" : "files") indexed" + waiting
     }
 

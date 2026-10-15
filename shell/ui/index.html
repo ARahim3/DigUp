@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>DigUp</title>
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <main id="panel" class="panel">
+    <header class="field">
+      <svg class="glass" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="10" cy="10" r="6.5"/><path d="M15 15 L20.5 20.5"/>
+      </svg>
+      <input id="query" type="text" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Search"
+             placeholder="Describe it: “payment error screenshot”, “zebra in a video”…">
+      <span id="activity" class="activity" hidden></span>
+    </header>
+    <section id="body" class="body" hidden>
+      <div id="list" class="list" role="listbox" aria-label="Results"></div>
+      <div id="preview" class="preview" aria-live="polite"></div>
+    </section>
+    <footer id="footer" class="footer" hidden>
+      <span id="summary" class="summary"></span>
+      <span id="keys" class="keys"></span>
+    </footer>
+  </main>
+  <script src="results.js"></script>
+  <script src="panel.js"></script>
+</body>
+</html>

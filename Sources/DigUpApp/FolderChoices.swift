@@ -24,6 +24,9 @@ final class FolderChoices {
     /// Each row's latest estimate run: an answer from an earlier one (before what's skipped changed) is dropped.
     @ObservationIgnored private var runs: [String: Int] = [:]
     @ObservationIgnored private var run = 0
+    /// The estimate helpers started for this list: stopped when it goes (onboarding done, Add Folders closed), since a
+    /// big folder can keep one walking for minutes.
+    @ObservationIgnored private var helpers: [Process] = []
 
     init(rows: [URL], selection: FolderSelection, types: [String], code: Bool = false) {
         self.rows = rows
@@ -35,6 +38,10 @@ final class FolderChoices {
         expanded = Set(rows.map(\.path).filter { row in
             (selection.chosen + selection.skipped).contains { FolderSelection.parent($0) == row }
         })
+    }
+
+    deinit {
+        for helper in helpers where helper.isRunning { helper.terminate() }
     }
 
     /// Estimates the rows that have none yet. They read the folders, so macOS may ask for access: only from a step
@@ -210,10 +217,13 @@ final class FolderChoices {
         let left = selection.kept + selection.skipped.filter { skip in
             !rows.contains { $0.path == FolderSelection.parent(skip) }
         }
-        Estimates.run(folders, excluded: left.map(AppSettings.folderURL), types: types, code: code) { [weak self] estimate in
+        helpers.removeAll { !$0.isRunning }
+        let helper = Estimates.run(folders, excluded: left.map(AppSettings.folderURL), types: types,
+                                   code: code) { [weak self] estimate in
             guard let self, runs[estimate.folder] == run else { return }
             estimates[estimate.folder] = estimate
         }
+        if let helper { helpers.append(helper) }
     }
 }
 

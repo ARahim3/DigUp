@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>DigUp Settings</title>
+  <link rel="stylesheet" href="setup.css">
+  <link rel="stylesheet" href="settings.css">
+</head>
+<body>
+  <nav class="tabs" id="tabs" role="tablist">
+    <button role="tab" data-tab="general">General</button>
+    <button role="tab" data-tab="folders">Folders</button>
+    <button role="tab" data-tab="code">Code</button>
+    <button role="tab" data-tab="storage">Storage</button>
+  </nav>
+  <main class="settings">
+    <section class="tab" id="general" role="tabpanel">
+      <label class="option" id="login-option" hidden>
+        <input type="checkbox" id="login">
+        <span class="text">
+          <span class="name">Open DigUp at login</span>
+          <span class="info">DigUp lives in the tray and keeps your folders indexed.</span>
+        </span>
+      </label>
+
+      <div class="option" id="tray-click-option" hidden>
+        <span class="text">
+          <span class="name">Clicking DigUp's tray icon</span>
+          <label class="choice"><input type="radio" name="tray-click" value="window"> Opens the window</label>
+          <label class="choice"><input type="radio" name="tray-click" value="panel"> Shows the search panel</label>
+          <span class="info">Right-click it for the menu.</span>
+        </span>
+      </div>
+
+      <label class="option" id="center-option" hidden>
+        <input type="checkbox" id="center">
+        <span class="text">
+          <span class="name">Center the search panel</span>
+          <span class="info">This desktop decides where new windows open, so the panel opens where it puts them.
+            Centered, it opens where it does on a Mac, but DigUp then keeps a transparent window over the whole screen:
+            about 50 MB more memory on a 1080p screen (up to 200 MB on a 4K one), and more processor time while you type
+            on computers without graphics acceleration.</span>
+        </span>
+      </label>
+
+      <h3>The shortcut</h3>
+      <div class="keys" id="keys"></div>
+      <button class="link" id="change-shortcut" hidden>Change Shortcut…</button>
+      <p class="note" id="recording" hidden></p>
+      <p class="shortcut-note" id="shortcut-note" hidden></p>
+      <code class="command" id="shortcut-command" hidden></code>
+
+      <h3>Updates</h3>
+      <label class="option">
+        <input type="checkbox" id="update-checks">
+        <span class="text">
+          <span class="name">Check for updates automatically</span>
+          <span class="info" id="update-info"></span>
+        </span>
+      </label>
+      <div class="update-row">
+        <button class="link" id="update-version"></button>
+        <button id="check-now">Check Now</button>
+      </div>
+    </section>
+
+    <section class="tab" id="folders" role="tabpanel" hidden>
+      <div class="card status-card">
+        <div class="status-text">
+          <div class="status-line" id="status-line"></div>
+          <div class="bar" id="status-bar" hidden><div class="fill" id="status-fill"></div></div>
+          <div class="status-detail" id="status-detail"></div>
+        </div>
+        <button id="pause" hidden>Pause</button>
+      </div>
+
+      <h3>Folders to search</h3>
+      <div class="card list" id="folder-rows"></div>
+      <button class="link" id="add-folders">Add Folders…</button>
+
+      <h3>Skip these folders</h3>
+      <div class="card list" id="skipped-rows"></div>
+      <button class="link" id="skip-folder">Skip a Folder…</button>
+
+      <h3>Skip these file types</h3>
+      <input class="field" id="types" type="text" placeholder="e.g. heic, txt" spellcheck="false" autocomplete="off">
+      <p class="note">DigUp reads pictures, PDFs, documents (txt, md, rtf, docx, odt, html), audio and video. Keys,
+        certificates and password files are never read, nor are hidden folders.</p>
+
+      <label class="option hours-option">
+        <input type="checkbox" id="hours">
+        <span class="text">
+          <span class="name">Index only at set hours</span>
+          <span class="info">Files are read only between these times, and what changed meanwhile is picked up when
+            they begin. Search works all day.</span>
+          <span class="times" id="times" hidden>From <input type="time" id="hours-start"> to
+            <input type="time" id="hours-end"></span>
+        </span>
+      </label>
+    </section>
+
+    <section class="tab" id="code" role="tabpanel" hidden>
+      <p class="intro">DigUp can find code by what it does. Type “code:” in the search panel and say what the code does,
+        or pick Code in the window. Results open in your editor at the line.</p>
+      <div class="card status-card" id="code-status" hidden>
+        <div class="status-text">
+          <div class="status-line" id="code-status-line"></div>
+          <div class="status-detail" id="code-status-detail"></div>
+        </div>
+      </div>
+
+      <h3>Code folders</h3>
+      <div class="card list" id="code-rows"></div>
+      <button class="link" id="add-code">Add Folders…</button>
+
+      <h3>Open code in</h3>
+      <select class="field" id="code-editor"></select>
+      <p class="note">DigUp reads what git keeps in these folders: source, configuration, a repository's docs and
+        notebooks. It leaves out what git ignores, dependencies and build output, data files, keys and password files.
+        Code gets an index of its own and shows up only when you search for code.</p>
+
+      <button class="link danger" id="code-off" hidden>Turn Off Code Search…</button>
+      <div class="confirm" id="code-off-confirm" hidden>
+        <p id="code-off-text"></p>
+        <div class="actions">
+          <button id="code-off-cancel">Cancel</button>
+          <button class="danger" id="code-off-go">Turn Off</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="tab" id="storage" role="tabpanel" hidden>
+      <h3>Model</h3>
+      <div class="card facts">
+        <div class="fact"><span>EmbeddingGemma 2</span><span>Google · Apache 2.0 · 865 MB</span></div>
+        <div class="fact"><span>Status</span><span id="model-status"></span></div>
+        <div class="fact"><span>Location</span><button class="path-button" id="model-path"></button></div>
+      </div>
+      <h3>Index</h3>
+      <div class="card facts">
+        <div class="fact"><span>Size on disk</span><span id="index-size"></span></div>
+        <div class="fact"><span>Location</span><button class="path-button" id="index-path"></button></div>
+      </div>
+      <h3>Privacy</h3>
+      <p class="privacy-text">DigUp reads the folders you choose and keeps what it learns in its index, on this
+        computer. It goes online only to download its model, once, and to check for updates (General), which sends nothing
+        about your files.</p>
+      <p class="note"><span id="version"></span> <button class="link inline" id="licenses" hidden>Licenses</button></p>
+    </section>
+
+    <p class="note problem" id="problem" hidden></p>
+  </main>
+  <script src="shortcut.js"></script>
+  <script src="settings.js"></script>
+</body>
+</html>

@@ -1,6 +1,7 @@
 # Points the cask in ARahim3/homebrew-tap at a release once it's published, so `brew install --cask arahim3/tap/digup`
 # gets the new DMG. Needs the secret HOMEBREW_TAP_TOKEN: a fine-grained token with Contents read and write on the tap.
-# Run by hand for a tag with `gh workflow run homebrew.yml -f tag=v1.2.3`.
+# Run by hand for a tag with `gh workflow run homebrew.yml -f tag=v1.2.3`. On macOS, to check the DMG first: signed
+# with DigUp's Developer ID, notarized and stapled, the app inside too. A DMG that isn't stops it before the cask moves.
 name: Homebrew
 
 on:
@@ -17,7 +18,7 @@ permissions: {}
 jobs:
   cask:
     if: ${{ !github.event.release.prerelease }}
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -31,10 +32,20 @@ jobs:
           [[ "$version" =~ ^[0-9]+(\.[0-9]+)+$ ]] || { echo "Not a release tag: $TAG"; exit 1; }
           curl -fsSL --retry 3 -o release.dmg \
             "https://github.com/ARahim3/DigUp/releases/download/v$version/DigUp-$version.dmg"
-          sha256=$(sha256sum release.dmg | cut -d' ' -f1)
+          team=AXJ3D85GPJ
+          codesign --verify --strict --verbose=2 release.dmg
+          codesign -dv release.dmg 2>&1 | grep -qx "TeamIdentifier=$team"
+          xcrun stapler validate release.dmg
+          mount=$(mktemp -d)
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount" release.dmg > /dev/null
+          codesign --verify --deep --strict --verbose=2 "$mount/DigUp.app"
+          codesign -dv "$mount/DigUp.app" 2>&1 | grep -qx "TeamIdentifier=$team"
+          xcrun stapler validate "$mount/DigUp.app"
+          hdiutil detach "$mount" > /dev/null
+          sha256=$(shasum -a 256 release.dmg | cut -d' ' -f1)
           rm release.dmg
-          sed -i -e "s/^  version \".*\"/  version \"$version\"/" \
-                 -e "s/^  sha256 \".*\"/  sha256 \"$sha256\"/" Casks/digup.rb
+          sed -i '' -e "s/^  version \".*\"/  version \"$version\"/" \
+                    -e "s/^  sha256 \".*\"/  sha256 \"$sha256\"/" Casks/digup.rb
           if git diff --quiet; then
             echo "Casks/digup.rb is already at $version"
             git push --dry-run   # still checks that the token can push

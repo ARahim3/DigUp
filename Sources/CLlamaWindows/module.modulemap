@@ -1,0 +1,13 @@
+// llama.cpp as DLLs (Windows): scripts/build-llama.sh builds them with GGML_BACKEND_DL into Vendor/llama/lib (the DLLs
+// and their import libraries), where ggml's backends (ggml-cpu-*, ggml-cuda, ggml-vulkan) sit beside them.
+module CLlama [system] {
+    header "../../Vendor/llama/include/llama.h"
+    header "../../Vendor/llama/include/mtmd.h"
+    header "../../Vendor/llama/include/mtmd-helper.h"
+    header "../../Vendor/llama/include/llama-build.h"
+    link "llama"
+    link "mtmd"
+    link "ggml"
+    link "ggml-base"
+    export *
+}

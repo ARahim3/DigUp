@@ -1,7 +1,12 @@
+#if canImport(CryptoKit)
 import CryptoKit
+#endif
 import Foundation
 import Testing
 @testable import DigUpKit
+#if os(Windows)
+import WinSDK
+#endif
 
 @Suite struct IndexStoreTests {
     let folder: URL = {
@@ -43,6 +48,34 @@ import Testing
         #expect(try store.pendingCount() == 2)
     }
 
+    @Test func aFileTheHelperStoppedOnIsNotReadAgain() throws {
+        let store = try IndexStore(directory: folder)
+        try store.insert(file("/a/stuck.pdf", inode: 1))
+        let book = try store.insert(file("/a/book.pdf", inode: 2))
+        try store.finish(book, state: "partial", info: ["read_to": "30", "read_end": "463"])
+        #expect(try store.markStopped("/a/stuck.pdf", why: "took more than 15 minutes to read"))
+        #expect(try store.markStopped("/a/book.pdf", why: "took more than 15 minutes to read"))
+        #expect(try !store.markStopped("/a/gone.pdf", why: "took more than 15 minutes to read"))
+        #expect(try store.pendingCount() == 0)
+        #expect(try store.unfinishedCount().files == 0)   // the book keeps its first pages and isn't finished again
+        let states = Dictionary(uniqueKeysWithValues: try store.files(under: ["/a"]).map { ($0.path, $0.state) })
+        #expect(states == ["/a/stuck.pdf": "failed", "/a/book.pdf": "done"])
+    }
+
+    #if canImport(AppKit)
+    @Test func picturesThatCouldntBeReadAreReadOnceMore() throws {
+        // An SVG skipped by an older DigUp as "small image 0×0" (ImageIO couldn't open it): AppKit draws it now.
+        let store = try IndexStore(directory: folder)
+        let svg = try store.insert(file("/a/chart.svg", inode: 1))
+        try store.finish(svg, state: "skipped", detail: "small image 0×0")
+        let icon = try store.insert(file("/a/icon.png", inode: 2))
+        try store.finish(icon, state: "skipped", detail: "small image 160×160")   // small, and rightly skipped
+        #expect(try store.readAgainOnce() == 1)
+        #expect(try store.pending(limit: nil).map(\.path) == ["/a/chart.svg"])
+        #expect(try store.readAgainOnce() == 0)
+    }
+    #endif
+
     @Test func modelFileHashesStreamInPieces() throws {
         let small = folder.appendingPathComponent("abc")
         try Data("abc".utf8).write(to: small)
@@ -74,8 +107,8 @@ import Testing
         try FileHandle(forWritingTo: blob).truncate(atOffset: UInt64(ModelFiles.text.bytes))
         try FileManager.default.createSymbolicLink(at: snapshot.appendingPathComponent(ModelFiles.text.name),
                                                    withDestinationURL: blob)
-        setenv("HF_HUB_CACHE", hub.path, 1)
-        defer { unsetenv("HF_HUB_CACHE") }
+        setEnvironment("HF_HUB_CACHE", hub.path)
+        defer { setEnvironment("HF_HUB_CACHE", nil) }
         #expect(ModelFiles.cachedCopy(of: ModelFiles.text)?.lastPathComponent == "2188ac1d")
         #expect(ModelFiles.cachedCopy(of: ModelFiles.media) == nil)   // not there
         try FileHandle(forWritingTo: blob).truncate(atOffset: 10)
@@ -84,7 +117,7 @@ import Testing
 
     @Test func syncKeepsTheRowsOfAFolderThatWentAway() throws {
         // The real path (/private/var/…), as the crawler reports it; resolvingSymlinksInPath() would drop "/private".
-        let base = URL(fileURLWithPath: String(cString: realpath(folder.path, nil)))
+        let base = URL(fileURLWithPath: FolderSelection.realPath(folder.path))
         let drive = base.appendingPathComponent("drive")
         try FileManager.default.createDirectory(at: drive, withIntermediateDirectories: true)
         try Data("notes from the trip".utf8).write(to: drive.appendingPathComponent("notes.txt"))
@@ -96,5 +129,44 @@ import Testing
         #expect(try indexer.sync([drive]).removed == 0)   // an ejected drive is not "everything deleted"
         #expect(try store.files(under: [drive.path]).count == 1)
     }
+
+    @Test func syncFindsTheRowsOfAFolderSpelledAnotherWay() throws {
+        // The walk stores paths as the disk spells them, and on a Mac these folders are chosen spelled otherwise twice
+        // over: under /var where the disk says /private/var (the temporary folder), and with a name the disk keeps
+        // precomposed that `standardizedFileURL` decomposes (Google Drive's "내 드라이브", "Café"). Looking their rows up
+        // by that spelling found none, so the second sync took every file for new: "UNIQUE constraint failed".
+        let store = try IndexStore(directory: folder.appendingPathComponent("index"))
+        let indexer = try Indexer(store: store, options: IndexOptions(),
+                                  makeEmbedder: { throw WorkerError.notFound("no model needed to sync") })
+        var chosen: [URL] = []
+        for name in ["내 드라이브", "Café"] {
+            let onDisk = folder.path + "/" + name.precomposedStringWithCanonicalMapping
+            #if os(Windows)
+            try FileManager.default.createDirectory(atPath: onDisk, withIntermediateDirectories: false)
+            #else
+            #expect(mkdir(onDisk, 0o755) == 0)   // FileManager would decompose the name
+            #endif
+            try Data("notes from the trip".utf8).write(to: URL(fileURLWithPath: onDisk + "/notes.txt"))
+            chosen.append(URL(fileURLWithPath: onDisk).standardizedFileURL)
+        }
+        #expect(try indexer.sync(chosen).added == 2)
+        let again = try indexer.sync(chosen)
+        #expect(again.added == 0 && again.unchanged == 2)
+        #expect(try store.files(under: chosen.map(\.path)).count == 2)
+        store.scope = chosen.map(\.path)
+        #expect(try store.pendingCount() == 2)
+        #expect(try store.prune(keepingUnder: chosen.map(\.path)) == 0)
+    }
 }
 
+/// Sets an environment variable of this process, or removes it (nil).
+private func setEnvironment(_ name: String, _ value: String?) {
+    #if os(Windows)
+    _ = name.withCString(encodedAs: UTF16.self) { name in
+        guard let value else { return SetEnvironmentVariableW(name, nil) }
+        return value.withCString(encodedAs: UTF16.self) { SetEnvironmentVariableW(name, $0) }
+    }
+    #else
+    if let value { setenv(name, value, 1) } else { unsetenv(name) }
+    #endif
+}

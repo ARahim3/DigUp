@@ -327,6 +327,9 @@ struct DownloadStatus: View {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                 Text(message).lineLimit(1)
                 Button("Try Again") { download.start() }.controlSize(.small)
+                Button("Use Files…") { download.chooseFiles(for: NSApp.keyWindow) }
+                    .controlSize(.small)
+                    .help("Downloaded the model's two files somewhere else? Choose them here.")
             case .needed:
                 Image(systemName: "arrow.down.circle").foregroundStyle(.secondary)
                 Text("Model not downloaded")

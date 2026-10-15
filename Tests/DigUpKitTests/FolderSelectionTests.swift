@@ -6,7 +6,7 @@ import Testing
     let folder: URL = {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("DigUpTests-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        return URL(fileURLWithPath: String(cString: realpath(url.path, nil)))   // /private/var/…, as crawls report it
+        return URL(fileURLWithPath: FolderSelection.realPath(url.path))   // /private/var/…, as crawls report it
     }()
 
     @Test func uncheckingASubfolderSkipsIt() {

@@ -15,6 +15,7 @@ final class AppController {
     let hotkeys = HotkeyCenter()
     let updates: Updates
     private let power: PowerPolicy
+    private let schedule: IndexSchedule
     private(set) var panel: SearchPanelController!
     private(set) var searchWindow: SearchWindowController!
     private(set) var settingsWindow: SettingsWindowController!
@@ -32,15 +33,24 @@ final class AppController {
             engineRef?.setBackfillBlocker(blocker)
         }
         log("power: \(PowerPolicy.onACPower() ? "AC" : "battery"), backfill \(power.blocker.map { "waits (\($0))" } ?? "may run")")
-        let engine = Engine(settings: settings, backfillBlocker: power.blocker) { status in
+        let schedule = IndexSchedule(hours: settings.indexHoursOn ? settings.indexHours : nil) { until in
+            engineRef?.setHeldUntil(until)
+        }
+        if let until = schedule.waitsUntil {
+            log("schedule: indexing waits until \(until.formatted(date: .omitted, time: .shortened))")
+        }
+        let engine = Engine(settings: settings, backfillBlocker: power.blocker,
+                            heldUntil: schedule.waitsUntil) { status in
             let before = model.statusLine
             model.status = status
             if model.statusLine != before { log("status: \(model.statusLine)") }
         }
         engineRef = engine
+        Estimates.indexDirectory = settings.indexDirectory
         self.download = download
         self.model = model
         self.power = power
+        self.schedule = schedule
         self.engine = engine
         updates = Updates(model: model)
     }
@@ -181,6 +191,14 @@ final class AppController {
         AppSettings.save(indexOnBattery: on)
         model.settings.indexOnBattery = on
         power.setIndexOnBattery(on)
+    }
+
+    /// "Index only at set hours": on or off, and the hours (kept while it's off).
+    func setIndexHours(on: Bool, hours: IndexHours) {
+        AppSettings.save(indexHoursOn: on, hours: hours)
+        model.settings.indexHoursOn = on
+        model.settings.indexHours = hours
+        schedule.setHours(on ? hours : nil)
     }
 
     /// Asks for folders with the standard open panel (as a sheet when there's a window).

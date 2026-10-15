@@ -1,0 +1,10 @@
+{
+  "mainBinaryName": "DigUp",
+  "bundle": {
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}
