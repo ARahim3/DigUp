@@ -34,3 +34,19 @@ System error descriptions and third-party UI use the localization supplied by ma
 | English | Traditional Chinese |
 | --- | --- |
 | ![English General settings](localization/en-general.png) | ![Traditional Chinese General settings](localization/zh-Hant-general.png) |
+
+
+## DigUp 0.6.1 coverage
+
+The localized UI includes indexing hours, the next indexing time, code waiting for other files, and manual model-file
+selection (including file-size/check errors). The same build continues to use English for unsupported languages.
+
+| English indexing hours | Traditional Chinese indexing hours |
+| --- | --- |
+| ![English indexing hours](localization/en-folders.png) | ![Traditional Chinese indexing hours](localization/zh-Hant-folders.png) |
+
+Validation on macOS: 97 tests passed (86 DigUpKit, 6 LlamaRuntime including reference vectors, 5 localization),
+`./build.sh` and strict deep signature verification passed. Fourteen isolated packaged-app runs checked onboarding,
+General/Folders/Code/Storage settings and search in English and `zh-TW`, plus `zh-Hant` scheduling and unsupported
+French fallback. Permission descriptions were verified as packaged resources; live macOS permission dialogs were
+not triggered. Helper/system error messages use their existing source language when they have no UI translation.
