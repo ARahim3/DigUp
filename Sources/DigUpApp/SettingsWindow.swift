@@ -273,7 +273,7 @@ private struct FolderSettings: View {
                             .foregroundStyle(.secondary)
                     }
                     ForEach(summaries) { summary in
-                        FolderStatusRow(summary: summary) { removing = summary }
+                        FolderStatusRow(summary: summary, checking: state.model.isCheckingFolders) { removing = summary }
                     }
                 } else {
                     ProgressView().controlSize(.small).frame(maxWidth: .infinity)
@@ -434,10 +434,12 @@ private struct IndexProgress: View {
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 5) {
                 Text(model.statusLine).font(.system(size: 13, weight: .semibold))
-                if let progress = model.progress {
+                if model.isCheckingFolders {
+                    ProgressView().controlSize(.small).accessibilityLabel("Checking folders")
+                } else if let progress = model.progress {
                     ProgressView(value: progress).controlSize(.small)
                 }
-                Text(detail)
+                Text(model.indexDetail)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
@@ -448,21 +450,11 @@ private struct IndexProgress: View {
         }
     }
 
-    /// "357 of 365 files searchable · 8 waiting · 2 long files to finish"
-    private var detail: String {
-        let status = model.status
-        var text = "\(status.searchable.formatted()) of \(status.files.formatted()) files searchable"
-        if status.pending > 0 { text += " · \(status.pending.formatted()) waiting" }
-        if status.unfinished > 0 {
-            text += " · \(status.unfinished.formatted()) long \(status.unfinished == 1 ? "file" : "files") to finish"
-        }
-        if model.download.isActive { text += " · model \(model.download.progressText)" }
-        return text
-    }
 }
 
 private struct FolderStatusRow: View {
     let summary: Engine.RootSummary
+    var checking = false
     let remove: () -> Void
 
     var body: some View {
@@ -499,6 +491,7 @@ private struct FolderStatusRow: View {
             Spacer(minLength: 8)
             VStack(alignment: .trailing, spacing: 2) {
                 Text(summary.missing || summary.unreadable ? "Kept for when it's back"
+                     : checking && summary.files == 0 ? "Checking…"
                      : "\(summary.indexed.formatted()) of \(summary.files.formatted()) indexed")
                     .font(.system(size: 12, weight: .medium).monospacedDigit())
                 if !states.isEmpty {
@@ -620,7 +613,9 @@ private struct CodeSettings: View {
                     HStack {
                         VStack(alignment: .leading, spacing: 5) {
                             Text(state.model.codeStatusLine).font(.system(size: 12, weight: .medium))
-                            if let indexing = state.model.status.code.indexing, indexing.total > 0 {
+                            if state.model.status.code.scan != nil {
+                                ProgressView().controlSize(.small).accessibilityLabel("Checking code folders")
+                            } else if let indexing = state.model.status.code.indexing, indexing.total > 0 {
                                 ProgressView(value: Double(indexing.done) / Double(indexing.total)).controlSize(.small)
                             }
                         }
@@ -637,7 +632,7 @@ private struct CodeSettings: View {
                         .foregroundStyle(.secondary)
                 }
                 ForEach(state.codeSummaries) { summary in
-                    FolderStatusRow(summary: summary) { removing = summary }
+                    FolderStatusRow(summary: summary, checking: state.model.status.code.scan != nil) { removing = summary }
                 }
             } header: {
                 Text("Code folders")
