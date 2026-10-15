@@ -94,14 +94,29 @@ public final class Indexer {
         var byInode: [String: FileRecord] = [:]
         for file in existing {
             byPath[file.path] = file
-            byInode["\(file.device):\(file.inode)"] = file
+            if file.kind != .mail { byInode["\(file.device):\(file.inode)"] = file }   // a mail's "inode" is its node id
         }
         let seen = Set(crawl.candidates.map(\.path))
         var movedFrom = Set<String>()
         var summary = SyncSummary(crawl: crawl)
+        // PSTs to list: new ones, changed ones, and those waiting for Outlook to let go (`Mail.waiting`). Listed before
+        // the transaction: a big PST's list takes seconds. A locked one fails at once, without reading anything.
+        var listings: [String: Result<[Mail.Listed], Error>] = [:]
+        for file in crawl.candidates where file.kind == .mailbox {
+            let row = byPath[file.path]
+            let moved = row == nil && byInode["\(file.device):\(file.inode)"].map {
+                !seen.contains($0.path) && $0.size == file.size && abs($0.mtime - file.mtime) < 0.001
+            } == true
+            let changed = row.map { $0.size != file.size || abs($0.mtime - file.mtime) > 0.001 || $0.state == "skipped" }
+            if !moved, try changed ?? true || store.hasWaitingMail(in: file.path) {
+                listings[file.path] = Result { try Mail.list(file.path) }
+            }
+        }
         try store.db.transaction {
             for file in crawl.candidates {
-                if let row = byPath[file.path] {
+                if let row = byPath[file.path], row.kind == .mailbox, file.kind == .mailbox {
+                    try syncMailbox(file, row: row, listing: listings[file.path], summary: &summary)
+                } else if let row = byPath[file.path] {
                     if row.size != file.size || abs(row.mtime - file.mtime) > 0.001 || row.kind != file.kind {
                         try store.requeue(row.id, as: file)
                         summary.changed += 1
@@ -112,8 +127,11 @@ public final class Indexer {
                 } else if let row = byInode["\(file.device):\(file.inode)"], !seen.contains(row.path),
                           !movedFrom.contains(row.path), row.size == file.size, abs(row.mtime - file.mtime) < 0.001 {
                     try store.move(row.id, to: file.path)
+                    if row.kind == .mailbox { try store.moveMails(from: row.path, to: file.path) }
                     movedFrom.insert(row.path)
                     summary.moved += 1
+                } else if file.kind == .mailbox {
+                    try syncMailbox(file, row: nil, listing: listings[file.path], summary: &summary)
                 } else {
                     summary.queued.append(try store.insert(file))
                     summary.added += 1
@@ -123,13 +141,76 @@ public final class Indexer {
             // keep its rows rather than take that for "deleted".
             let vanished = roots.map { $0.standardizedFileURL.path }
                 .filter { !FileManager.default.fileExists(atPath: $0) }.map { $0.hasSuffix("/") ? $0 : $0 + "/" }
+            let mailboxes = Set(crawl.candidates.filter { $0.kind == .mailbox }.map(\.path))
             for row in existing where !seen.contains(row.path) && !movedFrom.contains(row.path)
                 && !vanished.contains(where: { row.path.hasPrefix($0) }) {
+                // A mail goes with its PST: its PST's sync (`syncMailbox`) or move took care of it.
+                if row.kind == .mail, let mailbox = Mail.split(row.path)?.mailbox,
+                   mailboxes.contains(mailbox) || movedFrom.contains(mailbox) {
+                    continue
+                }
                 try store.delete(row.id)
                 summary.removed += 1
             }
         }
         return summary
+    }
+
+    /// A PST in a sync. Listed (it's new, changed, or its mails wait for Outlook): new mails are queued, changed ones
+    /// and waiting ones queued again, gone ones removed. Not listed: unchanged. Locked by Outlook: it's left as it was,
+    /// waiting, and the next sync that can read it lists it.
+    private func syncMailbox(_ file: Candidate, row: FileRecord?, listing: Result<[Mail.Listed], Error>?,
+                             summary: inout SyncSummary) throws {
+        guard let listing else {
+            summary.unchanged += 1
+            return
+        }
+        var id = row?.id ?? 0
+        if row == nil {
+            // No size or date until it's been listed: until then every sync tries again.
+            id = try store.insert(Candidate(path: file.path, kind: .mailbox, size: 0, mtime: 0, inode: file.inode,
+                                            device: file.device))
+            summary.added += 1
+        }
+        switch listing {
+        case .failure(Mail.Failure.locked):
+            try store.finish(id, state: "skipped", detail: Mail.waiting, info: store.info(of: id))
+        case .failure(let error):
+            try store.restat(id, as: file)   // not again until it changes
+            try store.finish(id, state: "failed", detail: "\(error)")
+        case .success(let mails):
+            try store.restat(id, as: file)
+            let name = ((file.path as NSString).lastPathComponent as NSString).deletingPathExtension
+            var known: [String: FileRecord] = [:]
+            for mail in try store.mails(in: file.path) { known[mail.path] = mail }
+            for mail in mails {
+                let path = Mail.path(mailbox: file.path, node: mail.node)
+                let candidate = Candidate(path: path, kind: .mail, size: 0, mtime: mail.modified,
+                                          inode: UInt64(mail.node), device: 0)
+                let info = ["subject": mail.subject, "from": mail.from, "date": mail.date ?? "", "folder": mail.folder]
+                    .filter { !$0.value.isEmpty }
+                // Keyword search finds a mail by its subject, as a file by its name, and by its PST and folders.
+                let folder = ([name] + mail.folder.split(separator: "/").map(String.init)).joined(separator: " ")
+                if let row = known.removeValue(forKey: path) {
+                    if abs(row.mtime - mail.modified) > 0.001 || row.state == "skipped" {
+                        try store.requeueMail(row.id, as: candidate, subject: mail.subject, folder: folder, info: info)
+                        summary.changed += 1
+                        summary.queued.append(row.id)
+                    } else {
+                        summary.unchanged += 1
+                    }
+                } else {
+                    summary.queued.append(try store.insertMail(candidate, subject: mail.subject, folder: folder,
+                                                               info: info))
+                    summary.added += 1
+                }
+            }
+            for gone in known.values {
+                try store.delete(gone.id)
+                summary.removed += 1
+            }
+            try store.finish(id, state: "done", info: ["mails": "\(mails.count)"])
+        }
     }
 
     // MARK: Run
@@ -261,6 +342,9 @@ public final class Indexer {
         case .audio(_, let duration): measured.add("audioSecond", units: duration, seconds: seconds)
         case .video(_, _, let duration): measured.add("videoSecond", units: duration, seconds: seconds)
         case .code(let file): measured.add("codeStretch", units: Double(file.pieces.count), seconds: seconds)
+        case .mails(let mails):
+            let worded = mails.reduce(0) { $0 + $1.chunks.filter(SearchText.hasWords).count }
+            if worded > 0 { measured.add("docChunk", units: Double(worded), seconds: seconds) }
         case .nothing: break
         }
     }
@@ -272,7 +356,7 @@ public final class Indexer {
         var step: Range<Int>?
     }
 
-    /// Images and screenshots go to the model 8 at a time; other files one by one.
+    /// Images and screenshots go to the model 8 at a time, mails of one PST too; other files one by one.
     static func batches(_ queue: [FileRecord]) -> [[FileRecord]] {
         var batches: [[FileRecord]] = []
         var index = 0
@@ -281,6 +365,13 @@ public final class Indexer {
             if batch[0].kind == .image || batch[0].kind == .screenshot {
                 while index + batch.count < queue.count, batch.count < 8,
                       queue[index + batch.count].kind == batch[0].kind {
+                    batch.append(queue[index + batch.count])
+                }
+            } else if batch[0].kind == .mail {
+                // Mails of one PST, 8 at a time: the tool opens the PST once for them.
+                let mailbox = Mail.split(batch[0].path)?.mailbox
+                while index + batch.count < queue.count, batch.count < 8, queue[index + batch.count].kind == .mail,
+                      Mail.split(queue[index + batch.count].path)?.mailbox == mailbox {
                     batch.append(queue[index + batch.count])
                 }
             }
@@ -348,6 +439,15 @@ public final class Indexer {
         case audio(pieces: [MediaPiece], duration: Double)
         case video(frames: [MediaPiece], sound: [MediaPiece], duration: Double)
         case code(CodeExtractor.File)
+        case mails([ReadyMail])
+    }
+
+    /// A mail read from its PST: its text in chunks, and what results show of it.
+    struct ReadyMail: Sendable {
+        let slot: Int
+        let subject: String
+        let chunks: [String]
+        let info: [String: String]
     }
 
     struct ReadyImage: Sendable {
@@ -462,6 +562,12 @@ public final class Indexer {
                 prepared.payload = .video(frames: frames, sound: sound, duration: duration)
             case .code:
                 prepared.payload = .code(try CodeExtractor.read(url, options: options))
+            case .mailbox:
+                // Its mails are what's embedded; it's listed by the sync (here after the index was emptied for a new
+                // model).
+                prepared.outcomes[0] = Outcome(state: "done", detail: nil)
+            case .mail:
+                prepared.payload = .mails(try readMails(batch, options: options, into: folder, outcomes: &prepared.outcomes))
             }
         } catch let error as ExtractError {
             if case .leftOut = error {
@@ -481,6 +587,40 @@ public final class Indexer {
         return prepared
     }
 
+    /// Mails of one PST, read in one go. Those the PST no longer has fail; all of them wait while Outlook has it open.
+    private static func readMails(_ batch: [FileRecord], options: IndexOptions, into folder: URL,
+                                  outcomes: inout [Int: Outcome]) throws -> [ReadyMail] {
+        guard let mailbox = Mail.split(batch[0].path)?.mailbox else { throw ExtractError.unreadable("not a mail") }
+        startReading(mailbox)
+        let nodes = batch.map { Mail.split($0.path)?.node ?? 0 }
+        let read: [UInt32: Mail.Content]
+        do {
+            read = try Mail.read(mailbox, nodes: nodes, attachmentsTo: folder)
+        } catch Mail.Failure.locked {
+            for slot in batch.indices { outcomes[slot] = Outcome(state: "skipped", detail: Mail.waiting) }
+            return []
+        }
+        var ready: [ReadyMail] = []
+        for (slot, node) in nodes.enumerated() {
+            guard let mail = read[node] else {
+                outcomes[slot] = Outcome(state: "failed", detail: "not in the PST any more")
+                continue
+            }
+            // A mail is read in one step: a long one keeps its first `docStep` chunks (~64,000 characters), its
+            // attachments' text included.
+            let text = Mail.text(of: mail)
+            let chunks = DocExtractor.chunks(text, limit: options.docStep)
+            var info = ["subject": mail.subject, "from": mail.from, "date": mail.date ?? "",
+                        "to": mail.recipients.filter { $0.kind == "to" }.map(\.name).joined(separator: ", "),
+                        "attachments": mail.attachments.map(\.name).filter { !$0.isEmpty }.joined(separator: ", ")]
+                .filter { !$0.value.isEmpty }
+            info["chunks"] = "\(chunks.count)"
+            info["chars"] = "\(text.count)"
+            ready.append(ReadyMail(slot: slot, subject: mail.subject, chunks: chunks, info: info))
+        }
+        return ready
+    }
+
     // MARK: Commit (the indexing thread: the model and the database)
 
     private func commit(_ prepared: Prepared) throws -> [(String, String?)] {
@@ -491,7 +631,9 @@ public final class Indexer {
         }
         var results = [(String, String?)](repeating: ("failed", nil), count: batch.count)
         for (slot, outcome) in prepared.outcomes {
-            try store.finish(batch[slot].id, state: outcome.state, detail: outcome.detail)
+            // A mail or a PST keeps what results show of it (its subject, sender and date) whatever its reading did.
+            let info = [.mail, .mailbox].contains(batch[slot].kind) ? try store.info(of: batch[slot].id) : [:]
+            try store.finish(batch[slot].id, state: outcome.state, detail: outcome.detail, info: info)
             results[slot] = (outcome.state, outcome.detail)
         }
         do {
@@ -511,6 +653,8 @@ public final class Indexer {
                 results[0] = try video(batch[0], frames: frames, sound: sound, duration: duration)
             case .code(let code):
                 results[0] = try self.code(batch[0], code)
+            case .mails(let ready):
+                try mails(batch, ready: ready, results: &results)
             }
         } catch let error as WorkerError {
             throw error
@@ -535,6 +679,35 @@ public final class Indexer {
         let unit = file.kind == .pdf ? "page" : "chunk"
         try store.finish(file.id, state: "done", detail: "read to \(unit) \(place), not after: \(problem)", info: info)
         return ("done", "stopped before \(unit) \(place + 1): \(problem)")
+    }
+
+    /// Mails of one PST: their chunks embedded together (the subject as their title), as a document's are.
+    private func mails(_ batch: [FileRecord], ready: [ReadyMail], results: inout [(String, String?)]) throws {
+        guard !ready.isEmpty else { return }
+        var texts: [String] = [], places: [(mail: Int, chunk: Int)] = []
+        for (index, mail) in ready.enumerated() {
+            // Text that's mostly digits gets keyword search only.
+            for (chunk, text) in mail.chunks.enumerated() where SearchText.hasWords(text) {
+                texts.append(Prompts.document(title: mail.subject, text: text))
+                places.append((index, chunk))
+            }
+        }
+        let vectors = texts.isEmpty ? [] : try fullWorker().embedTexts(texts)
+        var vector: [Int: [Int: [Float]]] = [:]
+        for (place, made) in zip(places, vectors) where !made.isEmpty { vector[place.mail, default: [:]][place.chunk] = made }
+        try store.db.transaction {
+            for (index, mail) in ready.enumerated() {
+                let file = batch[mail.slot]
+                for (chunk, text) in mail.chunks.enumerated() {
+                    try store.addSegment(file: file.id, kind: .chunk, modality: .text, loc: Double(chunk + 1),
+                                         excerpt: excerpt(text), text: text, vector: vector[index]?[chunk])
+                }
+                // What the listing gave (the folder) stays; what reading it gave is added.
+                let info = try store.info(of: file.id).merging(mail.info) { $1 }
+                try store.finish(file.id, state: "done", info: info)
+                results[mail.slot] = ("done", "\(mail.chunks.count) chunks")
+            }
+        }
     }
 
     private func images(_ batch: [FileRecord], screenshot: Bool, ready: [ReadyImage],

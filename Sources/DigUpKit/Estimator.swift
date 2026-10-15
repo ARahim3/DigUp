@@ -103,6 +103,11 @@ public enum Estimator {
                 let seconds = duration(of: file.path)
                 estimate.videoSeconds += seconds
                 estimate.seconds += seconds * costs.videoSecond
+            case .mailbox, .mail:
+                // A PST's mails aren't counted before it's listed: about one per 30 KB, two chunks each.
+                let chunks = file.kind == .mail ? 2 : Int(max(2, file.size / 15_000))
+                estimate.docChunks += chunks
+                estimate.seconds += Double(chunks) * costs.docChunk
             case .code:
                 // A notebook's file is mostly its outputs, which aren't read: a guess at its cells' share.
                 let characters = file.path.lowercased().hasSuffix(".ipynb") ? file.size / 8 : file.size
