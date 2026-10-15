@@ -1,0 +1,10 @@
+/Users/nicolasjeanselme/Documents/GitHub/DigUp/pst/target/release/deps/compressed_rtf-784cfc32dc948ebf.d: /Users/nicolasjeanselme/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/compressed-rtf-1.0.1/src/lib.rs /Users/nicolasjeanselme/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/compressed-rtf-1.0.1/src/crc.rs /Users/nicolasjeanselme/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/compressed-rtf-1.0.1/src/dictionary.rs /Users/nicolasjeanselme/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/compressed-rtf-1.0.1/src/../README.md
+
+/Users/nicolasjeanselme/Documents/GitHub/DigUp/pst/target/release/deps/libcompressed_rtf-784cfc32dc948ebf.rlib: /Users/nicolasjeanselme/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/compressed-rtf-1.0.1/src/lib.rs /Users/nicolasjeanselme/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/compressed-rtf-1.0.1/src/crc.rs /Users/nicolasjeanselme/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/compressed-rtf-1.0.1/src/dictionary.rs /Users/nicolasjeanselme/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/compressed-rtf-1.0.1/src/../README.md
+
+/Users/nicolasjeanselme/Documents/GitHub/DigUp/pst/target/release/deps/libcompressed_rtf-784cfc32dc948ebf.rmeta: /Users/nicolasjeanselme/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/compressed-rtf-1.0.1/src/lib.rs /Users/nicolasjeanselme/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/compressed-rtf-1.0.1/src/crc.rs /Users/nicolasjeanselme/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/compressed-rtf-1.0.1/src/dictionary.rs /Users/nicolasjeanselme/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/compressed-rtf-1.0.1/src/../README.md
+
+/Users/nicolasjeanselme/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/compressed-rtf-1.0.1/src/lib.rs:
+/Users/nicolasjeanselme/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/compressed-rtf-1.0.1/src/crc.rs:
+/Users/nicolasjeanselme/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/compressed-rtf-1.0.1/src/dictionary.rs:
+/Users/nicolasjeanselme/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/compressed-rtf-1.0.1/src/../README.md:

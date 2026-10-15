@@ -1,0 +1,10 @@
+/Users/nicolasjeanselme/Documents/GitHub/DigUp/pst/target/x86_64-pc-windows-gnu/release/deps/log-b965a9451038f7c2.d: /Users/nicolasjeanselme/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/lib.rs /Users/nicolasjeanselme/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/macros.rs /Users/nicolasjeanselme/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/serde.rs /Users/nicolasjeanselme/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/__private_api.rs
+
+/Users/nicolasjeanselme/Documents/GitHub/DigUp/pst/target/x86_64-pc-windows-gnu/release/deps/liblog-b965a9451038f7c2.rlib: /Users/nicolasjeanselme/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/lib.rs /Users/nicolasjeanselme/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/macros.rs /Users/nicolasjeanselme/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/serde.rs /Users/nicolasjeanselme/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/__private_api.rs
+
+/Users/nicolasjeanselme/Documents/GitHub/DigUp/pst/target/x86_64-pc-windows-gnu/release/deps/liblog-b965a9451038f7c2.rmeta: /Users/nicolasjeanselme/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/lib.rs /Users/nicolasjeanselme/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/macros.rs /Users/nicolasjeanselme/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/serde.rs /Users/nicolasjeanselme/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/__private_api.rs
+
+/Users/nicolasjeanselme/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/lib.rs:
+/Users/nicolasjeanselme/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/macros.rs:
+/Users/nicolasjeanselme/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/serde.rs:
+/Users/nicolasjeanselme/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34/src/__private_api.rs:

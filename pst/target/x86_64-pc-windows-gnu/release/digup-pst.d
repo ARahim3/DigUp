@@ -1,0 +1,1 @@
+/Users/nicolasjeanselme/Documents/GitHub/DigUp/pst/target/x86_64-pc-windows-gnu/release/digup-pst.exe: /Users/nicolasjeanselme/Documents/GitHub/DigUp/pst/src/main.rs /Users/nicolasjeanselme/Documents/GitHub/DigUp/pst/src/open.rs /Users/nicolasjeanselme/Documents/GitHub/DigUp/pst/src/reader.rs /Users/nicolasjeanselme/Documents/GitHub/DigUp/pst/src/text.rs

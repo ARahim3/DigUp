@@ -1,0 +1,1 @@
+/Users/nicolasjeanselme/Documents/GitHub/DigUp/pst/target/release/digup-pst: /Users/nicolasjeanselme/Documents/GitHub/DigUp/pst/src/main.rs /Users/nicolasjeanselme/Documents/GitHub/DigUp/pst/src/open.rs /Users/nicolasjeanselme/Documents/GitHub/DigUp/pst/src/reader.rs /Users/nicolasjeanselme/Documents/GitHub/DigUp/pst/src/text.rs
