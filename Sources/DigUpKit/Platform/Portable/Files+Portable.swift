@@ -32,6 +32,7 @@ extension Rules {
             return options.includeCode ? .index(.doc) : .skip("code or data file")
         }
         if docExtensions.contains(ext) { return .index(.doc) }
+        if ext == "pst", Mail.isAvailable { return .index(.mailbox) }
         if codeExtensions.contains(ext) || sourceExtensions.contains(ext) {
             return options.includeCode ? .index(.doc) : .skip("code or data file")
         }

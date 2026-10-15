@@ -26,3 +26,6 @@ shell/src-tauri/gen/
 # What scripts/package-*.sh gather for the packages
 shell/src-tauri/helper/
 shell/src-tauri/THIRD-PARTY-NOTICES.txt
+
+# The PST reader (pst/): its Cargo build
+pst/target/

@@ -14,17 +14,19 @@ const FILTERS = [
   { key: "video", title: "Video", kinds: ["video"], icon: "video" },
   { key: "audio", title: "Audio", kinds: ["audio"], icon: "audio" },
 ];
+/// Shown when the index has mail (Outlook .pst files, on Windows), after the others: Ctrl+8.
+const MAIL_FILTER = { key: "mail", title: "Mail", kinds: ["mail"], icon: "mail" };
 const FILTER_OF_KIND = { screenshot: "screenshots", image: "images", pdf: "documents", doc: "documents", video: "video",
-                         audio: "audio" };
+                         audio: "audio", mail: "mail" };
 const EXAMPLES = [
   ["a screenshot of an error message", "screenshots"], ["receipt", "documents"], ["whiteboard notes", "images"],
   ["someone laughing", "audio"], ["a dog on the beach", "video"], ["slides about the budget", "documents"],
 ];
 /// What the home counts, in this order: "136 screenshots, 104 images, 25 PDFs…"
-const KIND_ORDER = ["screenshot", "image", "pdf", "doc", "audio", "video", "code"];
+const KIND_ORDER = ["screenshot", "image", "pdf", "doc", "mail", "audio", "video", "code"];
 const COUNTED = { screenshot: ["screenshot", "screenshots"], image: ["image", "images"], pdf: ["PDF", "PDFs"],
                   doc: ["document", "documents"], audio: ["audio file", "audio files"], video: ["video", "videos"],
-                  code: ["code file", "code files"] };
+                  code: ["code file", "code files"], mail: ["mail", "mails"] };
 const SEARCH_ICON = '<svg viewBox="0 0 24 24"><circle cx="10" cy="10" r="6.5"/><path d="M15 15 L20.5 20.5"/></svg>';
 
 const $ = (id) => document.getElementById(id);
@@ -80,7 +82,7 @@ function run() {
   // Results of an earlier query stay until these are in; with none to show, a spinner.
   renderBar();
   if (!state.hasResults) renderContent();
-  const filter = FILTERS.find((item) => item.key === state.filter);
+  const filter = filters().find((item) => item.key === state.filter);
   state.timer = setTimeout(async () => {
     try {
       const all = await ask({ op: "search", q: text, code, meaning: true, limit: LIMIT });
@@ -161,6 +163,11 @@ function renderBar() {
     $kinds.append(chip(filter.title, filter.icon, code ? null : state.counts[filter.key], selected,
                        () => setFilter(selected ? null : filter.key), index + 2));
   });
+  if (hasMail()) {
+    const selected = state.filter === MAIL_FILTER.key && !code;
+    $kinds.append(chip(MAIL_FILTER.title, MAIL_FILTER.icon, code ? null : state.counts.mail, selected,
+                       () => setFilter(selected ? null : MAIL_FILTER.key), 8));
+  }
   if (state.info.hasCode) {
     $kinds.append(element("span", "divider"));
     $kinds.append(chip("Code", "code", code ? state.counts.code : null, code,
@@ -169,6 +176,15 @@ function renderBar() {
 }
 
 /// All · Screenshots 4 · Images 9 · …: what the query found of each kind; a click shows only that kind.
+function hasMail() {
+  return (state.indexed?.mail ?? 0) > 0;
+}
+
+/// The filters shown: Mail too when there's mail.
+function filters() {
+  return hasMail() ? [...FILTERS, MAIL_FILTER] : FILTERS;
+}
+
 function chip(title, icon, count, selected, action, number) {
   const button = element("button", "chip" + (selected ? " selected" : ""));
   if (icon) button.insertAdjacentHTML("beforeend", ICONS[icon]);
@@ -215,7 +231,7 @@ function cell(hit) {
   const item = element("div", "cell" + (hit.path === state.selection ? " selected" : ""));
   item.dataset.path = hit.path;
   item.setAttribute("role", "option");
-  item.setAttribute("aria-label", `${KIND_TITLE[hit.kind] || "File"}, ${nameOf(hit.path)}, ${reasonOf(hit)}`);
+  item.setAttribute("aria-label", `${KIND_TITLE[hit.kind] || "File"}, ${titleOf(hit)}, ${reasonOf(hit)}`);
   const picture = element("div", "picture");
   picture.append(cellPicture(hit));
   if (hit.kind !== "image" && hit.kind !== "screenshot") {
@@ -225,7 +241,7 @@ function cell(hit) {
   }
   const place = placeOf(hit);
   if (place) picture.append(element("span", "place on-image", place));
-  item.append(picture, element("div", "name", "‎" + nameOf(hit.path)), folderLine(folderOf(hit)));
+  item.append(picture, element("div", "name", "‎" + titleOf(hit)), folderLine(folderOf(hit)));
   wire(item, hit);
   return item;
 }
@@ -242,7 +258,7 @@ function cellPicture(hit) {
     thumbnails.observe(image);
     return image;
   }
-  if (hit.kind === "doc" && hit.excerpt) {
+  if ((hit.kind === "doc" || (hit.kind === "mail" && hit.segment === "chunk")) && hit.excerpt) {
     const card = element("div", "text-card");
     card.dir = "auto";
     card.innerHTML = marked(hit.excerpt.slice(0, 600));
@@ -319,7 +335,7 @@ function codeRow(hit, weaker) {
   icon.innerHTML = ICONS.code;
   const text = element("div", "text");
   const head = element("div", "head");
-  head.append(element("span", "title", "‎" + nameOf(hit.path)));
+  head.append(element("span", "title", "‎" + titleOf(hit)));
   const place = placeOf(hit);
   if (place) head.append(element("span", "place", place));
   head.append(folderLine(folderOf(hit), "span"));
@@ -350,7 +366,7 @@ function wire(item, hit) {
   }
   // Elsewhere: pressed and moved a little, the system's drag (which needs the button down).
   item.onmousedown = (event) => {
-    if (event.button !== 0 || isLinux) return;
+    if (event.button !== 0 || isLinux || hit.kind === "mail") return;   // a mail is no file to drag
     event.preventDefault();
     const [x, y] = [event.clientX, event.clientY];
     const moved = (move) => {
@@ -370,7 +386,10 @@ function wire(item, hit) {
   item.oncontextmenu = (event) => {
     event.preventDefault();
     select(hit.path);
-    showMenu(event.clientX, event.clientY, [
+    showMenu(event.clientX, event.clientY, hit.kind === "mail" ? [
+      ["Open in Outlook", () => open(hit)],
+      [`Show PST in ${FILE_MANAGER}`, () => reveal(hit)],
+    ] : [
       ["Open", () => open(hit)],
       [`Show in ${FILE_MANAGER}`, () => reveal(hit)],
       null,
@@ -408,7 +427,7 @@ function open(hit) {
 }
 
 function reveal(hit) {
-  invoke("reveal", { path: hit.path }).catch(failed);
+  invoke("reveal", { path: fileOf(hit) }).catch(failed);
 }
 
 function failed(error) {
@@ -426,7 +445,7 @@ function home() {
   const shown = [...EXAMPLES, ...(state.info.hasCode ? [["code: where the settings are saved", "code"]] : [])];
   for (const [text, kind] of shown) {
     const example = element("button", "example");
-    example.innerHTML = ICONS[FILTERS.find((filter) => filter.key === kind)?.icon ?? kind];
+    example.innerHTML = ICONS[filters().find((filter) => filter.key === kind)?.icon ?? kind];
     example.append(text);
     example.title = `Search for “${text}”`;
     example.onmousedown = (event) => event.preventDefault();
@@ -564,7 +583,7 @@ function previewPicture(hit) {
     addPlace(box, span(hit));
     return box;
   }
-  if (hit.segment === "chunk") {
+  if (hit.segment === "chunk" || hit.kind === "mail") {
     box.append(passage(hit));
     const parts = Number(hit.info?.chunks || 0);
     if (hit.loc != null && parts > 1) addPlace(box, `Part ${Math.trunc(hit.loc)} of ${parts}`);
@@ -644,7 +663,7 @@ function renderBig() {
   const sheet = element("div", "sheet");
   const head = element("div", "head");
   const title = element("div", "title");
-  title.append(element("span", "name", nameOf(hit.path)));
+  title.append(element("span", "name", titleOf(hit)));
   const place = placeOf(hit);
   if (place) title.append(element("span", "place", place));
   const opening = element("button", "primary", "Open");
@@ -777,9 +796,14 @@ function passage(hit) {
     page.dir = isRightToLeft(text) ? "rtl" : "ltr";
     page.innerHTML = highlighted(passageAround(text, [...found, ...queryWords(state.text)]), state.text, found);
   };
-  show((hit.excerpt ?? "").replace(/[«»]/g, ""));
-  ask({ op: "text", segment: hit.segment_id, code: false })
-    .then((reply) => { if (reply.text) show(reply.text); })
+  // A mail found by its subject or folder shows its beginning; one not read yet says so.
+  const nameOnly = hit.kind === "mail" && hit.segment !== "chunk";
+  show(nameOnly ? "" : (hit.excerpt ?? "").replace(/[«»]/g, ""));
+  previewText(hit)
+    .then((reply) => {
+      if (reply.text) show(reply.text);
+      else if (nameOnly) show("Not read yet: found by its subject.");
+    })
     .catch(() => {});
   page.ondblclick = () => open(hit);
   return page;
@@ -819,8 +843,8 @@ function codeLines(hit) {
 
 function facts(hit) {
   const box = element("div", "facts");
-  const title = element("div", "title", "‎" + nameOf(hit.path));
-  title.title = nameOf(hit.path);
+  const title = element("div", "title", "‎" + titleOf(hit));
+  title.title = titleOf(hit);
   const folder = folderLine(folderOf(hit), "button");
   folder.title = `Show in ${FILE_MANAGER}`;
   folder.onclick = () => reveal(hit);
@@ -998,6 +1022,11 @@ document.addEventListener("keydown", (event) => {
     if (number === 7 && state.info.hasCode) {
       event.preventDefault();
       setFilter("code");
+      return;
+    }
+    if (number === 8 && hasMail()) {
+      event.preventDefault();
+      setFilter(MAIL_FILTER.key);
       return;
     }
     switch (event.key.toLowerCase()) {

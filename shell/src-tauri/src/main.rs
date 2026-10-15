@@ -389,6 +389,35 @@ fn open_code(app: AppHandle, shell: State<'_, Arc<Shell>>, path: String, line: u
     app.opener().open_path(path, None::<&str>).map_err(|error| error.to_string())
 }
 
+/// Opens a mail result in classic Outlook: digup-pst, beside the helper, asks Outlook to show it (starting Outlook when
+/// it isn't running). The path is the mail's PST and its node id there ("…\archive.pst::2097412").
+#[tauri::command]
+async fn open_mail(app: AppHandle, shell: State<'_, Arc<Shell>>, path: String) -> Result<(), String> {
+    let (pst, node) = path.rsplit_once("::").map(|(pst, node)| (pst.to_string(), node.to_string())).ok_or("not a mail")?;
+    let tool = shell.options.helper.with_file_name(if cfg!(windows) { "digup-pst.exe" } else { "digup-pst" });
+    hide_panel(app);
+    let output = tauri::async_runtime::spawn_blocking(move || {
+        let mut command = std::process::Command::new(&tool);
+        command.args(["open", &pst, &node]).stdin(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        command.output().map_err(|error| format!("can't run {}: {error}", tool.display()))
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    match output.status.code() {
+        Some(0) => Ok(()),
+        Some(4) => Err("Opening a mail needs classic Outlook.".into()),
+        Some(5) => Err("This PST isn't open in Outlook. Open it there (File › Open & Export › Open Outlook Data File), \
+                        then try again.".into()),
+        Some(6) => Err("Outlook can't find this mail in the PST any more.".into()),
+        _ => Err(format!("Outlook didn't show the mail: {}", String::from_utf8_lossy(&output.stderr).trim())),
+    }
+}
+
 /// Ctrl+C on a result: the file on the clipboard, to paste in a file manager, a mail or a chat.
 #[tauri::command]
 fn copy_file(window: tauri::WebviewWindow, path: String) -> Result<(), String> {
@@ -622,7 +651,8 @@ fn main() {
         )
         .setup(move |app| setup(app, options))
         .invoke_handler(tauri::generate_handler![
-            ask, estimate, setup_info, pick_folders, apply_setup_folders, finish_setup, open_path, open_code, reveal, hide_panel, panel_height,
+            ask, estimate, setup_info, pick_folders, apply_setup_folders, finish_setup, open_path, open_code, open_mail,
+            reveal, hide_panel, panel_height,
             panel_area, settings_info, set_open_at_login, set_center_panel, debug_query, debug_report, window_info,
             app_state, open_window, open_settings, choose_folders, index_now, quit_app, close_window, pause_indexing,
             remove_folder, set_skipped, set_skip_types, set_index_hours, code_setup_info, set_code_folders, choose_code_folders,

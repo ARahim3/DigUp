@@ -377,10 +377,71 @@ public final class IndexStore {
     }
 
     public func finish(_ id: Int64, state: String, detail: String? = nil, info: [String: String] = [:]) throws {
-        let json = info.isEmpty ? nil : (try? JSONSerialization.data(withJSONObject: info, options: [.sortedKeys]))
-            .flatMap { String(data: $0, encoding: .utf8) }
         try db.run("UPDATE files SET state = ?, detail = ?, info = ?, indexed_at = ? WHERE id = ?",
-                   [.text(state), .optional(detail), .optional(json), .double(Date().timeIntervalSince1970), .int(id)])
+                   [.text(state), .optional(detail), .optional(Self.json(info)), .double(Date().timeIntervalSince1970),
+                    .int(id)])
+    }
+
+    static func json(_ info: [String: String]) -> String? {
+        info.isEmpty ? nil : (try? JSONSerialization.data(withJSONObject: info, options: [.sortedKeys]))
+            .flatMap { String(data: $0, encoding: .utf8) }
+    }
+
+    // MARK: Mail
+
+    /// Adds a mail of a PST (pending), named by its subject and its folder in the PST rather than by its path, and with
+    /// what results show of it (`Mail.Listed`) before it's read.
+    @discardableResult
+    func insertMail(_ file: Candidate, subject: String, folder: String, info: [String: String]) throws -> Int64 {
+        try db.run("INSERT INTO files(path, kind, size, mtime, inode, device, info) VALUES(?, ?, ?, ?, ?, ?, ?)",
+                   [.text(file.path), .text(file.kind.rawValue), .int(file.size), .double(file.mtime),
+                    .int(Int64(bitPattern: file.inode)), .int(Int64(bitPattern: file.device)), .optional(Self.json(info))])
+        let id = db.lastInsertID
+        try addNameRow(file: id, name: subject, folder: folder)
+        return id
+    }
+
+    /// A mail that changed in its PST, or waited for it: read again, under its subject as it is now.
+    func requeueMail(_ id: Int64, as file: Candidate, subject: String, folder: String, info: [String: String]) throws {
+        try deleteSegments(of: id, keepingName: false)
+        try addNameRow(file: id, name: subject, folder: folder)
+        try db.run("""
+            UPDATE files SET size = ?, mtime = ?, state = 'pending', detail = NULL, info = ?, indexed_at = NULL
+            WHERE id = ?
+            """, [.int(file.size), .double(file.mtime), .optional(Self.json(info)), .int(id)])
+    }
+
+    /// A PST that was listed: its row takes the file's size and date, which tell the next sync whether to list it again.
+    func restat(_ id: Int64, as file: Candidate) throws {
+        try db.run("UPDATE files SET size = ?, mtime = ?, inode = ?, device = ? WHERE id = ?",
+                   [.int(file.size), .double(file.mtime), .int(Int64(bitPattern: file.inode)),
+                    .int(Int64(bitPattern: file.device)), .int(id)])
+    }
+
+    /// The mails of the PST at `mailbox`.
+    func mails(in mailbox: String) throws -> [FileRecord] {
+        var out: [FileRecord] = []
+        let prefix = mailbox + Mail.separator
+        try db.query("SELECT \(Self.fileColumns) FROM files WHERE path >= ? AND path < ?",
+                     [.text(prefix), .text(prefix + "\u{10FFFF}")]) { out.append(Self.record($0)) }
+        return out
+    }
+
+    /// A PST moved or renamed: its mails' paths follow, and nothing is read again.
+    func moveMails(from old: String, to new: String) throws {
+        let prefix = old + Mail.separator
+        // substr counts characters (code points), not bytes.
+        try db.run("UPDATE files SET path = ? || substr(path, ?) WHERE path >= ? AND path < ?",
+                   [.text(new), .int(Int64(old.unicodeScalars.count + 1)), .text(prefix), .text(prefix + "\u{10FFFF}")])
+    }
+
+    /// Mails of the PST at `mailbox` that wait for Outlook to let go of it.
+    func hasWaitingMail(in mailbox: String) throws -> Bool {
+        var found = false
+        let prefix = mailbox + Mail.separator
+        try db.query("SELECT 1 FROM files WHERE path >= ? AND path < ? AND state = 'skipped' AND detail = ? LIMIT 1",
+                     [.text(prefix), .text(prefix + "\u{10FFFF}"), .text(Mail.waiting)]) { _ in found = true }
+        return found
     }
 
     /// Files read once more because DigUp reads them better now, each kind once per index (the schema stays as it was,
@@ -444,10 +505,13 @@ public final class IndexStore {
     }
 
     private func addNameRow(file: Int64, path: String) throws {
+        try addNameRow(file: file, name: Self.nameText(path), folder: Self.folderText(path))
+    }
+
+    private func addNameRow(file: Int64, name: String, folder: String) throws {
         try db.run("INSERT INTO segments(file, kind, modality) VALUES(?, 'name', 'none')", [.int(file)])
         try db.run("INSERT INTO fts(rowid, name, body) VALUES(?, ?, ?)",
-                   [.int(db.lastInsertID), .text(SearchText.normalized(Self.nameText(path))),
-                    .text(SearchText.normalized(Self.folderText(path)))])
+                   [.int(db.lastInsertID), .text(SearchText.normalized(name)), .text(SearchText.normalized(folder))])
     }
 
     private func deleteSegments(of file: Int64, keepingName: Bool) throws {
