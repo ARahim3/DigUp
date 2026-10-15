@@ -864,7 +864,7 @@ fn watch_folders(app: &AppHandle) {
         FolderWatcher::start(&code_folders, code_skipped, index, Duration::from_secs(60), Duration::from_secs(600),
                              move || sync_code(&app))
     });
-    if !folders.is_empty() || !code_folders.is_empty() {
+    if !folders.is_empty() || !code_folders.is_empty() || shell.prune.load(Ordering::SeqCst) {
         run_index(app);
     }
 }
@@ -872,7 +872,9 @@ fn watch_folders(app: &AppHandle) {
 /// Indexing may run: there's a model and a folder (from setup's folders step on), the speed check isn't running, and
 /// indexing isn't paused or waiting for its hours.
 fn may_index(shell: &Shell) -> bool {
-    (!shell.folders().is_empty() || !shell.code_folders().is_empty()) && shell.model_ready()
+    // Removing the last folder still needs a helper to prune the index, even without a model.
+    (shell.prune.load(Ordering::SeqCst)
+        || ((!shell.folders().is_empty() || !shell.code_folders().is_empty()) && shell.model_ready()))
         && !shell.measuring.load(Ordering::SeqCst) && !shell.quitting.load(Ordering::SeqCst) && {
             let status = shell.status.lock().unwrap();
             !status.paused && status.held_until.is_none()
