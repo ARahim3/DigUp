@@ -112,6 +112,9 @@ Only the folders you choose:
 - audio of any length: the model listens to 30 seconds at a time, so DigUp takes overlapping 30-second windows and a
   match points to its moment
 - video of any length: a frame every few seconds, one per shot, plus the soundtrack the same way as audio
+- on Windows, Outlook mail kept in .pst files: each mail by its subject, who sent it, its text and its attachments'
+  text, and Enter opens it in Outlook. A PST that Outlook has open can't be read; its new mail comes in once Outlook
+  is closed
 
 Outside the folders you pick for code search, it never reads code, and inside a code project (a folder with `.git`,
 `package.json` and the like) it reads only screenshots. It never reads keys, certificates, password files, hidden
@@ -197,7 +200,7 @@ also finds them by what they show or say, and takes you to the page or moment. T
 **What's different on Windows and Linux?** The search is the same: the same model, the same results. Two things are
 missing for now. The text inside screenshots isn't read yet, so a screenshot is found by what it shows rather than by
 an exact code typed into the search. And doc files from old Word versions, RAW photos and SVG pictures are only read
-on a Mac.
+on a Mac. The other way round, Outlook mail in .pst files is only read on Windows, where classic Outlook opens it.
 
 **Why is the download 865 MB?** That's the model: the text part (310 MB) and the image and audio encoders (555 MB).
 The app itself is about 20 MB on a Mac, and on Windows and Linux 40 to 140 MB depending on the package, since those
