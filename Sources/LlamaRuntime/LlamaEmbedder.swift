@@ -39,13 +39,17 @@ public final class LlamaEmbedder: Embedder {
     private let embeddingSize: Int   // 768: the output projection
     private let rowSize: Int         // the width of encoder rows fed to the text model
     private let maxTokens: Int
+    /// Seconds of audio one input keeps (`IndexOptions.audioWindow`): the model silently ignores audio
+    /// past this much of one input, so longer audio is cut at this point.
+    private let audioWindow: Double
     private static let maxSequences = 16
     private var sequences: Int32 = 0  // in `batch`
     private var tokens = 0            // in `batch`
     private var position: llama_pos = 0
 
     /// `textOnly`: just the text model (queries). `log`: where llama.cpp's warnings and errors go (stderr when nil).
-    public init(models: LlamaModels, textOnly: Bool, log: URL? = nil) throws {
+    /// `audioWindow`: seconds of audio kept per input (matches `IndexOptions.audioWindow`'s default).
+    public init(models: LlamaModels, textOnly: Bool, log: URL? = nil, audioWindow: Double = 30.0) throws {
         let started = Date()
         LlamaLog.shared.send(to: log)
         _ = Self.backend
@@ -102,6 +106,7 @@ public final class LlamaEmbedder: Embedder {
         embeddingSize = Int(llama_model_n_embd_out(model))
         rowSize = Int(llama_model_n_embd_inp(model))
         self.maxTokens = maxTokens
+        self.audioWindow = audioWindow
         let known = Self.modelInfo
         info = WorkerInfo(model: known.model, revision: known.revision, runtime: known.runtime, dtype: known.dtype,
                           dim: embeddingSize, textOnly: textOnly, loadSeconds: nil)
@@ -235,13 +240,13 @@ public final class LlamaEmbedder: Embedder {
             return resized
         }
         let samples = mtmd_bitmap_get_n_bytes(bitmap) / MemoryLayout<Float>.size
-        let limit = 30 * Int(mtmd_get_audio_sample_rate(media))
+        let limit = Int(audioWindow) * Int(mtmd_get_audio_sample_rate(media))
         guard samples > limit else { return bitmap }
         defer { mtmd_bitmap_free(bitmap) }
         let prefix = mtmd_bitmap_get_data(bitmap).withMemoryRebound(to: Float.self, capacity: limit) {
             mtmd_bitmap_init_from_audio(limit, $0)
         }
-        guard let prefix else { throw LlamaError("can't cut \(path) at 30 s") }
+        guard let prefix else { throw LlamaError("can't cut \(path) at \(Int(audioWindow)) s") }
         return prefix
     }
 

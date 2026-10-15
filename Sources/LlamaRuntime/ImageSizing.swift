@@ -8,9 +8,12 @@ enum ImageSizing {
     /// the aspect ratio, each side rounded down to a multiple of 48 px.
     static func targetSize(height: Int, width: Int, budget: Int) -> (height: Int, width: Int)? {
         let patch = 16, pooling = 3
+        let side = pooling * patch
+        // A zero side would trap in the divisions below (and in the ratio fallbacks further down):
+        // fall back to the minimum side the zero-target branch uses.
+        guard height > 0, width > 0 else { return (side, side) }
         let maxPatches = budget * pooling * pooling
         let factor = (Double(maxPatches * patch * patch) / Double(height * width)).squareRoot()
-        let side = pooling * patch
         var targetHeight = Int((factor * Double(height) / Double(side)).rounded(.down)) * side
         var targetWidth = Int((factor * Double(width) / Double(side)).rounded(.down)) * side
         if targetHeight == 0 && targetWidth == 0 { return nil }
