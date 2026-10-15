@@ -2,7 +2,8 @@
 """Writes the third-party notices DigUp's Windows and Linux packages carry: the license of every library they ship, from
 the libraries' own license files (llama.cpp's and PDFium's from Vendor/, ffmpeg's, dav1d's and zlib's from the small
 ffmpeg scripts/build-ffmpeg.sh makes, Swift's from the toolchain or scripts/licenses), and of every Rust crate the app
-is built from (Cargo's own record of them, normal dependencies only: build tools and macros don't end up in the app).
+and, on Windows, digup-pst (pst/) are built from (Cargo's own record of them, normal dependencies only: build tools and
+macros don't end up in the programs).
 
     scripts/notices.py linux|windows <out.txt>
 
@@ -69,13 +70,13 @@ def miniz_license():
     sys.exit("notices: Vendor/miniz/LICENSE is missing (run scripts/fetch-vendor.sh)")
 
 
-def rust_crates(platform):
-    """The crates in the app's binary for the platform: Cargo's resolve graph from the app, through normal
-    dependencies, without proc-macro crates (they run while compiling)."""
+def rust_crates(platform, folder):
+    """The crates in a program's binary for the platform: Cargo's resolve graph from the crate in `folder`, through
+    normal dependencies, without proc-macro crates (they run while compiling)."""
     target = {"linux": "x86_64-unknown-linux-gnu", "windows": "x86_64-pc-windows-msvc"}[platform]
     metadata = json.loads(subprocess.run(
         ["cargo", "metadata", "--format-version", "1", "--locked", "--filter-platform", target],
-        cwd=ROOT / "shell/src-tauri", check=True, capture_output=True, encoding="utf-8").stdout)
+        cwd=ROOT / folder, check=True, capture_output=True, encoding="utf-8").stdout)
     packages = {package["id"]: package for package in metadata["packages"]}
     nodes = {node["id"]: node for node in metadata["resolve"]["nodes"]}
     root = metadata["resolve"]["root"]
@@ -96,23 +97,19 @@ def rust_crates(platform):
     return sorted((packages[i] for i in seen), key=lambda package: (package["name"], package["version"]))
 
 
-def rust_section(platform):
-    crates = rust_crates(platform)
+def rust_section(platform, folder, title, intro):
+    crates = rust_crates(platform, folder)
     by_text = {}   # a license file's text, its spacing aside → the text and the crates that ship it (printed once)
     without = []
     for crate in crates:
-        folder = Path(crate["manifest_path"]).parent
-        files = sorted(path for path in folder.iterdir() if path.is_file() and LICENSE_FILE.match(path.name))
+        files = license_files(Path(crate["manifest_path"]).parent)
         label = f"{crate['name']} {crate['version']} ({crate.get('license') or 'see its files'})"
         if not files:
             without.append((label, crate))
         for path in files:
             text = read(path)
             by_text.setdefault(" ".join(text.split()), (text, []))[1].append(label)
-    parts = [RULE, f"Rust crates in the app ({len(crates)}), each under its own license", RULE, "",
-             "The app around DigUp's search on Windows and Linux is written in Rust with Tauri (https://tauri.app). "
-             "These are the crates it is built from, with the license files they ship; a text several crates share "
-             "is printed once, after their names.", ""]
+    parts = [RULE, f"{title} ({len(crates)}), each under its own license", RULE, "", intro, ""]
     for text, labels in sorted(by_text.values(), key=lambda item: item[1][0]):
         parts += ["-" * 80, *labels, "-" * 80, "", text, ""]
     if without:
@@ -124,6 +121,15 @@ def rust_section(platform):
             parts += [f"{label}: copyright {authors}; source {source}"]
         parts += [""]
     return "\n".join(parts)
+
+
+def license_files(folder):
+    """A crate's license files; for a crate of a workspace that keeps them at its top (outlook-pst), the workspace's."""
+    for place in [folder, folder.parent, folder.parent.parent]:
+        files = sorted(path for path in place.iterdir() if path.is_file() and LICENSE_FILE.match(path.name))
+        if files or (place / "Cargo.lock").is_file():
+            return files
+    return []
 
 
 def main():
@@ -193,7 +199,17 @@ def main():
                           "its copyright file in usr/share/doc inside the AppImage. "
                           "Their source is Ubuntu's: https://packages.ubuntu.com/jammy. The .deb uses your system's "
                           "own copies instead.")]
-    parts.append(rust_section(platform))
+    parts.append(rust_section(
+        platform, "shell/src-tauri", "Rust crates in the app",
+        "The app around DigUp's search on Windows and Linux is written in Rust with Tauri (https://tauri.app). These "
+        "are the crates it is built from, with the license files they ship; a text several crates share is printed "
+        "once, after their names."))
+    if windows:
+        parts.append(rust_section(
+            platform, "pst", "Rust crates in digup-pst",
+            "digup-pst, in DigUp's helper folder, reads Outlook's .pst files with Microsoft's outlook-pst "
+            "(https://github.com/microsoft/outlook-pst-rs) and opens a mail in Outlook. It is written in Rust too; "
+            "these are the crates it is built from, with the license files they ship."))
     out.write_text("\n".join(parts) + "\n", encoding="utf-8")
     print(f"{out}: {out.stat().st_size // 1024} KB")
 

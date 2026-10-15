@@ -1,6 +1,7 @@
 #!/bin/bash
 # Builds DigUp's Windows installer: the Tauri shell (shell/) with DigUp's helper, llama.cpp, PDFium, the Swift and C++
-# runtimes and ffmpeg in its helper folder, as an NSIS installer that installs for the current user (no admin prompt).
+# runtimes, ffmpeg and digup-pst (pst/, Outlook's .pst files) in its helper folder, as an NSIS installer that installs
+# for the current user (no admin prompt).
 # Run it in Git for Windows' bash inside a Visual Studio developer environment, after scripts/fetch-vendor.sh,
 # scripts/build-llama.sh and scripts/build-ffmpeg.sh (that one in MSYS2's MINGW64 shell). Needs Swift, Rust, Python and
 # Node (for Tauri's CLI):
@@ -11,6 +12,7 @@ cd "$(dirname "$0")/.."
 TAURI_CLI=2.12.2
 
 swift build -c release --product digup
+(cd pst && cargo build --release --locked)   # digup-pst: Outlook's .pst files
 
 # What the installer puts beside DigUp.exe, in helper\ ("DigUp.exe" and "digup.exe" can't share a folder): the helper
 # finds the DLLs, llama.cpp's backends and ffmpeg in its own folder. The C++ runtime goes with them, so nothing needs
@@ -25,6 +27,7 @@ cp .build/release/digup.exe Vendor/llama/lib/*.dll Vendor/pdfium/bin/pdfium.dll 
 cp "$swift_runtime"/*.dll "$helper/"
 cp "$crt"/*.dll "$helper/"   # over the Swift runtime's copies of the same: the newer C++ runtime
 cp Vendor/ffmpeg/bin/ffmpeg.exe Vendor/ffmpeg/bin/ffprobe.exe "$helper/"   # the small static build, no DLLs
+cp pst/target/release/digup-pst.exe "$helper/"
 
 # With the release's signing key (TAURI_SIGNING_PRIVATE_KEY, and its password) the packages that update themselves are
 # signed for in-app updates (a .sig beside each). Installed copies check those signatures with the public key in

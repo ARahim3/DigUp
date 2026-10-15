@@ -18,7 +18,7 @@ win() { cygpath -m "$1"; }
 echo "installing $setup"
 MSYS_NO_PATHCONV=1 "$setup" /S
 installed=$(cygpath -u "$LOCALAPPDATA")/DigUp
-ls "$installed/DigUp.exe" "$installed/helper/digup.exe" > /dev/null
+ls "$installed/DigUp.exe" "$installed/helper/digup.exe" "$installed/helper/digup-pst.exe" > /dev/null
 # The licenses of what the installer carries, beside the app.
 grep -q "GNU LESSER GENERAL PUBLIC LICENSE" "$installed/THIRD-PARTY-NOTICES.txt" || { echo "no license notices"; exit 1; }
 
@@ -72,4 +72,9 @@ PATH="/c/Windows/System32:/c/Windows:/c/Windows/System32/Wbem" "$helper" status 
 grep -Eq '^vectors: 5 in 5 segments' "$work/status.txt" || { echo "not every file has a vector"; exit 1; }
 PATH="/c/Windows/System32:/c/Windows:/c/Windows/System32/Wbem" DIGUP_MODELS="$models" \
   "$helper" search "how long to bake the cake" --index "$(win "$work/index")" -n 3
+
+echo "digup-pst with only Windows on PATH, on the PST Outlook made"
+PATH="/c/Windows/System32:/c/Windows:/c/Windows/System32/Wbem" "$installed/helper/digup-pst.exe" list \
+  "$(win pst/tests/data/outlook_made.pst)" | tail -1 | tee "$work/pst.txt"
+grep -q '"mails":30' "$work/pst.txt" || { echo "digup-pst didn't read the test PST"; exit 1; }
 echo "ok"
