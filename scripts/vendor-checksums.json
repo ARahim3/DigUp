@@ -1,0 +1,11 @@
+{
+  "sqlite.zip": "68e913b0fe8ec6b4e5f391c594a28872884e80d6cd042a1e50c957be46b5aa4d",
+  "miniz.zip": "f0446d863f9c19926ad9483c523fdc42e42b8d4a6a431d27e09d49c79a140d9a",
+  "stb_image.h": "594c2fe35d49488b4382dbfaec8f98366defca819d916ac95becf3e75f4200b3",
+  "stb_image_write.h": "cbd5f0ad7a9cf4468affb36354a1d2338034f2c12473cf1a8e32053cb6914a05",
+  "stb_image_resize2.h": "173e654634f6ccaad98f603e686ea212eec1fe8ea6d2a5e5e8056efa10ae3880",
+  "pdfium-linux-x64.tgz": "588577cf52dabc1a444988bac841920df54cc2f141801424de97ab04f4fbb935",
+  "pdfium-linux-arm64.tgz": "e7e2fe4686925618330103cb167950aca5a84bb00fd977a41b86be59dd1480a2",
+  "pdfium-mac-arm64.tgz": "e98679e052c07edbb5a627980902abb823d4b3f35744d877bd21668bd9fc13ab",
+  "pdfium-win-x64.tgz": "1fd8af952832dbb0eb16d9249f68fe09e5f5ebf7c3dd9f6066ea2720cc28487d"
+}
