@@ -30,6 +30,20 @@ import Testing
         #expect(Rules.classify(file, values: nil, options: options) == .index(.doc))
     }
 
+    @Test func secretsAreExcludedInEveryMode() {
+        for name in ["passwords.txt", "Password.docx", "secrets.md", "credentials.yaml", "prod.pem",
+                     "id_rsa", ".env.local", "passwords.ts", "secret-photo.jpg"] {
+            let url = folder.appendingPathComponent(name)
+            for includeCode in [false, true] {
+                var options = IndexOptions()
+                options.includeCode = includeCode
+                #expect(Rules.classify(url, values: nil, options: options) == .skip("key or password file"))
+                options.code = true
+                #expect(Rules.classifyCode(url, options: options) == .skip("key or password file"))
+            }
+        }
+    }
+
     @Test func machineNames() {
         #expect(Rules.looksMachineNamed("clip_000123"))
         #expect(Rules.looksMachineNamed("frame-0042"))

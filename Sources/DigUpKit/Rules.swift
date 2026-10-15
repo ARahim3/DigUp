@@ -90,7 +90,7 @@ public enum Rules {
                                         "crt", "cer", "der", "p8", "mobileprovision"]
         if secretTypes.contains((lower as NSString).pathExtension) { return true }
         return ["id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", ".env", "secret", "credential", ".netrc", ".npmrc",
-                ".pypirc", "htpasswd", ".htpasswd"].contains(where: lower.hasPrefix)
+                ".pypirc", "htpasswd", ".htpasswd", "password", "passwd"].contains(where: lower.hasPrefix)
     }
 
     /// Why code search doesn't go into a folder (`codeSkippedFolderNames`), or nil.
