@@ -35,6 +35,10 @@ public enum Crawler {
         let rootPaths = Set(roots.map { $0.standardizedFileURL.path })
 
         for root in roots.map({ $0.standardizedFileURL }) {
+            if Rules.isCacheDirectory(root) {
+                report.skippedFolders["cache folder", default: 0] += 1
+                continue
+            }
             if options.code {
                 repos.enterRoot(root.path)
             } else if Rules.isProjectRoot(root.path) {
