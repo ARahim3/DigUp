@@ -172,18 +172,31 @@ final class SettingsState {
 private struct SettingsPane: View {
     let tab: SettingsTab
     let state: SettingsState
+    /// The content's own height. The window is that tall up to what the screen has room for, and scrolls past it (a
+    /// long list of folders ran it off the screen, Add Folders… with it).
+    @State private var height: CGFloat?
 
     var body: some View {
-        Group {
-            switch tab {
-            case .general: GeneralSettings(state: state)
-            case .folders: FolderSettings(state: state)
-            case .code: CodeSettings(state: state)
-            case .storage: StorageSettings(state: state)
+        ScrollView(.vertical) {
+            Group {
+                switch tab {
+                case .general: GeneralSettings(state: state)
+                case .folders: FolderSettings(state: state)
+                case .code: CodeSettings(state: state)
+                case .storage: StorageSettings(state: state)
+                }
             }
+            .frame(width: 580)
+            .fixedSize(horizontal: false, vertical: true)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
         }
-        .frame(width: 580)
-        .fixedSize(horizontal: false, vertical: true)
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(width: 580, height: height.map { min($0, Self.tallest) })
+    }
+
+    /// The screen's room below the menu bar, less the window's title bar and tabs and a margin.
+    private static var tallest: CGFloat {
+        (NSScreen.main?.visibleFrame.height ?? 800) - 140
     }
 }
 
@@ -335,6 +348,28 @@ private struct FolderSettings: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                Toggle(isOn: Binding(get: { state.model.settings.indexHoursOn }, set: { on in
+                    state.app.setIndexHours(on: on, hours: state.model.settings.indexHours)
+                })) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(L10n.text("Index only at set hours"))
+                        Text(L10n.text("Files are read only between these times, and what changed meanwhile is picked up when they begin. Search works all day."))
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                if state.model.settings.indexHoursOn {
+                    LabeledContent(L10n.text("From")) {
+                        HStack(spacing: 6) {
+                            DatePicker(L10n.text("From"), selection: time(\.start), displayedComponents: .hourAndMinute)
+                                .labelsHidden()
+                            Text(L10n.text("to"))
+                            DatePicker(L10n.text("To"), selection: time(\.end), displayedComponents: .hourAndMinute)
+                                .labelsHidden()
+                        }
+                    }
+                }
             }
         }
         .formStyle(.grouped)
@@ -355,6 +390,20 @@ private struct FolderSettings: View {
 
     private var removalTitle: String {
         L10n.format("Stop searching “%1$@”?", String(describing: removing.map { ($0.path as NSString).lastPathComponent } ?? ""))
+    }
+
+    /// One end of the set hours, as a time of day for a date picker.
+    private func time(_ end: KeyPath<IndexHours, Int>) -> Binding<Date> {
+        Binding(get: {
+            let minute = state.model.settings.indexHours[keyPath: end]
+            return Calendar.current.date(bySettingHour: minute / 60, minute: minute % 60, second: 0, of: Date()) ?? Date()
+        }, set: { date in
+            let parts = Calendar.current.dateComponents([.hour, .minute], from: date)
+            let minute = (parts.hour ?? 0) * 60 + (parts.minute ?? 0)
+            let hours = state.model.settings.indexHours
+            state.app.setIndexHours(on: true, hours: end == \IndexHours.start ? IndexHours(start: minute, end: hours.end)
+                                                                              : IndexHours(start: hours.start, end: minute))
+        })
     }
 }
 
@@ -481,7 +530,7 @@ private struct StorageSettings: View {
 
     var body: some View {
         Form {
-            Section(L10n.text("Model")) {
+            Section {
                 LabeledContent("EmbeddingGemma 2") {
                     Text("Google · Apache 2.0 · 865 MB")
                 }
@@ -491,6 +540,8 @@ private struct StorageSettings: View {
                         switch state.model.download.phase {
                         case .needed, .failed:
                             Button(L10n.text("Download")) { state.model.download.start() }.controlSize(.small)
+                            Button(L10n.text("Use Files…")) { state.model.download.chooseFiles(for: NSApp.keyWindow) }
+                                .controlSize(.small)
                         default:
                             EmptyView()
                         }
@@ -498,6 +549,24 @@ private struct StorageSettings: View {
                 }
                 LabeledContent(L10n.text("Location")) {
                     PathButton(url: state.model.settings.modelsDirectory)
+                }
+            } header: {
+                Text(L10n.text("Model"))
+            } footer: {
+                if !state.model.download.isReady {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(L10n.text("If your network blocks Hugging Face, download the two files on another network and click Use Files… to choose them. DigUp checks them before it uses them."))
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer()
+                        Button(L10n.text("Copy Links")) {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(ModelDownload.links, forType: .string)
+                        }
+                        .controlSize(.small)
+                        .help(L10n.text("Copies the addresses of the two files"))
+                    }
                 }
             }
             Section(L10n.text("Index")) {

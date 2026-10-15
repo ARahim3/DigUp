@@ -1,7 +1,11 @@
 import Foundation
-import SQLite3
+#if canImport(SQLite3)
+import SQLite3   // the system's (3.51 on macOS 26, FTS5 built in)
+#else
+import CSQLite   // the amalgamation in Vendor/sqlite, with FTS5 (scripts/fetch-vendor.sh)
+#endif
 
-/// A thin wrapper over the system SQLite (3.51 on macOS 26, FTS5 built in). One connection, used from one thread.
+/// A thin wrapper over SQLite. One connection, used from one thread.
 public final class Database {
     public struct Failure: Error, CustomStringConvertible {
         public let message: String
@@ -19,7 +23,19 @@ public final class Database {
         }
         handle = db
         sqlite3_busy_timeout(db, 5000)
-        try execute("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;")
+        // Two processes opening a new index at once (a shell starts its search and index helpers together): the switch
+        // to WAL can fail at once with "database is locked" rather than wait (SQLite's rule against deadlocks), so it's
+        // tried again for up to five seconds.
+        var tries = 0
+        while true {
+            do {
+                try execute("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;")
+                break
+            } catch where sqlite3_errcode(db) == SQLITE_BUSY && tries < 50 {
+                tries += 1
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+        }
     }
 
     deinit { sqlite3_close_v2(handle) }

@@ -34,16 +34,29 @@ public final class IndexStore {
     public var scope: [String]? {
         didSet {
             guard let scope else { (scopeSQL, scopeValues) = ("", []); return }
-            scopeSQL = scope.isEmpty ? " AND 0"
-                : " AND (" + scope.map { _ in "(path >= ? AND path < ?)" }.joined(separator: " OR ") + ")"
-            scopeValues = scope.flatMap { root -> [SQLValue] in
-                let prefix = root.hasSuffix("/") ? root : root + "/"
-                return [.text(prefix), .text(prefix + "\u{10FFFF}")]
-            }
+            let ranges = scope.flatMap(Self.pathRanges(under:))
+            scopeSQL = ranges.isEmpty ? " AND 0"
+                : " AND (" + ranges.map { _ in "(path >= ? AND path < ?)" }.joined(separator: " OR ") + ")"
+            scopeValues = ranges.flatMap { [SQLValue.text($0.from), .text($0.to)] }
         }
     }
     private var scopeSQL = ""
     private var scopeValues: [SQLValue] = []
+
+    /// The ranges of the UNIQUE path index that hold the files under `folder`. Paths are stored as a walk reports them,
+    /// which isn't always how the folder is spelled here: `standardizedFileURL` says /var where the walk says
+    /// /private/var, and decomposes a name with accents or Hangul that the disk keeps precomposed ("Café", Google
+    /// Drive's "내 드라이브"). Swift's `==` takes those for the same folder; SQLite compares bytes. So: a range for the
+    /// folder as given, and one for its real path when that's spelled differently.
+    static func pathRanges(under folder: String) -> [(from: String, to: String)] {
+        var spellings = [folder]
+        let real = FolderSelection.realPath(folder)
+        if !real.utf8.elementsEqual(folder.utf8) { spellings.append(real) }
+        return spellings.map { path in
+            let prefix = path.hasSuffix("/") ? path : path + "/"
+            return (prefix, prefix + "\u{10FFFF}")
+        }
+    }
 
     /// The main index's file in the index folder.
     public static let mainFile = "index.sqlite"
@@ -220,12 +233,16 @@ public final class IndexStore {
     /// Every file under one of `roots`.
     public func files(under roots: [String]) throws -> [FileRecord] {
         var out: [FileRecord] = []
-        // A folder inside another one listed is already covered (each file once).
+        var seen = Set<Int64>()   // each file once, also where two spellings of a folder meet
+        // A folder inside another one listed is already covered.
         for root in roots where !roots.contains(where: { FolderSelection.isInside(root, $0) }) {
-            let prefix = root.hasSuffix("/") ? root : root + "/"
-            // A range on the UNIQUE path index: everything that starts with `prefix`.
-            try db.query("SELECT \(Self.fileColumns) FROM files WHERE path >= ? AND path < ?",
-                         [.text(prefix), .text(prefix + "\u{10FFFF}")]) { out.append(Self.record($0)) }
+            for range in Self.pathRanges(under: root) {
+                try db.query("SELECT \(Self.fileColumns) FROM files WHERE path >= ? AND path < ?",
+                             [.text(range.from), .text(range.to)]) { row in
+                    let record = Self.record(row)
+                    if seen.insert(record.id).inserted { out.append(record) }
+                }
+            }
         }
         return out
     }
@@ -276,7 +293,7 @@ public final class IndexStore {
     /// Removes every file that isn't under one of `roots` (folders taken out of the app). Returns how many went.
     @discardableResult
     public func prune(keepingUnder roots: [String]) throws -> Int {
-        let prefixes = roots.map { $0.hasSuffix("/") ? $0 : $0 + "/" }
+        let prefixes = roots.flatMap { Self.pathRanges(under: $0).map(\.from) }   // a folder under /var: /private/var too
         var gone: [Int64] = []
         try db.query("SELECT id, path FROM files") { row in
             let path = row.text(1) ?? ""
@@ -364,6 +381,45 @@ public final class IndexStore {
             .flatMap { String(data: $0, encoding: .utf8) }
         try db.run("UPDATE files SET state = ?, detail = ?, info = ?, indexed_at = ? WHERE id = ?",
                    [.text(state), .optional(detail), .optional(json), .double(Date().timeIntervalSince1970), .int(id)])
+    }
+
+    /// Files read once more because DigUp reads them better now, each kind once per index (the schema stays as it was,
+    /// so an older DigUp still opens the index): PDFs with pages read as pictures, whose words come from OCR now
+    /// (`meta` "scans_ocr"), and pictures that couldn't be read at all, like SVGs, which AppKit draws now
+    /// ("pictures_drawn"). Only where this machine does either. Returns how many files.
+    @discardableResult
+    public func readAgainOnce() throws -> Int {
+        var files = Set<Int64>(), flags: [String] = []
+        if OCR.isAvailable, try meta("scans_ocr") == nil {
+            try db.query("SELECT DISTINCT file FROM segments WHERE kind = 'page_image'") { files.insert($0.int(0)) }
+            flags.append("scans_ocr")
+        }
+        if ImageExtractor.drawsVectorPictures, try meta("pictures_drawn") == nil {
+            try db.query("SELECT id FROM files WHERE kind = 'image' AND state = 'skipped' AND detail = ?",
+                         [.text(ExtractError.tooSmall(0, 0).description)]) { files.insert($0.int(0)) }
+            flags.append("pictures_drawn")
+        }
+        guard !flags.isEmpty else { return 0 }
+        try db.transaction {
+            for file in files { try requeue(file) }
+            for flag in flags { try setMeta(flag, "1") }
+        }
+        return files.count
+    }
+
+    /// A file the indexing helper had to stop on (reading it ran away): it isn't read again until it changes. A long
+    /// file that was being finished keeps what was read of it. False when no file has that path.
+    @discardableResult
+    public func markStopped(_ path: String, why: String) throws -> Bool {
+        var found: (id: Int64, state: String)?
+        try db.query("SELECT id, state FROM files WHERE path = ?", [.text(path)]) { found = ($0.int(0), $0.text(1) ?? "") }
+        guard let found else { return false }
+        if found.state == "partial" {
+            try finish(found.id, state: "done", detail: "The rest couldn't be read: it \(why)")
+        } else {
+            try finish(found.id, state: "failed", detail: "It \(why)")
+        }
+        return true
     }
 
     // MARK: Segments

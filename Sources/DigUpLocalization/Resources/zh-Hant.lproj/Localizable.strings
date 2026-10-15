@@ -403,3 +403,25 @@
 "⚠︎ The model download stopped" = "⚠︎ 模型下載已停止";
 "the code" = "程式碼";
 "none" = "未設定";
+
+/* Added in DigUp 0.6.1. */
+" and " = " 和 ";
+"%1$@ %2$@ indexed · %3$@" = "已為 %1$@ 個檔案建立索引 · %3$@";
+"%1$@ code %2$@ waiting · read after your other files" = "%1$@ 個程式碼檔案等待中 · 將在其他檔案處理完成後讀取";
+"%1$@ code files waiting · indexing from %2$@" = "%1$@ 個程式碼檔案等待中 · 將於 %2$@ 開始建立索引";
+"Choose the model files you downloaded: %1$@." = "請選取已下載的模型檔案：%1$@。";
+"Copies the addresses of the two files" = "複製這兩個檔案的下載網址";
+"Copy Links" = "複製連結";
+"Downloaded the model's two files somewhere else? Choose them here." = "已從其他地方下載模型的兩個檔案？請在這裡選取。";
+"Files are read only between these times, and what changed meanwhile is picked up when they begin. Search works all day." = "只在指定時段讀取檔案，期間發生的變更會在時段開始後處理。搜尋功能全天都可使用。";
+"From" = "從";
+"If your network blocks Hugging Face, download the two files on another network and click Use Files… to choose them. DigUp checks them before it uses them." = "如果目前的網路封鎖 Hugging Face，請透過其他網路下載這兩個檔案，再按「使用檔案…」選取。DigUp 會先驗證檔案，再開始使用。";
+"Index only at set hours" = "只在指定時段建立索引";
+"The chosen %1$@ is %2$@, not %3$@" = "選取的 %1$@ 大小為 %2$@，應為 %3$@";
+"The chosen %1$@ isn't the right file" = "選取的 %1$@ 不是正確的檔案";
+"Those aren't the model's files" = "選取的檔案不是模型檔案";
+"To" = "結束時間";
+"Use" = "使用";
+"Use Files…" = "使用檔案…";
+"indexing from %1$@" = "將於 %1$@ 開始建立索引";
+"to" = "至";

@@ -1,0 +1,14 @@
+// llama.cpp as shared libraries (Linux, Windows): scripts/build-llama.sh builds them with GGML_BACKEND_DL into
+// Vendor/llama/lib, where ggml's backends (ggml-cpu-*, ggml-cuda, ggml-vulkan) sit beside them and load at run time.
+module CLlama [system] {
+    header "../../Vendor/llama/include/llama.h"
+    header "../../Vendor/llama/include/mtmd.h"
+    header "../../Vendor/llama/include/mtmd-helper.h"
+    header "../../Vendor/llama/include/llama-build.h"
+    link "llama"
+    link "mtmd"
+    link "ggml"
+    link "ggml-base"
+    link "stdc++"
+    export *
+}

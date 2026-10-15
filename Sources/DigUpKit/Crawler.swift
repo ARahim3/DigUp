@@ -1,5 +1,4 @@
 import Foundation
-import UniformTypeIdentifiers
 
 /// A file the crawler decided to index.
 public struct Candidate: Sendable {
@@ -27,8 +26,7 @@ public enum Crawler {
     public static func crawl(_ roots: [URL], options: IndexOptions) -> CrawlReport {
         let fm = FileManager.default
         let home = fm.homeDirectoryForCurrentUser.path
-        let keys: [URLResourceKey] = [.isDirectoryKey, .isPackageKey, .contentTypeKey, .isUbiquitousItemKey,
-                                      .ubiquitousItemDownloadingStatusKey]
+        let keys = FileSystem.crawlKeys
         var report = CrawlReport()
         var projectRoots = Set<String>()
         var repos = GitRepos()
@@ -48,12 +46,17 @@ public enum Crawler {
             let skips = options.excludedFolders.filter {
                 FolderSelection.isInside($0, root.path) || FolderSelection.isInside($0, real)
             }.flatMap { [$0, FolderSelection.realPath($0)] }
+            #if os(Windows)
+            guard let walker = FileSystem.walk(root, keys: keys) else { continue }
+            #else
             guard let walker = fm.enumerator(at: root, includingPropertiesForKeys: keys,
                                              options: [.skipsHiddenFiles, .skipsPackageDescendants],
                                              errorHandler: { _, _ in true }) else { continue }
+            #endif
             func visit(_ url: URL) {
                 let values = try? url.resourceValues(forKeys: Set(keys))
-                if values?.isDirectory == true, values?.isPackage != true {
+                let isPackage = FileSystem.isPackage(url, values)
+                if values?.isDirectory == true, !isPackage {
                     if let reason = Rules.skipReason(forFolder: url, home: home, excluded: skips)
                         ?? (options.code ? Rules.codeSkipReason(forFolder: url) : nil) {
                         walker.skipDescendants()
@@ -65,27 +68,25 @@ public enum Crawler {
                     }
                     return
                 }
-                if values?.isPackage == true {
+                if isPackage {
+                    walker.skipDescendants()   // macOS's enumerator never enters one; elsewhere it would
                     report.skipped["app or bundle", default: 0] += 1
                     return
                 }
                 let classification = options.code ? Rules.classifyCode(url, options: options)
-                    : Rules.classify(url, type: values?.contentType, options: options)
+                    : Rules.classify(url, values: values, options: options)
                 switch classification {
                 case .ignore:
                     report.skipped["other type", default: 0] += 1
                 case .skip(let reason):
                     report.skipped[reason, default: 0] += 1
                 case .index(let kind):
-                    var info = stat()
-                    guard lstat(url.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {
+                    guard let info = FileSystem.info(of: url.path), info.isRegular else {
                         report.skipped["link or special file", default: 0] += 1
                         return
                     }
                     // Reading a dataless placeholder (iCloud "Optimize Mac Storage", File Providers) downloads it.
-                    let dataless = info.st_flags & 0x4000_0000 != 0  // SF_DATALESS
-                    let inCloud = values?.isUbiquitousItem == true && values?.ubiquitousItemDownloadingStatus != .current
-                    if dataless || inCloud {
+                    if info.dataless || FileSystem.isInCloud(values) {
                         report.skipped["in the cloud, not downloaded", default: 0] += 1
                         return
                     }
@@ -93,7 +94,7 @@ public enum Crawler {
                         // Too big to be written by hand; a notebook's file holds its outputs too.
                         let limit = url.pathExtension.lowercased() == "ipynb" ? options.maxNotebookBytes
                             : options.maxCodeBytes
-                        if info.st_size > limit {
+                        if info.size > limit {
                             report.skipped["too big to be written by hand", default: 0] += 1
                             return
                         }
@@ -103,9 +104,8 @@ public enum Crawler {
                         }
                     }
                     guard foundPaths.insert(url.path).inserted else { return }
-                    let mtime = Double(info.st_mtimespec.tv_sec) + Double(info.st_mtimespec.tv_nsec) / 1e9
-                    found.append(Candidate(path: url.path, kind: kind, size: Int64(info.st_size), mtime: mtime,
-                                           inode: UInt64(info.st_ino), device: UInt64(bitPattern: Int64(info.st_dev))))
+                    found.append(Candidate(path: url.path, kind: kind, size: info.size, mtime: info.mtime,
+                                           inode: info.inode, device: info.device))
                 }
             }
 
@@ -210,22 +210,9 @@ struct GitRepos {
 
 /// The files git keeps in a repo: tracked ones, and new ones its .gitignore doesn't leave out.
 enum GitFiles {
-    /// A git that's really installed (Xcode's, the command line tools', Homebrew's). /usr/bin/git on a Mac without the
-    /// developer tools only asks to install them.
-    static let git: String? = {
-        var candidates: [String] = []
-        if let developer = try? FileManager.default.destinationOfSymbolicLink(atPath: "/var/db/xcode_select_link") {
-            candidates.append(developer + "/usr/bin/git")
-        }
-        candidates += ["/Library/Developer/CommandLineTools/usr/bin/git",
-                       "/Applications/Xcode.app/Contents/Developer/usr/bin/git", "/opt/homebrew/bin/git",
-                       "/usr/local/bin/git"]
-        return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
-    }()
-
-    /// Paths relative to `repo`, or nil when git can't say (no git, not a repo, an error).
+    /// Paths relative to `repo`, or nil when git can't say (no git, not a repo, an error). The git is `FileSystem.git`.
     static func list(_ repo: String) -> Set<String>? {
-        guard let git else { return nil }
+        guard let git = FileSystem.git else { return nil }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: git)
         process.arguments = ["-C", repo, "ls-files", "-z", "--cached", "--others", "--exclude-standard"]

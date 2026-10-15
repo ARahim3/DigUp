@@ -403,3 +403,25 @@
 "⚠︎ The model download stopped" = "⚠︎ The model download stopped";
 "the code" = "the code";
 "none" = "none";
+
+/* Added in DigUp 0.6.1. */
+" and " = " and ";
+"%1$@ %2$@ indexed · %3$@" = "%1$@ %2$@ indexed · %3$@";
+"%1$@ code %2$@ waiting · read after your other files" = "%1$@ code %2$@ waiting · read after your other files";
+"%1$@ code files waiting · indexing from %2$@" = "%1$@ code files waiting · indexing from %2$@";
+"Choose the model files you downloaded: %1$@." = "Choose the model files you downloaded: %1$@.";
+"Copies the addresses of the two files" = "Copies the addresses of the two files";
+"Copy Links" = "Copy Links";
+"Downloaded the model's two files somewhere else? Choose them here." = "Downloaded the model's two files somewhere else? Choose them here.";
+"Files are read only between these times, and what changed meanwhile is picked up when they begin. Search works all day." = "Files are read only between these times, and what changed meanwhile is picked up when they begin. Search works all day.";
+"From" = "From";
+"If your network blocks Hugging Face, download the two files on another network and click Use Files… to choose them. DigUp checks them before it uses them." = "If your network blocks Hugging Face, download the two files on another network and click Use Files… to choose them. DigUp checks them before it uses them.";
+"Index only at set hours" = "Index only at set hours";
+"The chosen %1$@ is %2$@, not %3$@" = "The chosen %1$@ is %2$@, not %3$@";
+"The chosen %1$@ isn't the right file" = "The chosen %1$@ isn't the right file";
+"Those aren't the model's files" = "Those aren't the model's files";
+"To" = "To";
+"Use" = "Use";
+"Use Files…" = "Use Files…";
+"indexing from %1$@" = "indexing from %1$@";
+"to" = "to";

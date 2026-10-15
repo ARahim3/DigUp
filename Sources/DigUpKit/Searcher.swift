@@ -1,4 +1,3 @@
-import Accelerate
 import Foundation
 
 public struct SearchHit: Sendable {
@@ -137,7 +136,17 @@ public final class Searcher {
         let identifier = isCode ? CodeLookup.identifier(text) : nil
         var words: [(file: Int64, segment: Int64, snippet: String?)] = []
         var coverage: [Int64: Double] = [:]   // share of the query's words found anywhere in the file
-        let patterns = identifier.map { [CodeLookup.phrase($0)] } ?? Self.patterns(terms, prefixLast: prefixLast)
+        var patterns = identifier.map { [CodeLookup.phrase($0)] } ?? Self.patterns(terms, prefixLast: prefixLast)
+        // A word that's in no file as typed matches as the start of longer words, as the last word does while it's
+        // being typed: "grok" finds "Grok4" and "Grokipedia" (stemming only covers endings, as in "grokking").
+        // Otherwise a file the panel showed while you typed dropped out once you stopped. A word that is in the index
+        // as typed stays whole, so "cat" doesn't bring in "category"; so does a word of two letters, the start of too
+        // many words to stand for one.
+        if identifier == nil {
+            for index in terms.indices where terms[index].count >= 3 && !patterns[index].hasSuffix("*") {
+                if try !isIndexed(patterns[index]) { patterns[index] += "*" }
+            }
+        }
         if !patterns.isEmpty {
             var seen = Set<Int64>()
             try store.db.query("""
@@ -294,8 +303,8 @@ public final class Searcher {
                     Vectors.floats(fromHalf: matrix.halves + row * Vectors.dimension, count: count * Vectors.dimension,
                                    to: matrix.block)
                     // (count × 768) · (768 × 1)
-                    vDSP_mmul(matrix.block, 1, query.baseAddress!, 1, scores.baseAddress! + row, 1,
-                              vDSP_Length(count), 1, vDSP_Length(Vectors.dimension))
+                    Vectors.scores(of: matrix.block, count: count, query: query.baseAddress!,
+                                   into: scores.baseAddress! + row)
                     row += count
                 }
             }
@@ -380,12 +389,20 @@ public final class Searcher {
     }
 
     /// FTS5 patterns for the query's words: quoted, and as prefixes for the last word while it's being typed and for
-    /// words of languages that attach endings (`SearchText.inflects`).
+    /// words of languages that attach endings (`SearchText.inflects`). `search` makes a word that's in no file a
+    /// prefix too.
     static func patterns(_ terms: [String], prefixLast: Bool) -> [String] {
         terms.enumerated().map { index, term in
             let prefix = (prefixLast && index == terms.count - 1) || SearchText.inflects(term)
             return "\"\(term)\"" + (prefix ? "*" : "")
         }
+    }
+
+    /// Whether keyword search finds `pattern` in any file.
+    private func isIndexed(_ pattern: String) throws -> Bool {
+        var found = false
+        try store.db.query("SELECT 1 FROM fts WHERE fts MATCH ? LIMIT 1", [.text(pattern)]) { _ in found = true }
+        return found
     }
 
     /// The query's words as an FTS5 OR-query.

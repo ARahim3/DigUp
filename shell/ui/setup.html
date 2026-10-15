@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Set Up DigUp</title>
+  <link rel="stylesheet" href="setup.css">
+</head>
+<body>
+  <main>
+    <section class="page" id="welcome">
+      <div class="hero">
+        <img class="icon" src="icon.png" alt="">
+        <h1>DigUp</h1>
+        <p class="tagline">Describe it. Dig it up.</p>
+      </div>
+      <ul class="features">
+        <li><span class="tile"><svg viewBox="0 0 24 24"><path d="M4 5 H20 V19 H4 Z M4 16 L9 11 L13 15 L16 12 L20 16"/></svg></span><div><b>Screenshots and photos</b>
+          <span>“that payment error”, “the zebra”, “whiteboard from Tuesday”</span></div></li>
+        <li><span class="tile"><svg viewBox="0 0 24 24"><path d="M6 3 H14 L19 8 V21 H6 Z M14 3 V8 H19 M9 12 H16 M9 15 H16 M9 18 H13"/></svg></span><div><b>PDFs and documents</b>
+          <span>“the clause about pets in the lease”, “flight receipt”</span></div></li>
+        <li><span class="tile"><svg viewBox="0 0 24 24"><path d="M3 12 H5 M7 8 V16 M10 5 V19 M13 9 V15 M16 6 V18 M19 10 V14 M21 12 H22"/></svg></span><div><b>Moments inside audio and video</b>
+          <span>“where they talk about sleep”, “the part with the drums”</span></div></li>
+      </ul>
+      <p class="privacy">Everything is indexed and searched on this computer. DigUp downloads its AI model (865 MB)
+        once; after that it works offline, and nothing you index ever leaves your computer.</p>
+    </section>
+
+    <section class="page" id="folders" hidden>
+      <h2>What should DigUp search?</h2>
+      <p class="subtitle">Pick folders. You can change this anytime from the tray: Choose Folders…</p>
+      <div class="folders" id="folder-list"></div>
+      <button class="link" id="add-folder">Add Folder…</button>
+      <p class="note">DigUp only reads files: it never changes, moves or uploads them.</p>
+    </section>
+
+    <section class="page" id="shortcut" hidden>
+      <h2>Search from anywhere</h2>
+      <p class="subtitle">Press the shortcut in any app to open the search panel, and describe what you remember.</p>
+      <div class="keys" id="keys"></div>
+      <h3>In the search panel</h3>
+      <dl class="panel-keys">
+        <dt>↩</dt><dd>opens the file (at the page or moment, where it can)</dd>
+        <dt id="reveal-key">Ctrl+↩</dt><dd id="reveal-text">shows it in its folder</dd>
+        <dt>↑ ↓</dt><dd>move between results</dd>
+        <dt>Esc</dt><dd>closes the panel</dd>
+      </dl>
+    </section>
+
+    <section class="page" id="ready" hidden>
+      <div class="hero">
+        <img class="icon" src="icon.png" alt="">
+        <h2>You're all set</h2>
+      </div>
+      <p class="subtitle centered" id="ready-text">DigUp lives in the tray, which shows how indexing is going. Files are
+        searchable by name at once, and by what's in them as they're indexed.</p>
+    </section>
+  </main>
+
+  <footer>
+    <span class="model" id="model"></span>
+    <span class="buttons">
+      <button id="back" hidden>Back</button>
+      <button class="primary" id="next">Continue</button>
+    </span>
+  </footer>
+  <script src="setup.js"></script>
+</body>
+</html>

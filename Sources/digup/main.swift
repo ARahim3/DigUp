@@ -4,7 +4,9 @@ import LlamaRuntime
 
 // DigUp's developer CLI. Every command works on an explicit index folder, so tests never touch the real one.
 
-signal(SIGPIPE, SIG_IGN)   // a dead worker must surface as an error, not kill us
+#if !os(Windows)
+signal(SIGPIPE, SIG_IGN)   // a dead worker must surface as an error, not kill us (Windows has no SIGPIPE)
+#endif
 
 let usage = """
     digup: search your files by meaning (DigUp developer CLI)
@@ -15,13 +17,22 @@ let usage = """
       digup search <words>... [--kind K,K] [-n 10] [--json]
                                               "code: <words>" searches the code index
       digup status                            what's in the index
+      digup speed                             this machine's speed next to the M4 Pro behind the estimates, and
+                                              what indexing has measured here (costs.json in the index folder)
       digup eval <queries.json> [-n 10]       recall of known answers (see evals/; "code: …" queries search code)
       digup index-service <folder>... [--code-root DIR]... [--code-exclude DIR]... [--backfill] [--prune]
-                                              the app's indexing helper (JSON lines; see IndexService)
+                          [--memory-limit MB] [--time-limit S]
+                                              the app's indexing helper (JSON lines; see IndexService); it stops
+                                              on a file whose reading passes the limits (see Watchdog)
       digup worker [--text-only]              the model as a process (JSON lines; the app's query encoder)
+      digup search-service <folder>... [--code-root DIR]... [--encoder-idle S]
+                                              the searcher as a process, index open and encoder warm (JSON lines;
+                                              see SearchService): for shells that can't link DigUpKit
+      digup download-model [--to DIR]         the model files, from the Hugging Face cache or downloaded with
+                                              resume, checked (JSON lines: see DownloadModel)
 
     Options:
-      --index DIR          index folder (default: ~/Library/Application Support/DigUp/index.noindex)
+      --index DIR          index folder (default: DigUp's Application Support folder; see `digup status`)
       --code               estimate, index or show the code index of these folders (code.sqlite in the index
                            folder): source files, their repos' docs and notebooks, minus what git ignores
       --kind K,K           screenshot, image, pdf, doc, audio, video
@@ -51,7 +62,8 @@ struct Arguments {
     var lists: [String: [String]] = [:]
     var flags: Set<String> = []
     static let valued: Set<String> = ["--index", "--limit", "--kind", "-n", "--zgate", "--word-weight", "--new-limit",
-                                      "--linger", "--shot-tokens", "--code-stretch"]
+                                      "--linger", "--shot-tokens", "--code-stretch", "--encoder-idle", "--to",
+                                      "--memory-limit", "--time-limit"]
     static let repeated: Set<String> = ["--exclude", "--exclude-ext", "--code-root", "--code-exclude"]
 
     init(_ raw: ArraySlice<String>) throws {
@@ -77,8 +89,8 @@ struct Arguments {
     }
 
     var indexFolder: URL {
-        URL(fileURLWithPath: ((values["--index"] ?? "~/Library/Application Support/DigUp/index.noindex")
-            as NSString).expandingTildeInPath).standardizedFileURL
+        guard let chosen = values["--index"] else { return AppPaths.defaultIndex.standardizedFileURL }
+        return URL(fileURLWithPath: (chosen as NSString).expandingTildeInPath).standardizedFileURL
     }
 
     /// `--code`: the code index, not the main one.
@@ -198,6 +210,14 @@ func embedderSource() -> String? {
 func estimate(_ args: Arguments) throws {
     guard !args.positional.isEmpty else { throw CLIError("which folders? e.g. digup estimate ~/Documents") }
     let options = args.options
+    // What indexing costs on this machine: as measured by indexing here, kind by kind, once there's enough of it;
+    // until then the M4 Pro's fixed costs, scaled by a second's speed check (done once and kept beside the index).
+    var measured = MeasuredCosts.load(from: args.indexFolder)
+    if measured.speed == nil, let speed = MeasuredCosts.Speed.measure() {
+        measured.speed = speed
+        MeasuredCosts.setSpeed(speed, in: args.indexFolder)
+    }
+    let costs = measured.costs
     var total = 0.0
     for folder in args.positional.map(Arguments.folderURL) {
         // One folder that isn't there or can't be read (a denied privacy prompt) mustn't sink the others.
@@ -212,7 +232,7 @@ func estimate(_ args: Arguments) throws {
         }
         let started = Date()
         let crawl = Crawler.crawl([folder], options: options)
-        let parts = Estimator.estimates(bySubfolder: crawl.candidates, of: folder.path, options: options)
+        let parts = Estimator.estimates(bySubfolder: crawl.candidates, of: folder.path, options: options, costs: costs)
         let estimate = parts.values.reduce(Estimate(), +)
         // Biggest first; the app lists them under the folder, so that a long first pass can be cut down.
         let subfolders = parts.filter { $0.key != folder.path }.sorted {
@@ -279,6 +299,8 @@ func index(_ args: Arguments) throws {
         try makeEmbedder(textOnly: false, log: store.directory.appendingPathComponent("worker.log"))
     })
     indexer.embedderSource = embedderSource()
+    indexer.costsFolder = store.directory
+    try store.readAgainOnce()   // what older indexes couldn't read: scanned pages' words, SVGs
     try indexer.checkModel()
     let folders = try args.folders()
     let sync = try indexer.sync(folders)
@@ -347,18 +369,7 @@ func search(_ args: Arguments) throws {
                                    wordWeight: args.wordWeight)
     let searched = Date()
     if args.flags.contains("--json") {
-        let rows: [[String: Any]] = hits.map { hit in
-            var row: [String: Any] = ["path": hit.path, "kind": hit.kind.rawValue, "segment": hit.segment.rawValue,
-                                      "score": hit.score]
-            if let z = hit.z { row["z"] = z }
-            if let cosine = hit.cosine { row["cosine"] = cosine }
-            if let rank = hit.keywordRank { row["keyword_rank"] = rank }
-            if let loc = hit.loc { row["loc"] = loc }
-            if let end = hit.locEnd { row["loc_end"] = end }
-            if let focus = hit.focus { row["focus"] = focus }
-            if let excerpt = hit.excerpt { row["excerpt"] = excerpt }
-            return row
-        }
+        let rows = hits.map(hitFields)
         let data = try JSONSerialization.data(withJSONObject: rows, options: [.prettyPrinted, .sortedKeys])
         print(String(data: data, encoding: .utf8) ?? "[]")
         return
@@ -404,6 +415,7 @@ func indexService(_ args: Arguments) throws -> Int32 {
     func part(_ file: String, options: IndexOptions, roots: [URL]) throws -> IndexService.Part {
         let store = try IndexStore(directory: args.indexFolder, file: file)
         let indexer = try Indexer(store: store, options: options, makeEmbedder: { try model.embedder() })
+        indexer.costsFolder = args.indexFolder   // what indexing costs here, for later estimates
         // A new app version may bring a new model: the index starts over by itself (keyword search on names goes on).
         indexer.embedderSource = embedderSource()
         indexer.resetOnModelChange = { indexed, now in
@@ -418,16 +430,40 @@ func indexService(_ args: Arguments) throws -> Int32 {
     codeOptions.code = true
     codeOptions.excludedFolders = (args.lists["--code-exclude"] ?? []).map { Arguments.folderURL($0).path }
     let codeRoots = (args.lists["--code-root"] ?? []).map(Arguments.folderURL)
+    // A file whose reading runs away ends this helper, noted for the next one (`Watchdog`).
+    Watchdog(folder: args.indexFolder,
+             memoryLimit: args.values["--memory-limit"].flatMap(UInt64.init).map { $0 << 20 } ?? Watchdog.defaultMemoryLimit,
+             timeLimit: args.values["--time-limit"].flatMap(Double.init) ?? Watchdog.defaultTimeLimit).start()
     let service = IndexService(main: try part(IndexStore.mainFile, options: args.options,
                                               roots: args.positional.map(Arguments.folderURL)),
                                code: codeRoots.isEmpty ? nil : try part(IndexStore.codeFile, options: codeOptions,
                                                                         roots: codeRoots),
+                               folder: args.indexFolder,
                                model: model,
                                modelReady: { embedderSource() == nil || LlamaModels.complete },
                                backfill: args.flags.contains("--backfill"),
                                newFilesLimit: args.values["--new-limit"].flatMap(Int.init) ?? 50,
                                linger: args.values["--linger"].flatMap(Double.init) ?? 60)
     return service.serve()
+}
+
+/// `digup speed`: the speed check estimates start from, and what indexing has measured on this machine.
+func speed(_ args: Arguments) {
+    if let seconds = MeasuredCosts.Speed.measuredSeconds() {
+        let speed = MeasuredCosts.Speed.compared(seconds)
+        print(String(format: "20 float16 matrix multiplies (2048²) %.3f s · Vision on a made-up screenshot %.3f s",
+                     seconds.multiplies, seconds.ocr))
+        print(String(format: "next to the M4 Pro behind the fixed costs: the model's work ×%.2f, OCR ×%.2f (1 = as fast)",
+                     speed.embedding, speed.ocr))
+    } else {
+        print("no speed check here (no Metal): the fixed costs stand in until indexing has measured this machine's")
+    }
+    let measured = MeasuredCosts.load(from: args.indexFolder)
+    print("measured by indexing (\(tilde(MeasuredCosts.file(in: args.indexFolder).path))):"
+          + (measured.tallies.isEmpty ? " nothing yet" : ""))
+    for (name, tally) in measured.tallies.sorted(by: { $0.key < $1.key }) {
+        print(String(format: "  %@ %.4f s each, over %.0f", name, tally.seconds / tally.units, tally.units))
+    }
 }
 
 // MARK: Eval
@@ -446,7 +482,12 @@ struct EvalFile: Decodable {
 func evaluate(_ args: Arguments) throws {
     guard let file = args.positional.first else { throw CLIError("which eval file?") }
     let eval = try JSONDecoder().decode(EvalFile.self, from: Data(contentsOf: URL(fileURLWithPath: (file as NSString).expandingTildeInPath)))
-    let base = (eval.base as NSString).expandingTildeInPath
+    var base = (eval.base as NSString).expandingTildeInPath
+    // The testbed kept elsewhere (another drive on Windows, wherever CI puts it): DIGUP_TESTBED stands for
+    // ~/DigUpTestbed in the eval's base.
+    if let testbed = ProcessInfo.processInfo.environment["DIGUP_TESTBED"], eval.base.hasPrefix("~/DigUpTestbed") {
+        base = testbed + eval.base.dropFirst("~/DigUpTestbed".count)
+    }
     // "code: …" queries search the code index (with its prompt), the others the main one.
     let isCode = eval.queries.map { CodeQuery.text(of: $0.q) != nil }
     let texts = eval.queries.map { CodeQuery.text(of: $0.q) ?? $0.q }
@@ -526,14 +567,21 @@ do {
         exit(0)
     }
     let args = try Arguments(raw.dropFirst())
+    if ["index-service", "worker", "search-service", "download-model"].contains(command)
+        || command == "estimate" && args.flags.contains("--json") {
+        ParentWatch.start()   // an app's helper goes when the app does
+    }
     switch command {
     case "estimate": try estimate(args)
     case "index": try index(args)
     case "search": try search(args)
     case "status": try status(args)
+    case "speed": speed(args)
     case "eval": try evaluate(args)
     case "index-service": exit(try indexService(args))
     case "worker": exit(workerService(args))
+    case "search-service": exit(try searchService(args))
+    case "download-model": exit(try downloadModel(args))
     default:
         print(usage)
         exit(2)

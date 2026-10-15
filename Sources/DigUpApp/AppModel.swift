@@ -44,6 +44,12 @@ final class AppModel {
             }
             let waiting = L10n.format("%1$@ %2$@ waiting", String(describing: status.pending.formatted()), String(describing: status.pending == 1 ? "file" : "files"))
             if status.pending > 0, status.paused { return L10n.format("Paused · %1$@", String(describing: waiting)) }
+            if let until = status.heldUntil, !status.paused {
+                // Outside the set hours: what's known to wait, and when indexing starts again.
+                let when = L10n.format("indexing from %1$@", until.formatted(date: .omitted, time: .shortened))
+                if status.pending > 0 { return "\(waiting) · \(when)" }
+                return L10n.format("%1$@ %2$@ indexed · %3$@", status.searchable.formatted(), status.searchable == 1 ? "file" : "files", when)
+            }
             if status.pending > 0, let reason = status.waitingFor { return "\(waiting) · \(reason)" }
             if status.pending > 0 { return L10n.format("%1$@ to be indexed", String(describing: waiting)) }
             if status.unfinished > 0 {
@@ -93,6 +99,13 @@ final class AppModel {
         let waiting = code.pending > 0 ? L10n.format(" · %1$@ waiting", String(describing: code.pending.formatted())) : ""
         if code.pending > 0, status.paused { return L10n.format("Paused · %1$@ code files waiting", String(describing: code.pending.formatted())) }
         if code.pending > 0, let reason = status.waitingFor { return L10n.format("%1$@ code files waiting · %2$@", String(describing: code.pending.formatted()), String(describing: reason)) }
+        if code.pending > 0, let until = status.heldUntil {
+            return L10n.format("%1$@ code files waiting · indexing from %2$@", code.pending.formatted(), until.formatted(date: .omitted, time: .shortened))
+        }
+        // Code is read once the other folders have nothing waiting (the helper's order).
+        if code.pending > 0, status.pending > 0 {
+            return L10n.format("%1$@ code %2$@ waiting · read after your other files", code.pending.formatted(), code.pending == 1 ? "file" : "files")
+        }
         return L10n.format("%1$@ code %2$@ indexed", String(describing: code.searchable.formatted()), String(describing: code.searchable == 1 ? "file" : "files")) + waiting
     }
 

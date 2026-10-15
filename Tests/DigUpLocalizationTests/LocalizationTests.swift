@@ -57,6 +57,22 @@ struct LocalizationTests {
         #expect(chinese.localizedString(forKey: "Settings…", value: nil, table: nil) == "設定…")
     }
 
+    @Test func scheduledIndexingAndManualModelFilesKeepDisplayValues() throws {
+        let bundle = try localizedBundle("zh-Hant")
+        func format(_ key: String, _ args: CVarArg...) -> String {
+            String(format: bundle.localizedString(forKey: key, value: nil, table: nil), arguments: args)
+        }
+        #expect(format("%1$@ code files waiting · indexing from %2$@", "12", "01:00")
+                == "12 個程式碼檔案等待中 · 將於 01:00 開始建立索引")
+        #expect(format("%1$@ %2$@ indexed · %3$@", "42", "files", "將於 01:00 開始建立索引")
+                == "已為 42 個檔案建立索引 · 將於 01:00 開始建立索引")
+        #expect(format("The chosen %1$@ is %2$@, not %3$@", "model.gguf", "10 MB", "865 MB")
+                == "選取的 model.gguf 大小為 10 MB，應為 865 MB")
+        #expect(bundle.localizedString(forKey: "Index only at set hours", value: nil, table: nil)
+                == "只在指定時段建立索引")
+        #expect(bundle.localizedString(forKey: "Use Files…", value: nil, table: nil) == "使用檔案…")
+    }
+
     @Test func permissionDescriptionsAreLocalized() throws {
         for language in ["en", "zh-Hant"] {
             let bundle = try localizedBundle(language)

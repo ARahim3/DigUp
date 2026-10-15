@@ -179,7 +179,7 @@ public final class EmbeddingWorker: Embedder {
         }
         try? input.fileHandleForWriting.close()
         let deadline = Date().addingTimeInterval(3)
-        while process.isRunning, Date() < deadline { usleep(20_000) }
+        while process.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.02) }
         if process.isRunning { process.terminate() }
     }
 
