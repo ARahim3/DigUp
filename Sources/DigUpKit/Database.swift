@@ -36,6 +36,9 @@ public final class Database {
                 Thread.sleep(forTimeInterval: 0.1)
             }
         }
+        // Keyword search (bm25 over FTS5) spends most of its time pinning purgeable page-cache pages on macOS.
+        // Mapping the file skips that path; on a 64k-vector index keystroke search is ~2× faster (issue #93).
+        try execute("PRAGMA mmap_size = 1073741824")
     }
 
     deinit { sqlite3_close_v2(handle) }
@@ -132,6 +135,15 @@ public final class Statement {
     public func blob(_ column: Int32) -> Data? {
         guard let bytes = sqlite3_column_blob(statement, column) else { return nil }
         return Data(bytes: bytes, count: Int(sqlite3_column_bytes(statement, column)))
+    }
+
+    /// Copies the blob at `column` into `destination` when its length is exactly `bytes` (loading vectors into the
+    /// matrix without a `Data` intermediate; ~17% faster on a 64k-vector index, issue #93).
+    public func copyBlob(_ column: Int32, to destination: UnsafeMutableRawPointer, bytes: Int) -> Bool {
+        guard let source = sqlite3_column_blob(statement, column),
+              Int(sqlite3_column_bytes(statement, column)) == bytes else { return false }
+        destination.copyMemory(from: source, byteCount: bytes)
+        return true
     }
 }
 
