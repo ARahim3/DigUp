@@ -215,7 +215,7 @@ function cell(hit) {
   const item = element("div", "cell" + (hit.path === state.selection ? " selected" : ""));
   item.dataset.path = hit.path;
   item.setAttribute("role", "option");
-  item.setAttribute("aria-label", `${KIND_TITLE[hit.kind] || "File"}, ${nameOf(hit.path)}, ${reasonOf(hit)}`);
+  item.setAttribute("aria-label", `${KIND_TITLE[hit.kind] || "File"}, ${titleOf(hit)}, ${reasonOf(hit)}`);
   const picture = element("div", "picture");
   picture.append(cellPicture(hit));
   if (hit.kind !== "image" && hit.kind !== "screenshot") {
@@ -225,7 +225,7 @@ function cell(hit) {
   }
   const place = placeOf(hit);
   if (place) picture.append(element("span", "place on-image", place));
-  item.append(picture, element("div", "name", "‎" + nameOf(hit.path)), folderLine(folderOf(hit)));
+  item.append(picture, element("div", "name", "‎" + titleOf(hit)), folderLine(folderOf(hit)));
   wire(item, hit);
   return item;
 }
@@ -319,7 +319,7 @@ function codeRow(hit, weaker) {
   icon.innerHTML = ICONS.code;
   const text = element("div", "text");
   const head = element("div", "head");
-  head.append(element("span", "title", "‎" + nameOf(hit.path)));
+  head.append(element("span", "title", "‎" + titleOf(hit)));
   const place = placeOf(hit);
   if (place) head.append(element("span", "place", place));
   head.append(folderLine(folderOf(hit), "span"));
@@ -350,7 +350,7 @@ function wire(item, hit) {
   }
   // Elsewhere: pressed and moved a little, the system's drag (which needs the button down).
   item.onmousedown = (event) => {
-    if (event.button !== 0 || isLinux) return;
+    if (event.button !== 0 || isLinux || hit.kind === "mail") return;   // a mail is no file to drag
     event.preventDefault();
     const [x, y] = [event.clientX, event.clientY];
     const moved = (move) => {
@@ -370,7 +370,10 @@ function wire(item, hit) {
   item.oncontextmenu = (event) => {
     event.preventDefault();
     select(hit.path);
-    showMenu(event.clientX, event.clientY, [
+    showMenu(event.clientX, event.clientY, hit.kind === "mail" ? [
+      ["Open in Outlook", () => open(hit)],
+      [`Show PST in ${FILE_MANAGER}`, () => reveal(hit)],
+    ] : [
       ["Open", () => open(hit)],
       [`Show in ${FILE_MANAGER}`, () => reveal(hit)],
       null,
@@ -408,7 +411,7 @@ function open(hit) {
 }
 
 function reveal(hit) {
-  invoke("reveal", { path: hit.path }).catch(failed);
+  invoke("reveal", { path: fileOf(hit) }).catch(failed);
 }
 
 function failed(error) {
@@ -644,7 +647,7 @@ function renderBig() {
   const sheet = element("div", "sheet");
   const head = element("div", "head");
   const title = element("div", "title");
-  title.append(element("span", "name", nameOf(hit.path)));
+  title.append(element("span", "name", titleOf(hit)));
   const place = placeOf(hit);
   if (place) title.append(element("span", "place", place));
   const opening = element("button", "primary", "Open");
@@ -819,8 +822,8 @@ function codeLines(hit) {
 
 function facts(hit) {
   const box = element("div", "facts");
-  const title = element("div", "title", "‎" + nameOf(hit.path));
-  title.title = nameOf(hit.path);
+  const title = element("div", "title", "‎" + titleOf(hit));
+  title.title = titleOf(hit);
   const folder = folderLine(folderOf(hit), "button");
   folder.title = `Show in ${FILE_MANAGER}`;
   folder.onclick = () => reveal(hit);
