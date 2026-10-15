@@ -1,0 +1,89 @@
+{
+  "base": "~/DigUpTestbed/han-filenames",
+  "queries": [
+    {
+      "q": "輔導",
+      "expect": [
+        "exact/輔導.txt"
+      ],
+      "tag": "han-name"
+    },
+    {
+      "q": "情緒",
+      "expect": [
+        "general/學生情緒輔導紀錄.txt"
+      ],
+      "tag": "han-name"
+    },
+    {
+      "q": "情緒輔導",
+      "expect": [
+        "general/學生情緒輔導紀錄.txt"
+      ],
+      "tag": "han-name"
+    },
+    {
+      "q": "學生情緒",
+      "expect": [
+        "general/學生情緒輔導紀錄.txt"
+      ],
+      "tag": "han-name"
+    },
+    {
+      "q": "探索",
+      "expect": [
+        "other/生涯探索規劃.txt"
+      ],
+      "tag": "han-name"
+    },
+    {
+      "q": "規劃",
+      "expect": [
+        "other/生涯探索規劃.txt"
+      ],
+      "tag": "han-name"
+    },
+    {
+      "q": "教學",
+      "expect": [
+        "other/期末教學檢討.txt"
+      ],
+      "tag": "han-name"
+    },
+    {
+      "q": "課程",
+      "expect": [
+        "other/特殊教育課程簡報.txt"
+      ],
+      "tag": "han-name"
+    },
+    {
+      "q": "整理",
+      "expect": [
+        "other/資料整理會議紀錄.txt"
+      ],
+      "tag": "han-name"
+    },
+    {
+      "q": "會議",
+      "expect": [
+        "other/資料整理會議紀錄.txt"
+      ],
+      "tag": "han-name"
+    },
+    {
+      "q": "2026café學生輔導",
+      "expect": [
+        "mixed/２０２６ＣＡＦÉ學生輔導紀錄.txt"
+      ],
+      "tag": "han-name"
+    },
+    {
+      "q": "學生情緒輔導紀錄.txt",
+      "expect": [
+        "general/學生情緒輔導紀錄.txt"
+      ],
+      "tag": "han-name"
+    }
+  ]
+}
