@@ -347,6 +347,16 @@ private struct FolderSettings: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                Toggle(isOn: Binding(get: { state.model.settings.indexInLowPowerMode },
+                                     set: { state.app.setIndexInLowPowerMode($0) })) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(AppSettings.lowPowerTitle)
+                        Text(AppSettings.lowPowerDetail)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
                 Toggle(isOn: Binding(get: { state.model.settings.indexHoursOn }, set: { on in
                     state.app.setIndexHours(on: on, hours: state.model.settings.indexHours)
                 })) {
