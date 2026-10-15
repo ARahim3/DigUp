@@ -5,11 +5,13 @@ public enum FileKind: String, CaseIterable, Sendable, Codable {
     case screenshot, image, pdf, doc, audio, video
     /// Source code, a repo's docs and notebooks: only in the code index (`IndexOptions.code`).
     case code
+    /// An Outlook .pst file, and each mail in it (`Mail`): the mailbox is listed, its mails are embedded.
+    case mailbox, mail
 
     /// The order of the first indexing pass: what people look for most comes first.
     static let indexingOrderSQL = """
         CASE kind WHEN 'screenshot' THEN 0 WHEN 'image' THEN 1 WHEN 'pdf' THEN 2 WHEN 'doc' THEN 3
-        WHEN 'audio' THEN 4 WHEN 'video' THEN 5 ELSE 6 END
+        WHEN 'mail' THEN 4 WHEN 'audio' THEN 5 WHEN 'video' THEN 6 ELSE 7 END
         """
 }
 
