@@ -1,3 +1,4 @@
+import DigUpLocalization
 import AppKit
 import DigUpKit
 
@@ -52,7 +53,7 @@ nonisolated struct CodeEditor: Identifiable, Hashable, Sendable {
     ]
 
     /// Each file opens in the app macOS opens it with, at its start.
-    static let defaultApp = CodeEditor(id: "", name: "The file's default app", method: .plain)
+    static let defaultApp = CodeEditor(id: "", name: L10n.text("The file's default app"), method: .plain)
 
     /// Where code results open now (`AppController.setCodeEditor`).
     @MainActor static var current = defaultApp
