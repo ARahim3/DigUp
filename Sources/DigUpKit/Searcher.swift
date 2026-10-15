@@ -171,6 +171,15 @@ public final class Searcher {
             }
         }
 
+        // Han words have no spaces: unicode61 keeps a whole filename run as one token, so a two-character
+        // lookup in its middle cannot match FTS. Read only name rows, without rebuilding indexes or embeddings.
+        let names = try hanFilenameMatches(text, allowed: allowed)
+        let nameStrength = Dictionary(names.map { ($0.file, $0.strength) }, uniquingKeysWith: max)
+        if !names.isEmpty {
+            words = names.map { ($0.file, $0.segment, nil) } + words.filter { nameStrength[$0.file] == nil }
+            for name in names { coverage[name.file] = 1 }
+        }
+
         // A file qualifies by standing out in meaning, or by containing at least half of the query's words.
         // Score: meaning z + a bonus that grows with word coverage, + 1 for the kind the query asks for.
         // One common word can't beat a strong meaning match; all the words of an exact lookup usually do.
@@ -187,6 +196,11 @@ public final class Searcher {
             scored[file] = score
         }
 
+        // A literal basename match is a lookup, not just another semantic hint. Put complete names ahead of
+        // partial names, and both ahead of content-only matches. Keep scores in rank order for strongCount().
+        let highest = scored.values.max() ?? 0
+        for (file, strength) in nameStrength { scored[file] = highest + Double(strength) }
+
         let wordRank = Dictionary(words.enumerated().map { ($0.element.file, ($0.offset + 1, $0.element)) },
                                   uniquingKeysWith: { first, _ in first })
         var hits: [SearchHit] = []
@@ -196,7 +210,7 @@ public final class Searcher {
             let semantic = best[file]
             let keyword = wordRank[file]
             // Point at the best meaning segment if it stands out; else at the segment the words matched.
-            let useMeaning = semantic.map { $0.z >= zGate || keyword == nil } ?? false
+            let useMeaning = nameStrength[file] == nil && (semantic.map { $0.z >= zGate || keyword == nil } ?? false)
             guard var segmentID = useMeaning ? semantic.map({ rowSegment[$0.row] }) : keyword?.1.segment else { continue }
             var focus: Double?
             if isCode {
@@ -244,6 +258,43 @@ public final class Searcher {
                                   focus: focus))
         }
         return hits
+    }
+
+    private struct FilenameMatch {
+        let file: Int64
+        let segment: Int64
+        let strength: Int
+    }
+
+    /// A cheap SQLite prefilter uses a literal Han run (never LIKE wildcards). Verify every query component against
+    /// the normalized basename, including numbers and extensions. Folders and document contents cannot qualify.
+    private func hanFilenameMatches(_ text: String, allowed: (Int64) -> Bool) throws -> [FilenameMatch] {
+        guard !isCode else { return [] }
+        let query = SearchText.normalized(text).lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        var longest = "", run = ""
+        for scalar in query.unicodeScalars {
+            switch scalar.value {
+            case 0x3400...0x4DBF, 0x4E00...0x9FFF, 0xF900...0xFAFF, 0x20000...0x2FA1F, 0x30000...0x323AF:
+                run.unicodeScalars.append(scalar)
+                if run.unicodeScalars.count > longest.unicodeScalars.count { longest = run }
+            default:
+                run = ""
+            }
+        }
+        guard longest.unicodeScalars.count >= 2 else { return [] }
+        let terms = query.components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }
+        var matches: [FilenameMatch] = []
+        try store.db.query("""
+            SELECT s.file, s.id, fts.name FROM segments s JOIN fts ON fts.rowid = s.id
+            WHERE s.kind = 'name' AND instr(fts.name, ?) > 0
+            """, [.text(longest)]) { row in
+                let file = row.int(0)
+                guard allowed(file), let name = row.text(2)?.lowercased(),
+                      terms.allSatisfy({ name.contains($0) }) else { return }
+                let exact = name == query || (name as NSString).deletingPathExtension == query
+                matches.append(FilenameMatch(file: file, segment: row.int(1), strength: exact ? 2 : 1))
+            }
+        return matches.sorted { $0.strength > $1.strength || ($0.strength == $1.strength && $0.file < $1.file) }
     }
 
     /// Code: the stretch to point at, and the line in it to open at. A name looked up points at the stretch that
