@@ -17,13 +17,26 @@ public struct CrawlReport: Sendable {
     public var datasets: [String: Int] = [:]         // folder → files skipped as a dataset
 }
 
+/// Entries the folder walk has checked so far, including files DigUp may later skip. The count is cumulative across
+/// roots and is not an estimate of how many files will enter the index. `root` is nil for the final update.
+public struct CrawlProgress: Sendable, Equatable {
+    public let checked: Int
+    public let root: String?
+
+    public init(checked: Int, root: String?) {
+        self.checked = checked
+        self.root = root
+    }
+}
+
 /// Walks the chosen folders and applies `Rules`. Reads metadata only, never file contents (except the 600-byte
 /// sniff that tells a real MPEG-TS video from a TypeScript file).
 ///
 /// For the code index (`IndexOptions.code`) it walks the code folders instead: code files only (`Rules.classifyCode`),
 /// in a git repo only those git keeps (`GitFiles`), and none in vendored or built folders.
 public enum Crawler {
-    public static func crawl(_ roots: [URL], options: IndexOptions) -> CrawlReport {
+    public static func crawl(_ roots: [URL], options: IndexOptions,
+                             progress: ((CrawlProgress) -> Void)? = nil) -> CrawlReport {
         let fm = FileManager.default
         let home = fm.homeDirectoryForCurrentUser.path
         let keys = FileSystem.crawlKeys
@@ -33,8 +46,13 @@ public enum Crawler {
         var found: [Candidate] = []
         var foundPaths = Set<String>()   // a folder inside another root would be walked twice
         let rootPaths = Set(roots.map { $0.standardizedFileURL.path })
+        var checked = 0
+        let clock = ContinuousClock()
+        var lastUpdate = clock.now
 
         for root in roots.map({ $0.standardizedFileURL }) {
+            progress?(CrawlProgress(checked: checked, root: root.path))
+            lastUpdate = clock.now
             if options.code {
                 repos.enterRoot(root.path)
             } else if Rules.isProjectRoot(root.path) {
@@ -112,6 +130,14 @@ public enum Crawler {
             // URL resource values are autoreleased; draining per file keeps a big walk from piling them up (the app
             // crawls on a background queue whose pool only drains when the whole sync is done).
             while let url = autoreleasepool(invoking: { walker.nextObject() as? URL }) {
+                if let progress {
+                    checked += 1
+                    let now = clock.now
+                    if now - lastUpdate >= .milliseconds(250) {
+                        progress(CrawlProgress(checked: checked, root: root.path))
+                        lastUpdate = now
+                    }
+                }
                 autoreleasepool {
                     visit(url)
                 }
@@ -152,6 +178,7 @@ public enum Crawler {
             }
         }
         report.candidates = kept
+        progress?(CrawlProgress(checked: checked, root: nil))
         return report
     }
 }

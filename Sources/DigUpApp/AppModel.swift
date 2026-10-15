@@ -1,4 +1,5 @@
 import AppKit
+import DigUpKit
 import Observation
 
 /// State the menubar, the panel and the windows share. Engine updates arrive on the main thread.
@@ -23,11 +24,13 @@ final class AppModel {
     /// One line for the menu and the windows: what the index is doing.
     var statusLine: String {
         let status = self.status
+        if case .failed(let problem) = status.activity { return "⚠︎ \(problem)" }
+        if status.code.scan != nil { return codeStatusLine }
         guard hasFolders else { return "No folders chosen yet" }
         switch status.activity {
         case .starting: return "Starting…"
         case .failed(let problem): return "⚠︎ \(problem)"
-        case .syncing: return "Checking folders…"
+        case .syncing: return scanLine(status.scan, code: false)
         case .indexing(let done, let total):
             let percent = total > 0 ? Int((Double(done) / Double(total) * 100).rounded(.down)) : 0
             return "Indexing \(percent)% · \(done.formatted()) of \(total.formatted())"
@@ -61,6 +64,32 @@ final class AppModel {
         }
     }
 
+    var isCheckingFolders: Bool {
+        if case .syncing = status.activity { return true }
+        return false
+    }
+
+    private func scanLine(_ scan: CrawlProgress?, code: Bool) -> String {
+        let title = code ? "Checking code folders…" : "Checking folders…"
+        guard let scan, scan.checked > 0 else { return title }
+        return "\(title) · \(scan.checked.formatted()) entries checked"
+    }
+
+    /// Discovery counts include folders and skipped entries; they are never an indexing denominator.
+    var indexDetail: String {
+        if isCheckingFolders {
+            if status.files == 0 { return "Finding files to index. The total is available after this scan." }
+            return "\(status.searchable.formatted()) files searchable · checking for changes"
+        }
+        var text = "\(status.searchable.formatted()) of \(status.files.formatted()) files searchable"
+        if status.pending > 0 { text += " · \(status.pending.formatted()) waiting" }
+        if status.unfinished > 0 {
+            text += " · \(status.unfinished.formatted()) long \(status.unfinished == 1 ? "file" : "files") to finish"
+        }
+        if download.isActive { text += " · model \(download.progressText)" }
+        return text
+    }
+
     /// While the model isn't there, how its download goes.
     private var downloadLine: String? {
         switch download.phase {
@@ -75,6 +104,7 @@ final class AppModel {
 
     /// 0…1 for the menubar ring and progress bars: the model download, then an indexing pass or the rest of long files.
     var progress: Double? {
+        if isCheckingFolders || status.code.scan != nil { return nil }
         if download.isActive { return download.fraction }
         switch status.activity {
         case .indexing(let done, let total) where total > 0: return Double(done) / Double(total)
@@ -90,6 +120,7 @@ final class AppModel {
     var codeStatusLine: String {
         let code = status.code
         guard hasCode else { return "Code search is off" }
+        if let scan = code.scan { return scanLine(scan, code: true) }
         if !download.isReady { return "Code is read once the model has downloaded" }
         if let indexing = code.indexing, indexing.total > 0 {
             let percent = Int((Double(indexing.done) / Double(indexing.total) * 100).rounded(.down))
@@ -112,6 +143,8 @@ final class AppModel {
 
     /// A few words for the search bar while results may be incomplete: "Indexing 42%", "Downloading model · 42%".
     var activityBadge: String? {
+        if isCheckingFolders { return "Checking folders" }
+        if status.code.scan != nil { return "Checking code folders" }
         if download.isActive { return "Downloading model · \(Int(download.fraction * 100))%" }
         if case .indexing(let done, let total) = status.activity, total > 0 {
             return "Indexing \(Int(Double(done) / Double(total) * 100))%"
@@ -131,6 +164,7 @@ final class AppModel {
 
     /// Why results may be incomplete right now, or nil.
     var resultsCaveat: String? {
+        if isCheckingFolders { return "Still checking folders: some files haven't been found yet" }
         if let meaningUnavailable { return meaningUnavailable }
         if case .indexing(let done, let total) = status.activity, total > 0 {
             return "Still indexing (\(Int(Double(done) / Double(total) * 100))%): some files aren't in yet"

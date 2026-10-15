@@ -23,6 +23,8 @@ nonisolated struct EngineStatus: Sendable, Equatable {
     }
 
     var activity = Activity.starting
+    /// Transient discovery counts, separate from committed index totals.
+    var scan: CrawlProgress?
     var encoder = Encoder.stopped
     var files = 0        // in the index, any state
     var searchable = 0   // done or partial
@@ -43,6 +45,7 @@ nonisolated struct EngineStatus: Sendable, Equatable {
     var code = Code()
 
     struct Code: Sendable, Equatable {
+        var scan: CrawlProgress?
         var files = 0
         var searchable = 0
         var pending = 0
@@ -536,6 +539,10 @@ nonisolated final class Engine: @unchecked Sendable {
         helperOutput = Data()
         pruneWanted = false
         update {   // the helper says first if any are still missing or unreadable
+            $0.waitingForModel = false
+            if !roots.isEmpty { $0.activity = .syncing }
+            $0.scan = nil
+            $0.code.scan = nil
             $0.missingRoots = []
             $0.unreadableRoots = []
             $0.code.missingRoots = []
@@ -580,13 +587,22 @@ nonisolated final class Engine: @unchecked Sendable {
         func int(_ key: String) -> Int { event[key] as? Int ?? 0 }
         if event["code"] as? Bool == true { return handleCode(event) }
         switch event["event"] as? String {
+        case "scanning":
+            update {
+                $0.activity = .syncing
+                $0.scan = CrawlProgress(checked: int("checked"), root: event["root"] as? String)
+            }
         case "sync":
+            update {
+                $0.scan = nil
+                if case .syncing = $0.activity { $0.activity = .idle }
+            }
             if let started = event["started"] as? Double, let wanted = syncWantedAt,
                started >= wanted.timeIntervalSince1970 {
                 syncWantedAt = nil
             }
             applyCounts(event)
-            if int("new") > 0 { update { $0.activity = .indexing(done: 0, total: int("new")) } }
+            if int("pending") > 0 { update { $0.activity = .indexing(done: 0, total: int("pending")) } }
             log("sync: \(int("added")) new · \(int("changed")) changed · \(int("moved")) moved · "
                 + "\(int("removed")) removed · \(int("unchanged")) unchanged in \(int("ms")) ms")
         case "file":
@@ -608,12 +624,18 @@ nonisolated final class Engine: @unchecked Sendable {
             log("index: \(what): \(states) in \(int("ms")) ms")
         case "idle":
             applyCounts(event)
-            update { $0.activity = .idle }
+            update {
+                $0.scan = nil
+                $0.code.scan = nil
+                $0.activity = .idle
+            }
             refreshSearcher(force: true)
         case "waiting":
             applyCounts(event)
             update {
                 $0.activity = .idle
+                $0.scan = nil
+                $0.code.scan = nil
                 $0.waitingForModel = true
             }
             log("indexer: waiting for the model to download")
@@ -635,6 +657,10 @@ nonisolated final class Engine: @unchecked Sendable {
         case "reindex":
             log("indexer: the model or settings changed, indexing everything again (was: \(event["from"] as? String ?? "?"))")
         case "error":
+            update {
+                $0.scan = nil
+                if case .syncing = $0.activity { $0.activity = .idle }
+            }
             log("indexer: \(event["message"] as? String ?? "error")")
             if event["fatal"] as? Bool == true { update { $0.activity = .failed("Indexing stopped") } }
         default:
@@ -646,7 +672,10 @@ nonisolated final class Engine: @unchecked Sendable {
     private func handleCode(_ event: [String: Any]) {
         func int(_ key: String) -> Int { event[key] as? Int ?? 0 }
         switch event["event"] as? String {
+        case "scanning":
+            update { $0.code.scan = CrawlProgress(checked: int("checked"), root: event["root"] as? String) }
         case "sync":
+            update { $0.code.scan = nil }
             applyCounts(event)
             // New code is read right away only when the main index has nothing waiting; else it waits its turn.
             if int("new") > 0, int("pending") == 0 { update { $0.code.indexing = .init(done: 0, total: int("new")) } }
@@ -677,6 +706,7 @@ nonisolated final class Engine: @unchecked Sendable {
         case "reindex":
             log("indexer: the model changed, the code index starts over")
         case "error":
+            update { $0.code.scan = nil }
             log("indexer: code: \(event["message"] as? String ?? "error")")
             if event["fatal"] as? Bool == true { update { $0.activity = .failed("Indexing stopped") } }
         default:
@@ -712,6 +742,9 @@ nonisolated final class Engine: @unchecked Sendable {
             if case .indexing = $0.activity { $0.activity = .idle }
             if case .finishing = $0.activity { $0.activity = .idle }
             if case .starting = $0.activity { $0.activity = .idle }
+            if case .syncing = $0.activity { $0.activity = .idle }
+            $0.scan = nil
+            $0.code.scan = nil
             $0.code.indexing = nil
         }
         refreshSearcher(force: true)
