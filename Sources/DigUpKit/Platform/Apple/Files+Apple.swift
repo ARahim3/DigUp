@@ -8,6 +8,8 @@ import UniformTypeIdentifiers
 
 extension Rules {
     public static func classify(_ url: URL, type: UTType?, options: IndexOptions) -> Classification {
+        // Before type sniffing or any content reads, in every indexing mode.
+        if isSecret(url.lastPathComponent) { return .skip("key or password file") }
         let ext = url.pathExtension.lowercased()
         if options.excludedExtensions.contains(ext) { return .skip("excluded type") }
         // .ts / .mts are usually TypeScript, which Spotlight calls MPEG-2 video. Only a real transport stream is video.

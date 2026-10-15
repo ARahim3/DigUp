@@ -24,6 +24,8 @@ extension Rules {
 
     /// `classify` as on macOS, by extension (for files with one, macOS's types come from the extension too).
     static func classify(_ url: URL, values: URLResourceValues?, options: IndexOptions) -> Classification {
+        // Before type sniffing or any content reads, in every indexing mode.
+        if isSecret(url.lastPathComponent) { return .skip("key or password file") }
         let ext = url.pathExtension.lowercased()
         if options.excludedExtensions.contains(ext) { return .skip("excluded type") }
         // .ts / .mts are usually TypeScript. Only a real transport stream is video.
