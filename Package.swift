@@ -42,7 +42,7 @@ let portableTargets: [Target] = [
         .define("STBI_WINDOWS_UTF8", .when(platforms: [.windows])),
         .define("STBIW_WINDOWS_UTF8", .when(platforms: [.windows])), .unsafeFlags(["-w"]),
     ]),
-    // Zip reading, for docx and odt.
+    // Zip reading, for docx and odt (spreadsheets and presentations too: OfficeText).
     .target(name: "CMiniz", path: "Vendor/miniz", cSettings: [.unsafeFlags(["-w"])]),
     // PDF text and page rendering (Chromium's PDFium, prebuilt).
     .systemLibrary(name: "CPDFium", path: "Sources/CPDFium"),

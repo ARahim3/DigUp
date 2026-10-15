@@ -35,28 +35,55 @@ extension DocExtractor {
     }
 }
 
-/// One entry of a zip file, through miniz (reading through `FileReader`, so any file name opens).
+/// One entry of a zip file, as text.
 enum Zip {
     static func entry(_ name: String, in url: URL) throws -> String {
-        let reader = try FileReader(url)
-        var zip = mz_zip_archive()
-        zip.m_pIO_opaque = reader.opaque
-        zip.m_pRead = { opaque, offset, buffer, count in
+        String(decoding: try ZipArchive(url).required(name), as: UTF8.self)
+    }
+}
+
+/// A zip file's entries, through miniz (reading through `FileReader`, so any file name opens). Platform/Apple has the
+/// same name.
+final class ZipArchive {
+    private let reader: FileReader
+    private let zip = UnsafeMutablePointer<mz_zip_archive>.allocate(capacity: 1)
+    private var open = false
+
+    init(_ url: URL) throws {
+        reader = try FileReader(url)
+        zip.initialize(to: mz_zip_archive())
+        zip.pointee.m_pIO_opaque = reader.opaque
+        zip.pointee.m_pRead = { opaque, offset, buffer, count in
             guard let buffer else { return 0 }
             return FileReader.from(opaque).read(at: offset, into: buffer, count: count)
         }
-        return try withExtendedLifetime(reader) {   // miniz reads through it until the end
-            guard mz_zip_reader_init(&zip, reader.size, 0) != 0 else {
-                throw ExtractError.unreadable("not a zip file")
-            }
-            defer { mz_zip_reader_end(&zip) }
-            var size = 0
-            guard let bytes = mz_zip_reader_extract_file_to_heap(&zip, name, &size, 0) else {
-                throw ExtractError.unreadable("no \(name) inside")
-            }
-            defer { mz_free(bytes) }
-            return String(decoding: UnsafeRawBufferPointer(start: bytes, count: size), as: UTF8.self)
+        guard mz_zip_reader_init(zip, reader.size, 0) != 0 else { throw ExtractError.unreadable("not a zip file") }
+        open = true
+    }
+
+    deinit {
+        if open { mz_zip_reader_end(zip) }   // miniz reads through `reader` until here
+        zip.deinitialize(count: 1)
+        zip.deallocate()
+    }
+
+    /// The entry's bytes, or nil when the zip has no such entry.
+    func data(_ name: String) throws -> [UInt8]? {
+        let index = mz_zip_reader_locate_file(zip, name, nil, 0)
+        guard index >= 0 else { return nil }
+        var stat = mz_zip_archive_file_stat()
+        guard mz_zip_reader_file_stat(zip, mz_uint(index), &stat) != 0 else {
+            throw ExtractError.unreadable("damaged zip file")
         }
+        guard stat.m_uncomp_size <= UInt64(Self.maxEntrySize) else {
+            throw ExtractError.unreadable("\(name) is too large")
+        }
+        var size = 0
+        guard let bytes = mz_zip_reader_extract_to_heap(zip, mz_uint(index), &size, 0) else {
+            throw ExtractError.unreadable("can't inflate \(name)")
+        }
+        defer { mz_free(bytes) }
+        return Array(UnsafeRawBufferPointer(start: bytes, count: size).bindMemory(to: UInt8.self))
     }
 }
 

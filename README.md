@@ -108,6 +108,8 @@ Only the folders you choose:
   else is in (up to 5,000 pages a file)
 - documents: txt, md, rtf, docx, odt, html, and on a Mac doc, long ones the same way. Text that's mostly numbers,
   like a data export, is matched by its exact text only
+- spreadsheets and presentations: xlsx, ods, pptx and odp, read for their text: each sheet's name and rows, each
+  slide's text and speaker notes
 - audio of any length: the model listens to 30 seconds at a time, so DigUp takes overlapping 30-second windows and a
   match points to its moment
 - video of any length: a frame every few seconds, one per shot, plus the soundtrack the same way as audio
