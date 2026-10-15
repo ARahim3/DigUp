@@ -64,6 +64,7 @@ let appTargets: [Target] = [
         swiftSettings: [.defaultIsolation(MainActor.self)],
         linkerSettings: [.unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])]
     ),
+    .testTarget(name: "DigUpAppTests", dependencies: ["DigUpApp"]),
 ]
 #else
 let appProducts: [Product] = []

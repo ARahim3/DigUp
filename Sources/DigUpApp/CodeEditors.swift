@@ -1,5 +1,6 @@
 import AppKit
 import DigUpKit
+import Observation
 
 /// The editors code search opens results in, at the line that matched: each one's own way of being told the line (a
 /// URL, or a command its app bundles), found by bundle id. The one in use is a setting ("Open code in"); until it's set,
@@ -55,7 +56,11 @@ nonisolated struct CodeEditor: Identifiable, Hashable, Sendable {
     static let defaultApp = CodeEditor(id: "", name: "The file's default app", method: .plain)
 
     /// Where code results open now (`AppController.setCodeEditor`).
-    @MainActor static var current = defaultApp
+    @MainActor private static let selection = CodeEditorSelection()
+    @MainActor static var current: CodeEditor {
+        get { selection.current }
+        set { selection.current = newValue }
+    }
 
     @MainActor static var installed: [CodeEditor] {
         known.filter { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0.id) != nil }
@@ -126,4 +131,9 @@ nonisolated struct CodeEditor: Identifiable, Hashable, Sendable {
             NSWorkspace.shared.open([url], withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration())
         }
     }
+}
+
+@Observable
+private final class CodeEditorSelection {
+    var current = CodeEditor.defaultApp
 }
