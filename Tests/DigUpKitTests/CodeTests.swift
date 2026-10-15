@@ -199,6 +199,25 @@ import Testing
             .map { String($0.path.dropFirst(folder.path.count + 1)) }.sorted()
     }
 
+    #if !os(Windows)
+    @Test(.enabled(if: FileSystem.git != nil)) func gitListingNeverRunsRepositoryFsmonitor() throws {
+        try git("init")
+        try write("safe.py", "pass\n")
+        try git("add", "safe.py")   // create an index so git consults fsmonitor
+        let marker = folder.appendingPathComponent("executed")
+        let hook = try write("monitor.sh", "#!/bin/sh\ntouch '\(marker.path)'\nprintf '\\\\0'\n")
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hook.path)
+        try git("config", "core.fsmonitor", hook.path)
+        // Confirm the fixture would execute with a plain ls-files, then exercise the hardened listing.
+        try git("ls-files")
+        #expect(FileManager.default.fileExists(atPath: marker.path))
+        try FileManager.default.removeItem(at: marker)
+        let files = try #require(GitFiles.list(folder.path))
+        #expect(files.contains("safe.py"))
+        #expect(!FileManager.default.fileExists(atPath: marker.path))
+    }
+    #endif
+
     @Test(.enabled(if: FileSystem.git != nil)) func codeCrawlKeepsWhatGitKeeps() throws {
         try write("app/main.py", "print(1)\n")
         try write("app/README.md", "# App\n")
