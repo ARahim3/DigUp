@@ -360,6 +360,17 @@ public final class Searcher {
 
     /// The text of a page, a document's passage or a screenshot's OCR, as it's written: the preview shows the part of a
     /// document that matched.
+    /// The first chunk of a document or a mail (a mail's starts with its subject, sender, recipients and date): what a
+    /// preview shows when the file was found by its name. Nil when it hasn't been read yet.
+    public func firstText(ofFile path: String) throws -> String? {
+        var text: String?
+        try store.db.query("""
+            SELECT coalesce(fts.original, fts.body) FROM files f JOIN segments s ON s.file = f.id
+            JOIN fts ON fts.rowid = s.id WHERE f.path = ? AND s.kind = 'chunk' ORDER BY s.loc LIMIT 1
+            """, [.text(path)]) { text = $0.text(0) }
+        return text
+    }
+
     public func text(ofSegment id: Int64) throws -> String? {
         var text: String?
         try store.db.query("SELECT coalesce(original, body) FROM fts WHERE rowid = ?", [.int(id)]) { text = $0.text(0) }

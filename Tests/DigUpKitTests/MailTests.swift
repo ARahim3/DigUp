@@ -123,6 +123,20 @@ import Testing
         #expect(try indexer.run()["done"] == 3)
     }
 
+    @Test func aMailsPreviewIsItsBeginning() throws {
+        try copyPST(to: pst)
+        let store = try store()
+        let indexer = try indexer(store)
+        _ = try indexer.sync([files])
+        let seven = try #require(try store.mails(in: pst.path).first { try store.info(of: $0.id)["subject"] == "PST test 07" })
+        let searcher = try Searcher(store: store, loadVectors: false)
+        #expect(try searcher.firstText(ofFile: seven.path) == nil)   // listed, not read yet
+        try indexer.run()
+        let text = try #require(try searcher.firstText(ofFile: seven.path))
+        #expect(text.hasPrefix("PST test 07\n"))
+        #expect(text.contains("reference DEV-2024-0007"))
+    }
+
     @Test func aDeletedPSTTakesItsMailsAlong() throws {
         try copyPST(to: pst)
         let store = try store()

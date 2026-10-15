@@ -261,6 +261,13 @@ function kindIcon(kind) {
   return icon;
 }
 
+/// The text a preview shows: the passage that matched, or for a mail found by its subject or folder, its beginning
+/// (subject, sender, recipients, date, then the body). Null text: the mail isn't read yet.
+function previewText(hit, code = false) {
+  if (hit.kind === "mail" && hit.segment !== "chunk") return ask({ op: "text", path: hit.path });
+  return ask({ op: "text", segment: hit.segment_id, code });
+}
+
 /// The helper's JPEG of a page, a frame or a picture, asked for once per file and place.
 const renders = new Map();
 function rendered(path, kind, loc, pixels) {

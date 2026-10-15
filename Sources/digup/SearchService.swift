@@ -14,6 +14,8 @@ import Foundation
 ///   {"op":"embed_ahead","q":…,"code":bool}   → {"ok":true}: embeds and caches the text (the panel sends what's typed so
 ///                                               far on every keystroke, so the pause's vector is usually ready)
 ///   {"op":"text","segment":id,"code":bool}    → {"text":…}: the part of a file a hit points at, for the preview
+///   {"op":"text","segment":n,"code":bool} or {"op":"text","path":…} → {"text":…}: a segment's text, or a file's first
+///   chunk (a mail's preview when its subject matched)
 ///   {"op":"render","path":…,"kind":"pdf|video|image","loc":n,"pixels":n} → {"image":path}: a JPEG for a preview or a
 ///                                               thumbnail (a PDF's page `loc`, a video's frame at `loc` seconds, or a
 ///                                               picture a web view can't show, such as HEIC), made beside the requests
@@ -153,11 +155,11 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
                         && FileManager.default.fileExists(atPath: $0.path)
                 }
             } else {
-                // A mail's file is its PST (`Mail.file`).
+                // A mail's file is its PST (`Mail.file`). A PST itself isn't a result: its mails are.
                 hits = try searcher.search(text, queryVector: vector, kinds: kinds, limit: limit, prefixLast: prefixLast)
                     .filter {
                         let file = Mail.file(of: $0.path)
-                        return (roots.isEmpty || FolderSelection.isSearched(file, folders: roots, skipped: skipped))
+                        return $0.kind != .mailbox && (roots.isEmpty || FolderSelection.isSearched(file, folders: roots, skipped: skipped))
                             && !types.contains((file as NSString).pathExtension.lowercased())
                             && FileManager.default.fileExists(atPath: file)
                     }
@@ -173,8 +175,12 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             _ = vector(for: request["q"] as? String ?? "", code: request["code"] as? Bool ?? false)
             return ["ok": true]
         case "text":
-            guard let segment = (request["segment"] as? NSNumber)?.int64Value else { throw CLIError("which segment?") }
             let code = request["code"] as? Bool ?? false
+            // A file's first chunk: a mail's preview when it was found by its subject.
+            if let path = request["path"] as? String {
+                return ["text": try (code ? codeSearcher : searcher)?.firstText(ofFile: path) ?? NSNull()]
+            }
+            guard let segment = (request["segment"] as? NSNumber)?.int64Value else { throw CLIError("which segment?") }
             return ["text": try (code ? codeSearcher : searcher)?.text(ofSegment: segment) ?? NSNull()]
         case "reload":
             let hadVectors = searcher.vectorsLoaded

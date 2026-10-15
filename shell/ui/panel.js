@@ -332,9 +332,13 @@ function picture(hit) {
     }
     default: {
       const passage = element("div", "passage" + (hit.kind === "code" ? " code" : ""));
-      passage.textContent = (hit.excerpt ?? "").replace(/[«»]/g, "");
-      ask({ op: "text", segment: hit.segment_id, code: state.isCode })
-        .then((reply) => { if (reply.text) passage.innerHTML = highlighted(reply.text, state.text); })
+      const nameOnly = hit.kind === "mail" && hit.segment !== "chunk";
+      passage.textContent = nameOnly ? "" : (hit.excerpt ?? "").replace(/[«»]/g, "");
+      previewText(hit, state.isCode)
+        .then((reply) => {
+          if (reply.text) passage.innerHTML = highlighted(reply.text, state.text);
+          else if (nameOnly) passage.textContent = "Not read yet: found by its subject.";
+        })
         .catch(() => {});
       return passage;
     }

@@ -258,7 +258,7 @@ function cellPicture(hit) {
     thumbnails.observe(image);
     return image;
   }
-  if (hit.kind === "doc" && hit.excerpt) {
+  if ((hit.kind === "doc" || (hit.kind === "mail" && hit.segment === "chunk")) && hit.excerpt) {
     const card = element("div", "text-card");
     card.dir = "auto";
     card.innerHTML = marked(hit.excerpt.slice(0, 600));
@@ -583,7 +583,7 @@ function previewPicture(hit) {
     addPlace(box, span(hit));
     return box;
   }
-  if (hit.segment === "chunk") {
+  if (hit.segment === "chunk" || hit.kind === "mail") {
     box.append(passage(hit));
     const parts = Number(hit.info?.chunks || 0);
     if (hit.loc != null && parts > 1) addPlace(box, `Part ${Math.trunc(hit.loc)} of ${parts}`);
@@ -796,9 +796,14 @@ function passage(hit) {
     page.dir = isRightToLeft(text) ? "rtl" : "ltr";
     page.innerHTML = highlighted(passageAround(text, [...found, ...queryWords(state.text)]), state.text, found);
   };
-  show((hit.excerpt ?? "").replace(/[«»]/g, ""));
-  ask({ op: "text", segment: hit.segment_id, code: false })
-    .then((reply) => { if (reply.text) show(reply.text); })
+  // A mail found by its subject or folder shows its beginning; one not read yet says so.
+  const nameOnly = hit.kind === "mail" && hit.segment !== "chunk";
+  show(nameOnly ? "" : (hit.excerpt ?? "").replace(/[«»]/g, ""));
+  previewText(hit)
+    .then((reply) => {
+      if (reply.text) show(reply.text);
+      else if (nameOnly) show("Not read yet: found by its subject.");
+    })
     .catch(() => {});
   page.ondblclick = () => open(hit);
   return page;
