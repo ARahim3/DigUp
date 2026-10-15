@@ -1,4 +1,6 @@
+#if canImport(CryptoKit)
 import CryptoKit
+#endif
 import Foundation
 
 /// The EmbeddingGemma 2 files the app runs: ggml-org's Q8_0 GGUF conversion at one pinned revision of the repo (made
@@ -32,9 +34,8 @@ public enum ModelFiles {
     public static let all = [text, media]
     public static let totalBytes = all.reduce(0) { $0 + $1.bytes }
 
-    /// Where the app keeps them.
-    public static let installed = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Application Support/DigUp/Models")
+    /// Where the app keeps them (`AppPaths`).
+    public static let installed = AppPaths.applicationSupport.appendingPathComponent("Models")
 
     /// The pinned revision's folder in the Hugging Face cache (`hf download` puts the files there): `$HF_HUB_CACHE`,
     /// `$HF_HOME/hub`, or `~/.cache/huggingface/hub`.

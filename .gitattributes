@@ -1,0 +1,3 @@
+# Text files keep LF line endings on every system (Git for Windows checks text out with CRLF by default): llama.cpp's
+# patch has to match its LF source, and the build scripts run in bash.
+* text=auto eol=lf

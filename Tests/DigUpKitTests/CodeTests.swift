@@ -26,7 +26,7 @@ import Testing
     func write(_ path: String, _ text: String) throws -> URL {
         let url = folder.appendingPathComponent(path)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try text.write(to: url, atomically: true, encoding: .utf8)
+        try text.write(to: url, atomically: false, encoding: .utf8)   // a rename right after a write can meet Windows' virus scan
         return url
     }
 
@@ -186,7 +186,7 @@ import Testing
 
     func git(_ arguments: String...) throws {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: GitFiles.git!)
+        process.executableURL = URL(fileURLWithPath: FileSystem.git!)
         process.arguments = ["-C", folder.path] + arguments
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
@@ -199,7 +199,7 @@ import Testing
             .map { String($0.path.dropFirst(folder.path.count + 1)) }.sorted()
     }
 
-    @Test(.enabled(if: GitFiles.git != nil)) func codeCrawlKeepsWhatGitKeeps() throws {
+    @Test(.enabled(if: FileSystem.git != nil)) func codeCrawlKeepsWhatGitKeeps() throws {
         try write("app/main.py", "print(1)\n")
         try write("app/README.md", "# App\n")
         try write("app/.gitignore", "build/\n*.log\nscratch.py\n")

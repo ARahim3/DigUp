@@ -1,4 +1,3 @@
-import AppKit
 import Foundation
 import Testing
 @testable import DigUpKit
@@ -115,7 +114,7 @@ import Testing
         let text = prose(characters: 150_000, special: (at: 120_000, word: "axolotl"))
         let url = files.appendingPathComponent("Notes.txt")
         try FileManager.default.createDirectory(at: files, withIntermediateDirectories: true)
-        try text.write(to: url, atomically: true, encoding: .utf8)
+        try text.write(to: url, atomically: false, encoding: .utf8)
         let chunks = DocExtractor.chunks(text, limit: 10_000)
         #expect(chunks.count > 80)
         let store = try store()
@@ -145,7 +144,7 @@ import Testing
         dump += "4815162342\n"
         let url = files.appendingPathComponent("sensor log.txt")
         try FileManager.default.createDirectory(at: files, withIntermediateDirectories: true)
-        try dump.write(to: url, atomically: true, encoding: .utf8)
+        try dump.write(to: url, atomically: false, encoding: .utf8)
         #expect(!SearchText.hasWords(dump))
         #expect(SearchText.hasWords("Revenue 1,234,567 · Net income 234,567 · Margin 19% in the third quarter"))
         #expect(SearchText.hasWords("কলকাতায় বৃষ্টি হচ্ছে"))
@@ -254,6 +253,28 @@ import Testing
         #expect(abs((hits.first?.cosine ?? 0) - 1) < 0.002)   // float16 rounding only
     }
 
+    #if canImport(Vision)
+    @Test func aScannedPagesWordsAreFoundByKeywordSearch() throws {
+        // A page that's only a picture of its text, as a scanner or a phone makes it: no text layer at all.
+        try FileManager.default.createDirectory(at: files, withIntermediateDirectories: true)
+        try ScannedPDF.write("Invoice QXTEST87231. Payment due Friday.", to: files.appendingPathComponent("scan.pdf"))
+        let store = try store()
+        let indexer = try indexer(store, FakeEmbedder())
+        _ = try indexer.sync([files])
+        _ = try indexer.run()
+        #expect(try found(store, "qxtest87231") == [1])   // OCR's words, for keyword search; its meaning stays the picture's
+        var kinds: [String] = []
+        try store.db.query("SELECT kind FROM segments WHERE kind != 'name'") { kinds.append($0.text(0) ?? "") }
+        #expect(kinds == ["page_image"])
+
+        // An index made before scans had words reads them once more, and only once.
+        try store.setMeta("scans_ocr", nil)
+        #expect(try store.readAgainOnce() == 1)
+        #expect(try store.pendingCount() == 1)
+        #expect(try store.readAgainOnce() == 0)
+    }
+    #endif
+
     // MARK: Files
 
     /// A text PDF with `pages` pages of a few sentences each; `special` puts a word on a page (from 1).
@@ -261,20 +282,9 @@ import Testing
     func makePDF(_ name: String, pages: Int, special: [Int: String] = [:]) throws -> URL {
         try FileManager.default.createDirectory(at: files, withIntermediateDirectories: true)
         let url = files.appendingPathComponent(name)
-        var box = CGRect(x: 0, y: 0, width: 612, height: 792)
-        let context = try #require(CGContext(url as CFURL, mediaBox: &box, nil))
-        for page in 1...pages {
-            context.beginPDFPage(nil)
-            NSGraphicsContext.saveGraphicsState()
-            NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
-            let text = "Page \(page). " + prose(characters: 600, seed: page)
-                + (special[page].map { " The \($0) lives here." } ?? "")
-            (text as NSString).draw(in: CGRect(x: 60, y: 60, width: 492, height: 660),
-                                    withAttributes: [.font: NSFont.systemFont(ofSize: 12)])
-            NSGraphicsContext.restoreGraphicsState()
-            context.endPDFPage()
-        }
-        context.closePDF()
+        try TextPDF.write((1...pages).map {
+            "Page \($0). " + prose(characters: 600, seed: $0) + (special[$0].map { " The \($0) lives here." } ?? "")
+        }, to: url)
         return url
     }
 
@@ -295,38 +305,4 @@ import Testing
         }
         return pieces.joined(separator: " ")
     }
-}
-
-/// Vectors without a model: the same text always gets the same unit vector. Counts what it was asked to embed.
-final class FakeEmbedder: Embedder {
-    let info = WorkerInfo(model: "fake", revision: "0000000", runtime: "test", dtype: "f32", dim: Vectors.dimension,
-                          textOnly: false, loadSeconds: nil)
-    private(set) var texts = 0
-
-    static func vector(for text: String) -> [Float] {
-        var state = UInt64(5381)
-        for byte in text.utf8 { state = state &* 33 &+ UInt64(byte) }
-        var values = (0..<Vectors.dimension).map { _ -> Float in
-            state ^= state << 13; state ^= state >> 7; state ^= state << 17
-            return Float(Int64(bitPattern: state % 2001) - 1000) / 1000
-        }
-        let norm = values.reduce(0) { $0 + $1 * $1 }.squareRoot()
-        values = values.map { $0 / norm }
-        return values
-    }
-
-    func embedTexts(_ texts: [String]) throws -> [[Float]] {
-        self.texts += texts.count
-        return texts.map(Self.vector(for:))
-    }
-
-    func embedImages(_ paths: [String], budget: Int) throws -> [Embedding] {
-        paths.map { Embedding(vector: Self.vector(for: $0), error: nil) }
-    }
-
-    func embedAudio(_ paths: [String]) throws -> [Embedding] {
-        paths.map { Embedding(vector: Self.vector(for: $0), error: nil) }
-    }
-
-    func close() {}
 }

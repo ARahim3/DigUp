@@ -1,0 +1,667 @@
+/* The window. Sizes and wording follow the Mac app's search window (Sources/DigUpApp/SearchWindow.swift); the colors
+   are DigUp's (moss and amber) over the system's light or dark, and selection is the usual blue. */
+
+:root {
+  --amber: #f2a22a;
+  --ember: #d97b1a;
+  --moss: #356652;
+  --leaf: #4f8058;
+  --sprout: #a2c78e;
+  --accent: #0a84ff;
+  --surface: #fbfbfb;
+  --pane: rgba(0, 0, 0, 0.025);
+  --text: #1d1d1f;
+  --secondary: #6e6e73;
+  --tertiary: #a1a1a6;
+  --line: rgba(0, 0, 0, 0.09);
+  --fill: rgba(0, 0, 0, 0.06);
+  --fill-strong: rgba(0, 0, 0, 0.1);
+  --tile: rgba(0, 0, 0, 0.05);
+  --menu: #ffffff;
+  --mark: #ffdb33;
+  --chip: rgba(79, 128, 88, 0.1);
+  --chip-hover: rgba(79, 128, 88, 0.2);
+  --leaf-text: #4f8058;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", system-ui, Ubuntu, Cantarell,
+    "Noto Sans", sans-serif;
+  font-size: 13px;
+  color: var(--text);
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface: #1f1f21;
+    --pane: rgba(255, 255, 255, 0.025);
+    --text: #f2f2f7;
+    --secondary: #a1a1a6;
+    --tertiary: #6e6e73;
+    --line: rgba(255, 255, 255, 0.1);
+    --fill: rgba(255, 255, 255, 0.08);
+    --fill-strong: rgba(255, 255, 255, 0.14);
+    --tile: rgba(255, 255, 255, 0.05);
+    --menu: #2c2c2e;
+    --chip: rgba(162, 199, 142, 0.12);
+    --chip-hover: rgba(162, 199, 142, 0.22);
+    --leaf-text: #a2c78e;
+  }
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+html, body { margin: 0; height: 100%; overflow: hidden; background: var(--surface); }
+
+body {
+  display: flex;
+  flex-direction: column;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+button { font: inherit; color: inherit; }
+svg { display: block; }
+
+/* The bar: the field, the preview and settings buttons, the menu; the kind filters under it */
+
+.top { flex: none; padding: 12px 14px 10px; }
+
+.bar { display: flex; align-items: center; gap: 8px; height: 38px; }
+
+.field {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 38px;
+  padding: 0 10px 0 12px;
+  border-radius: 10px;
+  background: var(--fill);
+  box-shadow: 0 0 0 2px transparent;
+  transition: box-shadow 0.15s ease-out;
+  cursor: text;
+}
+
+/* Where typing goes, as a field shows it: a ring in the accent color while it has the cursor. */
+.field:focus-within { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 60%, transparent); }
+
+.glass { width: 22px; height: 20px; flex: none; display: grid; place-items: center; }
+.glass svg { width: 19px; height: 19px; fill: none; stroke: var(--ember); stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+
+#query {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 18px;
+}
+
+#query::placeholder { color: var(--tertiary); }
+
+.clear {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  padding: 0;
+  background: none;
+  display: grid;
+  place-items: center;
+  color: var(--tertiary);
+}
+.clear svg { width: 16px; height: 16px; }
+.clear circle { fill: currentColor; stroke: none; }
+.clear path { stroke: var(--surface); stroke-width: 1.8; stroke-linecap: round; fill: none; }
+
+.tool {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 7px;
+  padding: 0;
+  background: none;
+  display: grid;
+  place-items: center;
+  color: var(--secondary);
+}
+.tool:hover { background: var(--fill); }
+.tool:active { background: var(--fill-strong); }
+.tool svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+#more svg { fill: currentColor; stroke: none; }
+.tool[aria-pressed="true"] { color: var(--accent); }
+
+.kinds { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; }
+
+.chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 99px;
+  background: var(--fill);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.chip:hover { background: var(--fill-strong); }
+.chip svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.chip .number { opacity: 0.6; font-variant-numeric: tabular-nums; }
+.chip.selected { background: var(--accent); color: white; }
+.kinds .divider { width: 1px; height: 16px; margin: 0 4px; background: var(--line); }
+
+/* Results and the preview beside them */
+
+.split { flex: 1; min-height: 0; display: flex; border-top: 1px solid var(--line); }
+
+.content { flex: 1; min-width: 0; overflow-y: auto; position: relative; }
+
+.side {
+  flex: none;
+  width: 324px;
+  overflow-y: auto;
+  padding: 16px;
+  border-left: 1px solid var(--line);
+  background: var(--pane);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(176px, 1fr));
+  gap: 18px 14px;
+  padding: 16px;
+}
+
+.cell { min-width: 0; outline: none; }
+
+.cell .picture {
+  position: relative;
+  height: 132px;
+  border-radius: 8px;
+  background: var(--tile);
+  box-shadow: inset 0 0 0 0.5px var(--line);
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+}
+.cell.selected .picture { box-shadow: 0 0 0 3px var(--accent); }
+
+.cell .picture img { width: 100%; height: 100%; object-fit: cover; }
+.cell .picture img.page { object-position: top; }
+.cell .picture .big-icon svg { width: 46px; height: 46px; fill: none; stroke: var(--ember); stroke-width: 1.2; stroke-linecap: round; stroke-linejoin: round; }
+.cell .picture .big-icon.quiet svg { stroke: var(--tertiary); width: 40px; height: 40px; }
+
+/* A document's passage as its picture: a page of small print with the words found in bold. */
+.cell .text-card {
+  position: absolute;
+  inset: 12px 32px 0;
+  padding: 9px 10px;
+  background: white;
+  color: rgba(0, 0, 0, 0.78);
+  border-radius: 3px 3px 0 0;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.16);
+  font-size: 8.5px;
+  line-height: 1.38;
+  overflow: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.cell .text-card b { color: black; font-weight: 700; }
+
+.kind-badge {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.5);
+  display: grid;
+  place-items: center;
+}
+.kind-badge svg { width: 11px; height: 11px; fill: none; stroke: white; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+
+.place {
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  padding: 2px 6px;
+  border-radius: 99px;
+  background: var(--fill-strong);
+  white-space: nowrap;
+}
+.place.on-image { color: white; background: rgba(0, 0, 0, 0.6); }
+.cell .place { position: absolute; right: 6px; bottom: 6px; }
+
+.cell .name {
+  margin: 6px 2px 0;
+  font-size: 12px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A folder too long for its line loses its start: "…/Pictures/Screenshots". */
+.cell .folder, .row .folder, .facts .folder {
+  font-size: 10.5px;
+  color: var(--secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+.cell .folder { margin: 1px 2px 0; }
+.folder bdi { direction: ltr; unicode-bidi: isolate; }
+
+.weaker-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 18px 6px;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--secondary);
+  font-size: 12px;
+  font-weight: 500;
+}
+.weaker-toggle .chevron { transition: transform 0.12s; }
+.weaker-toggle.open .chevron { transform: rotate(90deg); }
+.weaker-results { opacity: 0.85; }
+
+/* Code: one result under another */
+
+.code-list { padding: 12px; display: flex; flex-direction: column; gap: 2px; }
+
+.row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  outline: none;
+}
+.row.selected { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.row .icon { width: 30px; height: 30px; flex: none; display: grid; place-items: center; color: var(--secondary); }
+.row .icon svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.row .text { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
+.row .head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.row .title { font-size: 13px; font-weight: 600; white-space: nowrap; flex: none; max-width: 60%; overflow: hidden; text-overflow: ellipsis; }
+.row .head .place { flex: none; }
+.row .folder { font-size: 11px; min-width: 0; flex: 1; }
+.row .lines {
+  font-family: ui-monospace, "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace;
+  font-size: 11px;
+  color: var(--secondary);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.row .lines b { color: var(--text); }
+
+/* What shows instead of results: the home, folders to choose, nothing found, code search */
+
+.center {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 24px 32px 48px;
+}
+
+/* The app's icon with its own glow spread soft around it. */
+.mark { position: relative; width: 84px; height: 84px; flex: none; }
+.mark::before {
+  content: "";
+  position: absolute;
+  left: -108px;
+  top: -108px;
+  width: 300px;
+  height: 300px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(242, 162, 42, 0.22) 0%, rgba(79, 128, 88, 0.08) 50%, transparent 70%);
+  pointer-events: none;
+}
+.mark img { position: relative; width: 84px; height: 84px; filter: drop-shadow(0 6px 14px rgba(53, 102, 82, 0.3)); }
+
+.center h1 { margin: 18px 0 0; font-size: 24px; font-weight: 700; }
+.center h2 { margin: 18px 0 0; font-size: 20px; font-weight: 700; }
+.center h3 { margin: 10px 0 0; font-size: 17px; font-weight: 600; max-width: 480px; }
+.center p { margin: 6px 0 0; max-width: 440px; font-size: 13px; line-height: 1.45; color: var(--secondary); }
+.center .try { margin-top: 26px; font-size: 10px; font-weight: 600; letter-spacing: 0.08em; color: var(--tertiary); }
+
+.examples { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; max-width: 560px; margin-top: 8px; }
+
+.example {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 11px;
+  border: 0;
+  border-radius: 99px;
+  background: var(--chip);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.example:hover { background: var(--chip-hover); }
+.example svg { width: 13px; height: 13px; fill: none; stroke: var(--leaf-text); stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+
+.about { margin-top: 30px; display: flex; flex-direction: column; align-items: center; gap: 8px; font-size: 11px; color: var(--tertiary); }
+.about .line { display: flex; align-items: center; gap: 8px; }
+.kind-counts { display: flex; gap: 10px; color: var(--secondary); font-variant-numeric: tabular-nums; }
+.kind-counts span { display: flex; align-items: center; gap: 3px; }
+.kind-counts svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+
+.keycaps { display: flex; gap: 3px; }
+.keycap {
+  min-width: 16px;
+  padding: 2px 5px;
+  font-size: 10px;
+  font-weight: 500;
+  text-align: center;
+  color: var(--secondary);
+  background: var(--fill);
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 0.5px var(--fill-strong);
+}
+
+.quiet-icon svg { width: 40px; height: 40px; fill: none; stroke: var(--tertiary); stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
+.brand-icon svg { width: 34px; height: 34px; fill: none; stroke: var(--ember); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+.button {
+  margin-top: 18px;
+  padding: 7px 18px;
+  font-size: 13px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+}
+.button.primary { background: var(--accent); color: white; border-color: transparent; }
+.button:active { filter: brightness(0.92); }
+
+.spinner {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--fill-strong);
+  border-top-color: var(--secondary);
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* The preview pane */
+
+.preview-picture {
+  height: 230px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.preview-picture .frame {
+  position: relative;
+  max-width: 100%;
+  max-height: 100%;
+  display: flex;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18), 0 0 0 0.5px var(--line);
+}
+.preview-picture .frame img { max-width: 292px; max-height: 230px; display: block; }
+.preview-picture video { max-width: 100%; max-height: 100%; border-radius: 8px; background: black; }
+.preview-picture .placeholder {
+  width: 100%;
+  height: 100%;
+  border-radius: 8px;
+  background: var(--tile);
+  display: grid;
+  place-items: center;
+}
+.preview-picture .placeholder svg { width: 56px; height: 56px; fill: none; stroke: var(--tertiary); stroke-width: 1.2; }
+
+/* The moment on the picture: the badge, and for a video where in it. */
+.marks {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+  pointer-events: none;
+}
+.marks.dim { background: linear-gradient(transparent, rgba(0, 0, 0, 0.35)); }
+
+.moment-bar { position: relative; width: 100%; height: 4px; border-radius: 2px; background: var(--fill-strong); }
+.moment-bar .lit { position: absolute; top: 0; bottom: 0; min-width: 4px; border-radius: 2px; background: var(--accent); }
+.moment-bar .head { position: absolute; top: -2.5px; width: 9px; height: 9px; margin-left: -4.5px; border-radius: 50%; background: var(--text); }
+.marks .moment-bar { background: rgba(255, 255, 255, 0.3); }
+.marks .moment-bar .lit { background: white; }
+
+.play {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(255, 255, 255, 0.7);
+  background: rgba(0, 0, 0, 0.45);
+  display: grid;
+  place-items: center;
+  padding: 0;
+  cursor: pointer;
+}
+.play svg { width: 20px; height: 20px; fill: white; margin-left: 3px; }
+
+.audio-moment {
+  width: 100%;
+  height: 150px;
+  border-radius: 8px;
+  background: var(--tile);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+}
+.audio-moment .controls { display: flex; align-items: center; gap: 16px; }
+.audio-moment .wave svg { width: 54px; height: 54px; fill: none; stroke: var(--ember); stroke-width: 1.3; stroke-linecap: round; }
+.audio-moment .toggle {
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent);
+  display: grid;
+  place-items: center;
+  padding: 0;
+  cursor: pointer;
+}
+.audio-moment .toggle svg { width: 14px; height: 14px; fill: white; }
+.audio-moment .toggle.play-icon svg { margin-left: 2px; }
+.audio-moment .moment-bar { width: 220px; }
+.audio-moment .span { font-size: 11px; color: var(--secondary); font-variant-numeric: tabular-nums; }
+
+/* The part of a document that matched, on a page, the words marked as a viewer marks what you searched for. */
+.passage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  padding: 14px;
+  border-radius: 8px;
+  background: white;
+  color: rgba(0, 0, 0, 0.85);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15), 0 0 0 0.5px var(--line);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+.passage mark, .code-lines mark { background: var(--mark); color: black; border-radius: 2px; }
+.passage + .place, .code-lines + .place { position: absolute; right: 8px; bottom: 8px; }
+
+/* The lines of code that matched, numbered as in the file; the line it opens at is lit. */
+.code-lines {
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  padding: 10px 0;
+  border-radius: 8px;
+  background: var(--tile);
+  box-shadow: inset 0 0 0 0.5px var(--line);
+  font-family: ui-monospace, "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+.code-lines .line { display: flex; gap: 10px; padding: 0 8px; white-space: pre; }
+.code-lines .line.focus { background: rgba(242, 162, 42, 0.16); }
+.code-lines .number { flex: none; text-align: right; color: var(--tertiary); }
+
+.facts { margin-top: 12px; display: flex; flex-direction: column; gap: 3px; }
+.facts .title {
+  font-size: 14px;
+  font-weight: 600;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  word-break: break-all;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.facts .folder { font-size: 11px; border: 0; padding: 0; background: none; cursor: pointer; }
+.facts .folder:hover { color: var(--text); }
+.facts .details { font-size: 11px; color: var(--secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.why { margin-top: 12px; }
+.why .reason { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; }
+.why .reason svg { width: 16px; height: 16px; flex: none; fill: none; stroke: var(--ember); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.why .reason.words svg { stroke: var(--secondary); stroke-width: 1.6; }
+.why .excerpt {
+  margin: 6px 0 0 22px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--secondary);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.why .excerpt b { color: var(--text); }
+
+.actions { margin-top: 14px; display: flex; gap: 8px; }
+.actions button {
+  padding: 5px 14px;
+  font-size: 12.5px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+}
+.actions button.primary { background: var(--accent); color: white; border-color: transparent; }
+.actions button:active { filter: brightness(0.92); }
+
+.side .message { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 6px; color: var(--secondary); padding: 0 12px; }
+.side .message strong { color: var(--text); font-size: 14px; }
+
+/* The status bar */
+
+.status {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 14px;
+  border-top: 1px solid var(--line);
+  font-size: 11px;
+  color: var(--secondary);
+}
+.status-line { border: 0; padding: 0; background: none; font-size: 11px; color: inherit; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.status-line:hover { color: var(--text); }
+.status .spacer { flex: 1; }
+.status .count { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.status .update { display: flex; align-items: center; gap: 5px; flex: none; border: 0; padding: 0; background: none; font-size: 11px; color: var(--ember); white-space: nowrap; cursor: pointer; }
+.status .update:disabled { cursor: default; }
+.status .update svg { width: 12px; height: 12px; }
+.ring { width: 12px; height: 12px; flex: none; }
+.ring svg { width: 12px; height: 12px; transform: rotate(-90deg); }
+.ring circle { fill: none; stroke-width: 2.4; }
+.ring .track { stroke: var(--fill-strong); }
+.ring .done { stroke: var(--accent); stroke-linecap: round; }
+
+/* Menus: the ⋯ button's and a result's (right-click) */
+
+.menu {
+  position: fixed;
+  z-index: 10;
+  min-width: 190px;
+  padding: 5px;
+  border-radius: 9px;
+  background: var(--menu);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22), 0 0 0 0.5px var(--fill-strong);
+}
+.menu button {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  width: 100%;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  text-align: left;
+  font-size: 13px;
+}
+.menu button:hover:not(:disabled) { background: var(--accent); color: white; }
+.menu button:disabled { color: var(--tertiary); }
+.menu .shortcut { color: var(--tertiary); }
+.menu button:hover:not(:disabled) .shortcut { color: rgba(255, 255, 255, 0.8); }
+.menu hr { border: 0; height: 1px; margin: 5px 4px; background: var(--line); }
+
+/* The big preview (Space): the selected result over the window, as big as it allows. */
+.big { position: fixed; inset: 0; z-index: 20; display: flex; padding: 24px; background: rgba(0, 0, 0, 0.45); }
+.big[hidden] { display: none; }
+.big .sheet {
+  flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; border-radius: 12px;
+  background: var(--surface); box-shadow: 0 18px 60px rgba(0, 0, 0, 0.35);
+}
+.big .head { flex: none; display: flex; align-items: center; gap: 10px; padding: 10px 12px 10px 16px; border-bottom: 1px solid var(--line); }
+.big .title { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 10px; }
+.big .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.big .title .place { flex: none; font-size: 12px; color: var(--secondary); }
+.big .head button { padding: 5px 14px; font-size: 12.5px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--text); }
+.big .head button.primary { background: var(--accent); color: white; border-color: transparent; }
+.big .head button.close { padding: 2px 10px; font-size: 18px; line-height: 1; border-color: transparent; background: none; color: var(--secondary); }
+.big .view { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; background: var(--pane); }
+.big .view img, .big .view video { max-width: 100%; max-height: 100%; object-fit: contain; }
+.big .view audio { width: min(560px, 80%); }
+.big .view.text { align-items: stretch; justify-content: stretch; overflow: auto; }
+.big .view.text > * { flex: 1; max-height: none; font-size: 14px; }
+.big .view .placeholder svg { width: 96px; height: 96px; opacity: 0.5; }

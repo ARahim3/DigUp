@@ -1,75 +1,48 @@
 import AppKit
 import SwiftUI
 
-/// The menubar icon: the app icon's mark, a boxed D (`Resources/AppIcon/menubar.svg`, drawn here from the same geometry
-/// so it's sharp at any scale). While the model downloads or files index, a progress ring takes the box's place; while
-/// indexing is paused, two bars take the D's (at full strength: a dimmed icon reads as "off", and search still works).
+/// The menubar icon: DigUp's logo (`Resources/AppIcon/tray.svg` and its `tray*.png`, as the Windows and Linux app's tray
+/// shows it). While the model downloads or files index, the tiles are dimmed and get their color back in a sweep from
+/// the top, clockwise, as far as it has come; while indexing is paused, two bars take the D's place.
 enum StatusIcon {
-    /// `update`: a newer version is waiting, a dot at the box's top right.
+    private static let logo = picture("tray"), dimmed = picture("tray-dim"), pausedLogo = picture("tray-paused")
+
+    private static func picture(_ name: String) -> NSImage? {
+        Bundle.main.url(forResource: name, withExtension: "png").flatMap(NSImage.init(contentsOf:))
+    }
+
+    /// `update`: a newer version is waiting, a dot at the top right.
     static func image(progress: Double?, paused: Bool = false, update: Bool = false) -> NSImage {
-        let image = NSImage(size: NSSize(width: 18, height: 18), flipped: true) { rect in
-            // The SVG's 64-unit grid, y down, so angles grow clockwise on screen.
-            let grid = NSAffineTransform()
-            grid.scale(by: rect.width / 64)
-            grid.concat()
-            if let progress {
-                let center = NSPoint(x: 32, y: 32)
-                let track = NSBezierPath()
-                track.appendArc(withCenter: center, radius: 27, startAngle: 0, endAngle: 360)
-                track.lineWidth = 5.3
-                NSColor.black.withAlphaComponent(0.25).setStroke()
-                track.stroke()
-                let arc = NSBezierPath()
-                arc.appendArc(withCenter: center, radius: 27, startAngle: -90,
-                              endAngle: -90 + 360 * max(0.03, min(1, progress)), clockwise: false)
-                arc.lineWidth = 5.3
-                arc.lineCapStyle = .round
-                NSColor.black.setStroke()
-                arc.stroke()
+        let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { rect in
+            if paused {
+                pausedLogo?.draw(in: rect)
+            } else if let progress {
+                dimmed?.draw(in: rect)
+                NSGraphicsContext.saveGraphicsState()
+                let center = NSPoint(x: rect.midX, y: rect.midY)
+                let reached = NSBezierPath()
+                reached.move(to: center)
+                reached.appendArc(withCenter: center, radius: rect.width, startAngle: 90,
+                                  endAngle: 90 - 360 * min(1, max(0, progress)), clockwise: true)
+                reached.close()
+                reached.addClip()
+                logo?.draw(in: rect)
+                NSGraphicsContext.restoreGraphicsState()
             } else {
-                let box = NSBezierPath(roundedRect: NSRect(x: 4.5, y: 4.5, width: 55, height: 55), xRadius: 12, yRadius: 12)
-                for (from, to) in [((32, 5), (32, 16)), ((32, 48), (32, 59)), ((5, 32), (17, 32)), ((47, 32), (59, 32))] {
-                    box.move(to: NSPoint(x: from.0, y: from.1))
-                    box.line(to: NSPoint(x: to.0, y: to.1))
-                }
-                box.lineWidth = 4.5
-                NSColor.black.setStroke()
-                box.stroke()
-            }
-            NSColor.black.setFill()
-            if paused, progress == nil {
-                for x in [23.5, 34.5] {
-                    NSBezierPath(roundedRect: NSRect(x: x, y: 21, width: 6, height: 22), xRadius: 1.8, yRadius: 1.8).fill()
-                }
-            } else {
-                letter.fill()
+                logo?.draw(in: rect)
             }
             if update {
-                // Cut a gap around it, so it reads as a dot on the mark and not part of it.
+                // Cut a gap around it, so it reads as a dot on the logo and not part of it.
                 NSGraphicsContext.current?.compositingOperation = .clear
-                NSBezierPath(ovalIn: NSRect(x: 41, y: -1, width: 24, height: 24)).fill()
+                NSBezierPath(ovalIn: NSRect(x: 11.5, y: 11.5, width: 7, height: 7)).fill()
                 NSGraphicsContext.current?.compositingOperation = .sourceOver
-                NSBezierPath(ovalIn: NSRect(x: 46, y: 4, width: 14, height: 14)).fill()
+                NSColor.systemRed.setFill()
+                NSBezierPath(ovalIn: NSRect(x: 12.75, y: 12.75, width: 4.5, height: 4.5)).fill()
             }
             return true
         }
-        image.isTemplate = true   // takes the menubar's color, light or dark
         image.accessibilityDescription = "DigUp"
         return image
-    }
-
-    /// The D: a stem with rounded corners and a half circle.
-    private static var letter: NSBezierPath {
-        let d = NSBezierPath()
-        d.move(to: NSPoint(x: 25, y: 21))
-        d.line(to: NSPoint(x: 30, y: 21))
-        d.appendArc(withCenter: NSPoint(x: 30, y: 32), radius: 11, startAngle: -90, endAngle: 90, clockwise: false)
-        d.line(to: NSPoint(x: 25, y: 43))
-        d.appendArc(withCenter: NSPoint(x: 25, y: 41), radius: 2, startAngle: 90, endAngle: 180, clockwise: false)
-        d.line(to: NSPoint(x: 23, y: 23))
-        d.appendArc(withCenter: NSPoint(x: 25, y: 23), radius: 2, startAngle: 180, endAngle: 270, clockwise: false)
-        d.close()
-        return d
     }
 }
 

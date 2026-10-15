@@ -42,6 +42,32 @@ import Testing
         #expect(try searcher.search("কলকাতা", queryVector: nil).isEmpty)
     }
 
+    @Test func aWordInNoFileIsFoundAtTheStartOfLongerOnes() throws {
+        let store = try IndexStore(directory: folder)
+        func add(_ path: String, _ text: String, kind: FileKind = .doc, segment: SegmentKind = .chunk) throws {
+            let id = try store.insert(Candidate(path: path, kind: kind, size: 1, mtime: 1, inode: UInt64(path.count),
+                                                device: 1))
+            try store.addSegment(file: id, kind: segment, modality: .text, loc: 1, text: text)
+        }
+        try add("/shots/settings.png", "Model picker: Grok4 (default)", kind: .screenshot, segment: .ocr)
+        try add("/notes/wiki.txt", "Read the Grokipedia page about rivers.")
+        try add("/notes/pets.txt", "The cat sleeps on the sofa.")
+        try add("/notes/tags.txt", "Pick a category for each photo.")
+        let searcher = try Searcher(store: store, loadVectors: false)
+        // "grok" is in no file as a word. While it's typed (the last word as a prefix) and once typing stops, it finds
+        // the same files.
+        let typing = try searcher.search("grok", queryVector: nil, prefixLast: true)
+        let stopped = try searcher.search("grok", queryVector: nil)
+        #expect(Set(stopped.map(\.path)) == ["/shots/settings.png", "/notes/wiki.txt"])
+        #expect(Set(typing.map(\.path)) == Set(stopped.map(\.path)))
+        #expect(stopped.first { $0.path == "/shots/settings.png" }?.excerpt?.contains("«Grok4»") == true)
+        // Another word with it: both count.
+        #expect(try searcher.search("grok rivers", queryVector: nil).map(\.path) == ["/notes/wiki.txt", "/shots/settings.png"])
+        // A word that's in a file as typed stays whole: "cat" isn't "category". So do two letters.
+        #expect(try searcher.search("cat", queryVector: nil).map(\.path) == ["/notes/pets.txt"])
+        #expect(try searcher.search("gr", queryVector: nil).isEmpty)
+    }
+
     @Test func garbledPageTextIsNoticed() {
         // As PDFKit reads Bengali and Arabic pages made by Quartz/WebKit (testbed/make_lang.swift).
         let glyphOrder = "বািড় ভাড়ার চিপ ধানমি ৭ নর রােডর িতন বডরেমর াট মািসক ২৫,০০০ টাকা ভাড়ায় দওয়া হেলা। ভাড়ায়া দুই মােসর"

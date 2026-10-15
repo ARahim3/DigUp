@@ -11,8 +11,8 @@ import Testing
 
     @Test func typeScriptIsNotVideo() throws {
         let file = folder.appendingPathComponent("app.ts")
-        try "export const x: number = 1;\n".write(to: file, atomically: true, encoding: .utf8)
-        #expect(Rules.classify(file, type: .init(filenameExtension: "ts"), options: IndexOptions()) == .skip("code or data file"))
+        try "export const x: number = 1;\n".write(to: file, atomically: false, encoding: .utf8)
+        #expect(Rules.classify(file, values: nil, options: IndexOptions()) == .skip("code or data file"))
     }
 
     @Test func realTransportStreamIsVideo() throws {
@@ -20,14 +20,14 @@ import Testing
         for packet in 0..<4 { bytes[packet * 188] = 0x47 }
         let file = folder.appendingPathComponent("clip.ts")
         try Data(bytes).write(to: file)
-        #expect(Rules.classify(file, type: .init(filenameExtension: "ts"), options: IndexOptions()) == .index(.video))
+        #expect(Rules.classify(file, values: nil, options: IndexOptions()) == .index(.video))
     }
 
     @Test func codeCanBeIncluded() {
         var options = IndexOptions()
         options.includeCode = true
         let file = folder.appendingPathComponent("main.py")
-        #expect(Rules.classify(file, type: .init(filenameExtension: "py"), options: options) == .index(.doc))
+        #expect(Rules.classify(file, values: nil, options: options) == .index(.doc))
     }
 
     @Test func machineNames() {
@@ -137,5 +137,28 @@ import Testing
         try Data("notes about the trip".utf8).write(to: inner.appendingPathComponent("trip.txt"))
         let report = Crawler.crawl([folder, inner], options: IndexOptions())
         #expect(report.candidates.map { ($0.path as NSString).lastPathComponent } == ["trip.txt"])
+    }
+
+    @Test func changesCountOnlyWhereTheCrawlGoes() {
+        let home = "/Users/me"
+        func walked(_ path: String, root: String = home, skipping excluded: [String] = []) -> Bool {
+            Rules.isWalked(path, root: root, home: home, excluded: excluded)
+        }
+        #expect(walked("/Users/me/Documents/trip.pdf"))
+        #expect(walked("/Users/me"))
+        // DigUp's own index and log, with the home folder chosen: a change there asked for a sync, whose log line was
+        // a change again.
+        #expect(!walked("/Users/me/Library/Application Support/DigUp/index.noindex/app.log"))
+        #expect(!walked("/Users/me/Library/Caches/com.apple.Safari/Cache.db"))
+        #expect(!walked("/Users/me/Projects/site/node_modules/left-pad/index.js"))
+        #expect(!walked("/Users/me/Movies/Exports.noindex/clip.mov"))
+        #expect(!walked("/Users/me/Documents/.git/index"))
+        #expect(!walked("/Users/me/Downloads/big.iso", skipping: ["/Users/me/Downloads"]))
+        // A folder chosen inside ~/Library (iCloud Drive) is walked.
+        let drive = "/Users/me/Library/Mobile Documents/com~apple~CloudDocs"
+        #expect(walked(drive + "/Notes/plan.md", root: drive))
+        #expect(!walked("/Users/me/Documents/trip.pdf", root: drive))
+        #expect(walked("/Users/me/Documentsx/a.pdf", root: "/Users/me/Documentsx"))
+        #expect(!walked("/Users/me/Documentsx/a.pdf", root: "/Users/me/Documents"))
     }
 }

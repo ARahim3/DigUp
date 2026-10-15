@@ -31,6 +31,8 @@ nonisolated struct EngineStatus: Sendable, Equatable {
     var vectors = 0
     var paused = false
     var waitingFor: String?   // why the backfill waits ("on battery"), if it does
+    /// Outside the set hours ("Index only at set hours"): when indexing may run again (`IndexSchedule`).
+    var heldUntil: Date?
     /// The helper found no model yet (it's downloading): files are found and named, nothing gets embedded.
     var waitingForModel = false
     /// Chosen folders that aren't there right now (an unplugged drive): skipped, and their files kept.
@@ -49,6 +51,8 @@ nonisolated struct EngineStatus: Sendable, Equatable {
         var indexing: Progress?
         /// Code folders that aren't there right now (an unplugged drive): skipped, and their files kept.
         var missingRoots: [String] = []
+        /// Code folders macOS doesn't let DigUp read: skipped, files kept.
+        var unreadableRoots: [String] = []
     }
 
     struct Progress: Sendable, Equatable {
@@ -96,6 +100,10 @@ nonisolated final class Engine: @unchecked Sendable {
     private var helperOutput = Data()
     /// The folders changed while a helper ran: start a new one with them when it's gone.
     private var restartHelper = false
+    /// When the helper's watchdog ended it lately (`stoppedOnFile`).
+    private var watchdogStops: [Date] = []
+    /// The helper's exit status when its watchdog ended it on a file (`digup`'s Watchdog: EX_TEMPFAIL).
+    private static let stoppedOnFile: Int32 = 75
     /// The next helper drops files under folders that are no longer chosen. At launch too, in case the folders
     /// changed while a helper had no time to; but an app with no folders at all never empties the index by itself.
     private var pruneWanted: Bool
@@ -111,6 +119,9 @@ nonisolated final class Engine: @unchecked Sendable {
 
     // watchQueue only
     private var watcher: FolderWatcher?
+    /// The chosen folders and the skipped ones as the watcher reports paths (real paths too: /private/var for /var).
+    private var watchedRoots: [String] = []
+    private var watchedSkips: [String] = []
     private var syncDebounce: DispatchWorkItem?
     private var codeWatcher: FolderWatcher?
     private var codeSyncDebounce: DispatchWorkItem?
@@ -118,6 +129,7 @@ nonisolated final class Engine: @unchecked Sendable {
 
     // Any thread, under `lock`
     private var paused = false
+    private var heldUntil: Date?
     private var backfillBlocker: String?
     private var roots: [URL]
     private var excluded: [URL]
@@ -152,7 +164,7 @@ nonisolated final class Engine: @unchecked Sendable {
     private let onStatus: @MainActor @Sendable (EngineStatus) -> Void
 
     /// `backfillBlocker`: why the first full pass has to wait (see `PowerPolicy`), or nil.
-    init(settings: AppSettings, backfillBlocker: String?,
+    init(settings: AppSettings, backfillBlocker: String?, heldUntil: Date?,
          onStatus: @escaping @MainActor @Sendable (EngineStatus) -> Void) {
         indexDirectory = settings.indexDirectory
         modelsDirectory = settings.modelsDirectory
@@ -165,8 +177,10 @@ nonisolated final class Engine: @unchecked Sendable {
         codeQuietSeconds = settings.codeQuietSeconds
         pruneWanted = !settings.roots.isEmpty
         self.backfillBlocker = backfillBlocker
+        self.heldUntil = heldUntil
         self.onStatus = onStatus
         status.waitingFor = backfillBlocker
+        status.heldUntil = heldUntil
     }
 
     // MARK: Status
@@ -240,7 +254,7 @@ nonisolated final class Engine: @unchecked Sendable {
                 deleteCodeIndex = roots.isEmpty && (wasOn || deleteCodeIndex)
                 if helper != nil {
                     restartHelper = true
-                    send("stop")
+                    stopHelper()
                 } else {
                     removeCodeIndexIfAsked()
                     startHelper()
@@ -269,7 +283,7 @@ nonisolated final class Engine: @unchecked Sendable {
             pruneWanted = true
             if helper != nil {
                 restartHelper = true
-                send("stop")
+                stopHelper()
             } else {
                 startHelper()
             }
@@ -377,7 +391,13 @@ nonisolated final class Engine: @unchecked Sendable {
     /// Watches the chosen folders that are there (a missing one is picked up when a drive connects).
     private func startWatching() {
         watcher = nil
-        let present = lock.withLock { roots }.filter(AppSettings.isFolder)
+        let (roots, excluded) = lock.withLock { (self.roots, self.excluded) }
+        let present = roots.filter(AppSettings.isFolder)
+        func spellings(_ folders: [URL]) -> [String] {
+            Array(Set(folders.flatMap { [$0.path, FolderSelection.realPath($0.path)] }))
+        }
+        watchedRoots = spellings(present)
+        watchedSkips = spellings(excluded)
         guard !present.isEmpty else { return }
         watcher = FolderWatcher(paths: present.map(\.path), latency: 0.25, queue: watchQueue) { [weak self] paths in
             self?.foldersChanged(paths)
@@ -435,6 +455,11 @@ nonisolated final class Engine: @unchecked Sendable {
     /// FSEvents, on watchQueue. Waits for things to settle (a copy in progress, a burst of screenshots), then asks
     /// the helper to sync; a running batch yields to that at its next boundary.
     private func foldersChanged(_ paths: [String]) {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let paths = paths.filter { path in
+            watchedRoots.contains { Rules.isWalked(path, root: $0, home: home, excluded: watchedSkips) }
+        }
+        guard !paths.isEmpty else { return }
         log("watch: \(paths.count) changed (\((paths.first as NSString?)?.lastPathComponent ?? ""))")
         syncDebounce?.cancel()
         let work = DispatchWorkItem { [self] in
@@ -454,10 +479,14 @@ nonisolated final class Engine: @unchecked Sendable {
     /// its last file. Before the model has downloaded it only syncs (file names become searchable) and exits.
     private func startHelper() {
         let (roots, excluded, types, paused, backfill): ([URL], [URL], [String], Bool, Bool) = lock.withLock {
-            (self.roots, self.excluded, self.excludedTypes, self.paused, backfillBlocker == nil)
+            (self.roots, self.excluded, self.excludedTypes, self.paused || heldUntil != nil, backfillBlocker == nil)
         }
         let (codeRoots, codeExcluded) = lock.withLock { (self.codeRoots, self.codeExcluded) }
-        guard helper == nil, !paused else { return }
+        guard helper == nil, !paused else {
+            // Paused, or outside the set hours: the next start syncs. Launched outside them, it never started.
+            if helper == nil { update { if case .starting = $0.activity { $0.activity = .idle } } }
+            return
+        }
         guard !roots.isEmpty || !codeRoots.isEmpty || pruneWanted else {
             update { $0.activity = .idle }
             return
@@ -471,6 +500,11 @@ nonisolated final class Engine: @unchecked Sendable {
         for type in types { arguments += ["--exclude-ext", type] }
         for folder in codeRoots { arguments += ["--code-root", folder.path] }
         for folder in codeExcluded { arguments += ["--code-exclude", folder.path] }
+        // Dev runs can give the helper more (-debugHelperArgs "--time-limit 0": its watchdog stops on every file).
+        if UserDefaults.standard.string(forKey: "defaultsSuite") != nil,
+           let extra = UserDefaults.standard.string(forKey: "debugHelperArgs") {
+            arguments += extra.split(separator: " ").map(String.init)
+        }
         process.arguments = arguments + roots.map(\.path)
         process.environment = ProcessInfo.processInfo.environment.merging(["DIGUP_MODELS": modelsDirectory.path]) { $1 }
         process.qualityOfService = .utility
@@ -505,8 +539,22 @@ nonisolated final class Engine: @unchecked Sendable {
             $0.missingRoots = []
             $0.unreadableRoots = []
             $0.code.missingRoots = []
+            $0.code.unreadableRoots = []
         }
         log("indexer: started (pid \(process.processIdentifier))")
+    }
+
+    /// Asks the helper to stop (it does between files) and ends it if it's still there some seconds later: a helper
+    /// stuck in one file never gets to the next, and Pause or a change of folders has to work anyway. What it was
+    /// reading is read again next time.
+    private func stopHelper(within seconds: Double = 15) {
+        send("stop")
+        guard let process = helper else { return }
+        indexQueue.asyncAfter(deadline: .now() + seconds) { [self] in
+            guard helper === process, process.isRunning else { return }
+            log("indexer: still running \(Int(seconds)) s after stop; ending it")
+            process.terminate()
+        }
     }
 
     private func send(_ command: String) {
@@ -578,6 +626,10 @@ nonisolated final class Engine: @unchecked Sendable {
             }
             if !folders.isEmpty { log("indexer: not connected: \(folders.map(tildePath))") }
             if !unreadable.isEmpty { log("indexer: no access: \(unreadable.map(tildePath))") }
+        case "stopped":
+            log("indexer: skipped \(tildePath(event["path"] as? String ?? "?")): it \(event["why"] as? String ?? "")")
+        case "rescan":
+            log("indexer: reading \(int("files")) files again that DigUp reads better now (scans' words, SVGs)")
         case "pruned":
             log("indexer: \(int("files")) files under folders no longer chosen left the index")
         case "reindex":
@@ -596,7 +648,8 @@ nonisolated final class Engine: @unchecked Sendable {
         switch event["event"] as? String {
         case "sync":
             applyCounts(event)
-            if int("new") > 0 { update { $0.code.indexing = .init(done: 0, total: int("new")) } }
+            // New code is read right away only when the main index has nothing waiting; else it waits its turn.
+            if int("new") > 0, int("pending") == 0 { update { $0.code.indexing = .init(done: 0, total: int("new")) } }
             log("code sync: \(int("added")) new · \(int("changed")) changed · \(int("moved")) moved · "
                 + "\(int("removed")) removed · \(int("unchanged")) unchanged in \(int("ms")) ms")
         case "file":
@@ -610,8 +663,15 @@ nonisolated final class Engine: @unchecked Sendable {
             refreshCodeSearcher(force: true)
         case "missing":
             let folders = event["folders"] as? [String] ?? []
-            update { $0.code.missingRoots = folders + (event["unreadable"] as? [String] ?? []) }
+            let unreadable = event["unreadable"] as? [String] ?? []
+            update {
+                $0.code.missingRoots = folders
+                $0.code.unreadableRoots = unreadable
+            }
             if !folders.isEmpty { log("indexer: code folders not connected: \(folders.map(tildePath))") }
+            if !unreadable.isEmpty { log("indexer: no access to code folders: \(unreadable.map(tildePath))") }
+        case "stopped":
+            log("indexer: skipped \(tildePath(event["path"] as? String ?? "?")): it \(event["why"] as? String ?? "")")
         case "pruned":
             log("indexer: \(int("files")) files under code folders no longer chosen left the code index")
         case "reindex":
@@ -662,6 +722,11 @@ nonisolated final class Engine: @unchecked Sendable {
             // The folders changed: a new helper with the new ones.
             restartHelper = false
             startHelper()
+        } else if status == Self.stoppedOnFile {
+            // Its watchdog ended it on a file whose reading ran away: the next one skips that file and goes on. Not
+            // over and over, though, if something else is wrong.
+            watchdogStops = watchdogStops.filter { Date().timeIntervalSince($0) < 600 } + [Date()]
+            if watchdogStops.count <= 3 { startHelper() } else { log("indexer: stopped on files 4 times in 10 min") }
         } else if syncWantedAt != nil, status == 0 {
             // A sync asked for while it was on its way out still has to happen.
             startHelper()
@@ -699,7 +764,18 @@ nonisolated final class Engine: @unchecked Sendable {
         update { $0.paused = paused }
         log(paused ? "indexing paused" : "indexing resumed")
         indexQueue.async { [self] in
-            if paused { send("stop") } else { startHelper() }
+            if paused { stopHelper() } else { startHelper() }
+        }
+    }
+
+    /// From `IndexSchedule`: outside the set hours, when indexing may run again (the helper stops after its batch, as
+    /// with Pause, and none starts till then; changes meanwhile are found by the first sync after); nil inside them.
+    /// Pause is separate: neither undoes the other.
+    func setHeldUntil(_ date: Date?) {
+        lock.withLock { heldUntil = date }
+        update { $0.heldUntil = date }
+        indexQueue.async { [self] in
+            if date != nil { if helper != nil { stopHelper() } } else { startHelper() }
         }
     }
 
@@ -805,7 +881,7 @@ nonisolated final class Engine: @unchecked Sendable {
     func rootSummaries(code: Bool = false) async -> [RootSummary] {
         await withCheckedContinuation { continuation in
             searchQueue.async { [self] in
-                let unreadable = Set(lock.withLock { code ? [] : status.unreadableRoots })
+                let unreadable = Set(lock.withLock { code ? status.code.unreadableRoots : status.unreadableRoots })
                 let store = code ? codeStore : searchStore
                 let summaries = lock.withLock { code ? codeRoots : roots }.map { root -> RootSummary in
                     var summary = RootSummary(path: root.path, missing: !AppSettings.isFolder(root),
@@ -917,7 +993,7 @@ nonisolated final class Engine: @unchecked Sendable {
         update { $0.encoder = .starting }
         let started = Date()
         do {
-            // The bundled helper runs the model (`digup worker`); DIGUP_WORKER_DIR swaps in another worker.
+            // The bundled helper runs the model (`digup worker`); in dev runs DIGUP_WORKER_DIR swaps in another worker.
             var config = python ?? .helper(Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/digup"))
             config.environment["DIGUP_MODELS"] = modelsDirectory.path
             config.log = indexDirectory.appendingPathComponent("worker-query.log")

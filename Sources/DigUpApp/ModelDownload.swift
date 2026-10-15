@@ -1,3 +1,4 @@
+import AppKit
 import DigUpKit
 import Foundation
 import Observation
@@ -15,6 +16,7 @@ import Observation
 /// This is the app's only network use. It starts when onboarding's Get Started is clicked, or at launch when a set-up
 /// app finds its model missing (an update that brings a new model). A file that's already in the Hugging Face cache
 /// (`hf download`, llama.cpp users) is copied from there instead (an APFS clone: no time, no space), and checked the same.
+/// So are files chosen by hand (`use`), for networks that block Hugging Face.
 @Observable
 final class ModelDownload {
     enum Phase: Equatable {
@@ -42,6 +44,8 @@ final class ModelDownload {
     @ObservationIgnored private var fileStarted = Date()
     @ObservationIgnored private var lastLogged = Date.distantPast
     @ObservationIgnored private var attempt = 0
+    /// Files whose `.partial` was chosen by hand (`use`): one that fails its check says so rather than downloading.
+    @ObservationIgnored private var chosen = Set<String>()
 
     init(folder: URL) {
         self.folder = folder
@@ -206,7 +210,11 @@ final class ModelDownload {
                     log("model: \(file.name) \(good ? "checked" : "FAILED its check (\(size) of \(file.bytes) bytes)") in "
                         + "\(ms(since: started)), downloaded in \(String(format: "%.1f s", seconds))")
                     if good {
+                        chosen.remove(file.name)
                         next()
+                    } else if chosen.remove(file.name) != nil {
+                        // Chosen by hand: say so, rather than download what the network may block.
+                        phase = .failed("The chosen \(file.name) isn't the right file")
                     } else {
                         failedChecks += 1
                         received = bytesOnDisk()
@@ -238,6 +246,81 @@ final class ModelDownload {
             retryWork = work
             DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
         }
+    }
+
+    // MARK: Files chosen by hand
+
+    /// The model's two files, got some other way (on another network, from a mirror, a colleague's copy) where
+    /// Hugging Face is blocked. Each goes where a download would put it (`<name>.partial`; an APFS clone when it can
+    /// be) and is checked the same way, size and SHA-256, before it's used. A file counts by its size, and so by its
+    /// name only at the right size (a smaller one would be taken for a download to resume). What's still missing
+    /// afterwards downloads as usual.
+    func use(_ urls: [URL]) {
+        var picked: [(file: ModelFiles.File, url: URL)] = []
+        var problem = "Those aren't the model's files"
+        for url in urls {
+            let size = FileFetcher.size(of: url)
+            guard let file = ModelFiles.all.first(where: { $0.bytes == size }) else {
+                if let named = ModelFiles.all.first(where: { $0.name == url.lastPathComponent }) {
+                    problem = "The chosen \(named.name) is \(bytes(size)), not \(bytes(named.bytes))"
+                }
+                continue
+            }
+            let wanted = ModelFiles.missing(in: folder).contains(file) && !picked.contains { $0.file == file }
+            if wanted { picked.append((file, url)) }
+        }
+        guard !picked.isEmpty else {
+            log("model: none of the chosen files is a model file (\(urls.map(\.lastPathComponent))): \(problem)")
+            if phase != .ready, !isActive { phase = .failed(problem) }
+            return
+        }
+        // What was downloading stops: these take its place (a stopped fetcher's callbacks are ignored).
+        fetcher?.cancel()
+        fetcher = nil
+        attempt += 1
+        retryWork?.cancel()
+        phase = .verifying
+        DispatchQueue.global(qos: .utility).async { [folder, picked] in
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            var copied: [String] = []
+            for (file, url) in picked {
+                let partial = folder.appendingPathComponent(file.name + ".partial")
+                try? FileManager.default.removeItem(at: partial)
+                if (try? FileManager.default.copyItem(at: url, to: partial)) != nil { copied.append(file.name) }
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                log("model: chosen by hand: \(copied.joined(separator: ", "))")
+                chosen.formUnion(copied)
+                phase = .needed
+                start()   // checks them, and downloads what's still missing
+            }
+        }
+    }
+
+    /// An open panel for `use`, as a sheet on `window` when there is one.
+    func chooseFiles(for window: NSWindow?) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Use"
+        panel.message = "Choose the model files you downloaded: "
+            + ModelFiles.all.map(\.name).joined(separator: " and ") + "."
+        let finish = { [weak self] (response: NSApplication.ModalResponse) in
+            guard response == .OK else { return }
+            self?.use(panel.urls)
+        }
+        if let window {
+            panel.beginSheetModal(for: window, completionHandler: finish)
+        } else {
+            finish(panel.runModal())
+        }
+    }
+
+    /// Where the two files download from (the pinned revision), one a line: to fetch them on another network.
+    static var links: String {
+        ModelFiles.all.map(\.url.absoluteString).joined(separator: "\n")
     }
 
     // MARK: Disk
@@ -273,143 +356,3 @@ nonisolated func bytes(_ count: Int64) -> String {
     ByteCountFormatter.string(fromByteCount: count, countStyle: .file)
 }
 
-/// Downloads one file into `<name>.partial`, carrying on from what's there (an HTTP range). Reports the bytes on disk
-/// at most 5 times a second, then how it went, on its own queue.
-nonisolated final class FileFetcher: NSObject, URLSessionDataDelegate, @unchecked Sendable {
-    enum Outcome: Sendable {
-        case downloaded(URL)
-        case failed(String, retry: Bool)
-    }
-
-    private let file: ModelFiles.File
-    private let partial: URL
-    private let progress: @Sendable (Int64) -> Void
-    private let waiting: @Sendable () -> Void
-    private let done: @Sendable (Outcome) -> Void
-    // The session's delegate queue only (after `start`).
-    private var session: URLSession?
-    private var handle: FileHandle?
-    private var written: Int64 = 0
-    private var problem: (message: String, retry: Bool)?
-    private var reported = Date.distantPast
-
-    init(file: ModelFiles.File, folder: URL, progress: @escaping @Sendable (Int64) -> Void,
-         waiting: @escaping @Sendable () -> Void, done: @escaping @Sendable (Outcome) -> Void) {
-        self.file = file
-        partial = folder.appendingPathComponent(file.name + ".partial")
-        self.progress = progress
-        self.waiting = waiting
-        self.done = done
-    }
-
-    /// The file's size now. (Not through URL resource values: a URL keeps the first size it read, so asking the same
-    /// URL again after the download said the resumed file was still as small as when it resumed.)
-    static func size(of url: URL) -> Int64 {
-        ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? NSNumber)?.int64Value ?? 0
-    }
-
-    func start() {
-        written = Self.size(of: partial)
-        if written > file.bytes {
-            try? FileManager.default.removeItem(at: partial)
-            written = 0
-        }
-        if written == file.bytes { return done(.downloaded(partial)) }
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.waitsForConnectivity = true        // offline: wait for the network instead of failing
-        configuration.timeoutIntervalForRequest = 60     // no bytes for a minute: fail, then retry from here
-        configuration.timeoutIntervalForResource = 7 * 24 * 3600
-        configuration.urlCache = nil
-        let queue = OperationQueue()
-        queue.maxConcurrentOperationCount = 1
-        let session = URLSession(configuration: configuration, delegate: self, delegateQueue: queue)
-        self.session = session
-        var request = URLRequest(url: file.url)
-        if written > 0 { request.setValue("bytes=\(written)-", forHTTPHeaderField: "Range") }
-        session.dataTask(with: request).resume()
-    }
-
-    func cancel() {
-        session?.invalidateAndCancel()
-    }
-
-    // Hugging Face redirects to its CDN; the range has to come along.
-    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
-                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
-        var request = request
-        if let range = task.originalRequest?.value(forHTTPHeaderField: "Range") {
-            request.setValue(range, forHTTPHeaderField: "Range")
-        }
-        completionHandler(request)
-    }
-
-    func urlSession(_ session: URLSession, taskIsWaitingForConnectivity task: URLSessionTask) {
-        waiting()
-    }
-
-    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
-                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        switch status {
-        case 206:
-            let range = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Range") ?? ""
-            guard range.hasPrefix("bytes \(written)-") else {
-                // Not where we asked: start the file over next time.
-                try? FileManager.default.removeItem(at: partial)
-                problem = ("The download couldn't resume", true)
-                return completionHandler(.cancel)
-            }
-        case 200:
-            written = 0   // the whole file, from the start
-        default:
-            problem = ("Hugging Face answered \(status)", status == 429 || status >= 500)
-            return completionHandler(.cancel)
-        }
-        do {
-            if !FileManager.default.fileExists(atPath: partial.path) {
-                FileManager.default.createFile(atPath: partial.path, contents: nil)
-            }
-            let handle = try FileHandle(forWritingTo: partial)
-            try handle.truncate(atOffset: UInt64(written))
-            try handle.seekToEnd()
-            self.handle = handle
-            completionHandler(.allow)
-        } catch {
-            problem = ("Can't save the model: \(error.localizedDescription)", false)
-            completionHandler(.cancel)
-        }
-    }
-
-    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        do {
-            try handle?.write(contentsOf: data)
-            written += Int64(data.count)
-        } catch {
-            problem = ("Can't save the model: \(error.localizedDescription)", false)
-            dataTask.cancel()
-            return
-        }
-        let now = Date()
-        if now.timeIntervalSince(reported) >= 0.2 {
-            reported = now
-            progress(written)
-        }
-    }
-
-    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        try? handle?.close()
-        handle = nil
-        session.finishTasksAndInvalidate()
-        progress(written)
-        if let problem {
-            done(.failed(problem.message, retry: problem.retry))
-        } else if let error {
-            if (error as NSError).code == NSURLErrorCancelled { return }   // cancel()
-            done(.failed(error.localizedDescription, retry: true))
-        } else if written == file.bytes {
-            done(.downloaded(partial))
-        } else {
-            done(.failed("The download stopped early", retry: true))
-        }
-    }
-}

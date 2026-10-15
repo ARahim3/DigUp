@@ -6,6 +6,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     static func main() {
         signal(SIGPIPE, SIG_IGN)   // a helper that just exited must surface as a write error, not kill the app
+        // DIGUP_WORKER_DIR runs another worker (the Python reference, for evals) in place of the bundled model. Only
+        // dev runs take it: anywhere else it would have DigUp, and its helpers, start whatever that folder holds.
+        if UserDefaults.standard.string(forKey: "defaultsSuite") == nil { unsetenv("DIGUP_WORKER_DIR") }
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate

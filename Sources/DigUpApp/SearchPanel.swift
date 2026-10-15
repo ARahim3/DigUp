@@ -27,6 +27,9 @@ final class SearchPanelController {
     static let expandedHeight: CGFloat = 480
     static let rowsPerGroup = 6
     static let typingPause: Duration = .milliseconds(120)
+    /// It fades in and out, like Spotlight's panel.
+    static let fadeIn: TimeInterval = 0.15
+    static let fadeOut: TimeInterval = 0.12
     /// The selectable row that folds and unfolds the weaker matches.
     static let weakerToggle = "\u{0}weaker"
 
@@ -56,6 +59,8 @@ final class SearchPanelController {
     @ObservationIgnored private var resignObserver: NSObjectProtocol?
     @ObservationIgnored private var keyWindowObserver: NSObjectProtocol?
     @ObservationIgnored private var shownAt = Date.distantPast
+    /// Fading out: still on screen, but gone as far as everything else is concerned.
+    @ObservationIgnored private var fading = false
     @ObservationIgnored private var activity: NSObjectProtocol?
     /// True once ↑/↓ moved the selection since the last edit: then Space previews instead of typing a space.
     @ObservationIgnored private var navigated = false
@@ -72,7 +77,7 @@ final class SearchPanelController {
         engine = app.engine
     }
 
-    var isVisible: Bool { window?.isVisible == true }
+    var isVisible: Bool { window?.isVisible == true && !fading }
     var windowNumber: Int { window?.windowNumber ?? 0 }
     var isPreviewing: Bool { QLPreviewPanel.sharedPreviewPanelExists() && QLPreviewPanel.shared().isVisible }
     /// The selectable rows in order: strong results group by group, the fold, then the weaker ones if unfolded.
@@ -100,7 +105,15 @@ final class SearchPanelController {
         // Activate for real: a background app's main thread drops to efficiency cores (App Nap), which can make
         // search 5× slower.
         bringAppToFront()
+        fading = false   // shown again while it faded out: it comes back from where it got to
+        window.ignoresMouseEvents = false
+        window.canHide = true
+        if !window.isVisible { window.alphaValue = 0 }
         window.makeKeyAndOrderFront(nil)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = Self.fadeIn
+            window.animator().alphaValue = 1
+        }
         if let field {
             window.makeFirstResponder(field)
             field.currentEditor()?.selectAll(nil)   // like Spotlight: the last query, selected
@@ -121,13 +134,26 @@ final class SearchPanelController {
         if QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared().isVisible {
             QLPreviewPanel.shared().orderOut(nil)
         }
-        window?.orderOut(nil)
         removeKeyMonitor()
         PreviewPlayback.shared.stop()
         if let activity { ProcessInfo.processInfo.endActivity(activity) }
         activity = nil
         Thumbnails.shared.clear()
         Previews.shared.clear()
+        guard let window, window.isVisible, !fading else { return }
+        fading = true
+        window.ignoresMouseEvents = true
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = Self.fadeOut
+            window.animator().alphaValue = 0
+        } completionHandler: { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.fading else { return }   // shown again meanwhile
+                self.fading = false
+                window.orderOut(nil)
+                window.canHide = true
+            }
+        }
     }
 
     // MARK: Searching
@@ -375,8 +401,10 @@ final class SearchPanelController {
         query = text
     }
 
-    /// Esc: hide, and give the keyboard back to the app you came from.
+    /// Esc: hide, and give the keyboard back to the app you came from (at once: the fade doesn't hold it).
     private func dismiss() {
+        // Hiding the app gives the keyboard back at once; the panel is left out of it so that it can still fade.
+        window?.canHide = false
         hide()
         NSApp.hide(nil)
     }

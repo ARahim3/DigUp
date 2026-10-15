@@ -1,5 +1,4 @@
 import Foundation
-import UniformTypeIdentifiers
 
 public enum Classification: Equatable, Sendable {
     case index(FileKind)
@@ -105,27 +104,6 @@ public enum Rules {
         return nil
     }
 
-    public static func classify(_ url: URL, type: UTType?, options: IndexOptions) -> Classification {
-        let ext = url.pathExtension.lowercased()
-        if options.excludedExtensions.contains(ext) { return .skip("excluded type") }
-        // .ts / .mts are usually TypeScript, which Spotlight calls MPEG-2 video. Only a real transport stream is video.
-        if ext == "ts" || ext == "mts" || ext == "m2ts" {
-            if isMPEGTransportStream(url) { return .index(.video) }
-            return options.includeCode ? .index(.doc) : .skip("code or data file")
-        }
-        if docExtensions.contains(ext) { return .index(.doc) }
-        if codeExtensions.contains(ext) { return options.includeCode ? .index(.doc) : .skip("code or data file") }
-        guard let type else { return .ignore }
-        if type.conforms(to: .sourceCode) || type.conforms(to: .script) {
-            return options.includeCode ? .index(.doc) : .skip("code or data file")
-        }
-        if type.conforms(to: .pdf) { return .index(.pdf) }
-        if type.conforms(to: .image) { return .index(isScreenshot(url) ? .screenshot : .image) }
-        if type.conforms(to: .movie) { return .index(.video) }
-        if type.conforms(to: .audio) { return .index(.audio) }
-        return .ignore
-    }
-
     /// MPEG-TS packets start with 0x47 every 188 bytes (or every 192 with a 4-byte timecode, as in .m2ts / AVCHD .mts).
     static func isMPEGTransportStream(_ url: URL) -> Bool {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
@@ -136,11 +114,29 @@ public enum Rules {
             || (bytes[4] == 0x47 && bytes[196] == 0x47 && bytes[388] == 0x47)
     }
 
-    /// macOS marks screenshots with an extended attribute that survives moves and copies; names are the fallback.
+    /// macOS marks screenshots with an extended attribute that survives moves and copies (`hasScreenshotMarker`); names
+    /// are the fallback, and all there is elsewhere.
     public static func isScreenshot(_ url: URL) -> Bool {
-        if getxattr(url.path, "com.apple.metadata:kMDItemIsScreenCapture", nil, 0, 0, 0) > 0 { return true }
+        if hasScreenshotMarker(url) { return true }
         let name = url.lastPathComponent
         return screenshotPrefixes.contains { name.hasPrefix($0) }
+    }
+
+    /// Whether a change the folder watcher reports at `path` is where the crawl of `root` goes: not inside a folder it
+    /// skips (hidden, .noindex and developer folders, ~/Library, the skipped ones). A change anywhere else asks for a
+    /// sync that finds nothing new. With the home folder chosen, that's DigUp's own writes too: its index and its log
+    /// live under ~/Library, and the log line about a change is a change again.
+    public static func isWalked(_ path: String, root: String, home: String, excluded: [String]) -> Bool {
+        guard path == root || FolderSelection.isInside(path, root) else { return false }
+        var folder = root
+        for part in path.dropFirst(root.count).split(separator: "/") {
+            folder += "/" + part
+            if part.hasPrefix(".")
+                || skipReason(forFolder: URL(fileURLWithPath: folder), home: home, excluded: excluded) != nil {
+                return false
+            }
+        }
+        return true
     }
 
     static func skipReason(forFolder url: URL, home: String, excluded: [String]) -> String? {

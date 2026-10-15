@@ -90,9 +90,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             tabs.addTabViewItem(item)
         }
         let window = NSWindow(contentViewController: tabs)
-        window.styleMask = [.titled, .closable, .resizable]
+        window.styleMask = [.titled, .closable]
         window.toolbarStyle = .preference
-        window.contentMinSize = NSSize(width: 580, height: 420)
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.center()
@@ -168,32 +167,35 @@ final class SettingsState {
     var isLoaded: Bool { summaries != nil }
 }
 
-/// One tab's content, at the width every tab shares. Folders and Code open at a default height and scroll inside
-/// the Form (they're long once there are folders); the window is resizable. General and Storage still size to content.
+/// One tab's content, at the width every tab shares.
 private struct SettingsPane: View {
     let tab: SettingsTab
     let state: SettingsState
-
-    private var scrolls: Bool { tab == .folders || tab == .code }
+    /// The content's own height. The window is that tall up to what the screen has room for, and scrolls past it (a
+    /// long list of folders ran it off the screen, Add Folders… with it).
+    @State private var height: CGFloat?
 
     var body: some View {
-        Group {
-            switch tab {
-            case .general: GeneralSettings(state: state)
-            case .folders: FolderSettings(state: state)
-            case .code: CodeSettings(state: state)
-            case .storage: StorageSettings(state: state)
+        ScrollView(.vertical) {
+            Group {
+                switch tab {
+                case .general: GeneralSettings(state: state)
+                case .folders: FolderSettings(state: state)
+                case .code: CodeSettings(state: state)
+                case .storage: StorageSettings(state: state)
+                }
             }
+            .frame(width: 580)
+            .fixedSize(horizontal: false, vertical: true)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
         }
-        .frame(width: 580)
-        // A fixed height makes the Form scroll; without it, preferredContentSize grows with every folder row.
-        .frame(height: scrolls ? Self.defaultScrollHeight : nil)
-        .fixedSize(horizontal: false, vertical: !scrolls)
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(width: 580, height: height.map { min($0, Self.tallest) })
     }
 
-    /// Comfortable default for Folders/Code; the window is resizable if you want it taller or shorter.
-    private static var defaultScrollHeight: CGFloat {
-        min(620, max(480, (NSScreen.main?.visibleFrame.height ?? 800) * 0.72))
+    /// The screen's room below the menu bar, less the window's title bar and tabs and a margin.
+    private static var tallest: CGFloat {
+        (NSScreen.main?.visibleFrame.height ?? 800) - 140
     }
 }
 
@@ -355,9 +357,33 @@ private struct FolderSettings: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
+                Toggle(isOn: Binding(get: { state.model.settings.indexHoursOn }, set: { on in
+                    state.app.setIndexHours(on: on, hours: state.model.settings.indexHours)
+                })) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Index only at set hours")
+                        Text("Files are read only between these times, and what changed meanwhile is picked up when "
+                             + "they begin. Search works all day.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                if state.model.settings.indexHoursOn {
+                    LabeledContent("From") {
+                        HStack(spacing: 6) {
+                            DatePicker("From", selection: time(\.start), displayedComponents: .hourAndMinute)
+                                .labelsHidden()
+                            Text("to")
+                            DatePicker("To", selection: time(\.end), displayedComponents: .hourAndMinute)
+                                .labelsHidden()
+                        }
+                    }
+                }
             }
         }
         .formStyle(.grouped)
+        .scrollDisabled(true)
         .onChange(of: state.model.status) { state.statusChanged() }
         .confirmationDialog(removalTitle, isPresented: Binding(get: { removing != nil },
                                                                set: { if !$0 { removing = nil } })) {
@@ -374,6 +400,20 @@ private struct FolderSettings: View {
 
     private var removalTitle: String {
         "Stop searching “\(removing.map { ($0.path as NSString).lastPathComponent } ?? "")”?"
+    }
+
+    /// One end of the set hours, as a time of day for a date picker.
+    private func time(_ end: KeyPath<IndexHours, Int>) -> Binding<Date> {
+        Binding(get: {
+            let minute = state.model.settings.indexHours[keyPath: end]
+            return Calendar.current.date(bySettingHour: minute / 60, minute: minute % 60, second: 0, of: Date()) ?? Date()
+        }, set: { date in
+            let parts = Calendar.current.dateComponents([.hour, .minute], from: date)
+            let minute = (parts.hour ?? 0) * 60 + (parts.minute ?? 0)
+            let hours = state.model.settings.indexHours
+            state.app.setIndexHours(on: true, hours: end == \IndexHours.start ? IndexHours(start: minute, end: hours.end)
+                                                                              : IndexHours(start: hours.start, end: minute))
+        })
     }
 }
 
@@ -500,7 +540,7 @@ private struct StorageSettings: View {
 
     var body: some View {
         Form {
-            Section("Model") {
+            Section {
                 LabeledContent("EmbeddingGemma 2") {
                     Text("Google · Apache 2.0 · 865 MB")
                 }
@@ -510,6 +550,8 @@ private struct StorageSettings: View {
                         switch state.model.download.phase {
                         case .needed, .failed:
                             Button("Download") { state.model.download.start() }.controlSize(.small)
+                            Button("Use Files…") { state.model.download.chooseFiles(for: NSApp.keyWindow) }
+                                .controlSize(.small)
                         default:
                             EmptyView()
                         }
@@ -517,6 +559,25 @@ private struct StorageSettings: View {
                 }
                 LabeledContent("Location") {
                     PathButton(url: state.model.settings.modelsDirectory)
+                }
+            } header: {
+                Text("Model")
+            } footer: {
+                if !state.model.download.isReady {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("If your network blocks Hugging Face, download the two files on another network and "
+                             + "click Use Files… to choose them. DigUp checks them before it uses them.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer()
+                        Button("Copy Links") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(ModelDownload.links, forType: .string)
+                        }
+                        .controlSize(.small)
+                        .help("Copies the addresses of the two files")
+                    }
                 }
             }
             Section("Index") {
@@ -625,6 +686,7 @@ private struct CodeSettings: View {
             }
         }
         .formStyle(.grouped)
+        .scrollDisabled(true)
         .onChange(of: state.model.status) { state.statusChanged() }
         .confirmationDialog("Turn off code search?", isPresented: $turningOff) {
             Button("Turn Off", role: .destructive) {

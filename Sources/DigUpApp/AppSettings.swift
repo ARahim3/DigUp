@@ -28,6 +28,10 @@ nonisolated struct AppSettings: Sendable {
     /// Off (the default): the backfill waits while Low Power Mode is on — MacBook Airs can get hot during that
     /// pass. On: it keeps going in Low Power Mode. New files always index right away.
     var indexInLowPowerMode: Bool
+    /// "Index only at set hours": off by default. Outside the hours no helper runs (no crawl, no new files, no
+    /// backfill); search works all day. The hours are kept while it's off.
+    var indexHoursOn: Bool
+    var indexHours: IndexHours
     /// The query encoder (~0.25 GB) exits after this long without a query; the next panel open starts it again.
     var encoderIdleSeconds: Double
     /// Onboarding was finished (or closed after choosing folders); it doesn't open by itself again.
@@ -76,6 +80,12 @@ nonisolated struct AppSettings: Sendable {
             hotkey: defaults.string(forKey: "hotkey") ?? defaultHotkey,
             indexOnBattery: defaults.object(forKey: "indexOnBattery") == nil || defaults.bool(forKey: "indexOnBattery"),
             indexInLowPowerMode: defaults.bool(forKey: "indexInLowPowerMode"),
+            indexHoursOn: defaults.bool(forKey: "indexHoursOn"),
+            indexHours: IndexHours(
+                start: defaults.object(forKey: "indexHoursFrom") == nil ? IndexHours.night.start
+                    : defaults.integer(forKey: "indexHoursFrom"),
+                end: defaults.object(forKey: "indexHoursTo") == nil ? IndexHours.night.end
+                    : defaults.integer(forKey: "indexHoursTo")),
             encoderIdleSeconds: defaults.object(forKey: "encoderIdleSeconds") == nil
                 ? 600 : max(1, defaults.double(forKey: "encoderIdleSeconds")),
             onboarded: defaults.bool(forKey: "onboarded"),
@@ -122,6 +132,12 @@ nonisolated struct AppSettings: Sendable {
 
     static func save(indexInLowPowerMode: Bool) {
         defaults.set(indexInLowPowerMode, forKey: "indexInLowPowerMode")
+    }
+
+    static func save(indexHoursOn: Bool, hours: IndexHours) {
+        defaults.set(indexHoursOn, forKey: "indexHoursOn")
+        defaults.set(hours.start, forKey: "indexHoursFrom")
+        defaults.set(hours.end, forKey: "indexHoursTo")
     }
 
     static func saveOnboarded() {

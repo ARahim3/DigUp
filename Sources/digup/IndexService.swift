@@ -1,5 +1,8 @@
 import DigUpKit
 import Foundation
+#if os(Windows)
+import WinSDK
+#endif
 
 /// `digup index-service`: the app's indexing helper, one process per stretch of work.
 ///
@@ -14,9 +17,10 @@ import Foundation
 ///
 /// The loop: sync, index what the sync just queued (if it's a few files: new files go first, on any power source),
 /// then the backfill if allowed; then the code index the same way (`--code-root`: its own sync, asked for with
-/// "sync code"); then the rest of long files (`Indexer.finishLongFiles`) under the same rules. Between batches it
-/// yields to a new sync, to stop, and to "backfill off". When it's done it keeps a warm worker for `linger` seconds
-/// (screenshots come in bursts), then exits.
+/// "sync code"; its folders are crawled with the first sync, so their counts show at once); then the rest of long
+/// files (`Indexer.finishLongFiles`) under the same rules. Between batches it yields to stop and to "backfill off" at
+/// once, and to a new sync once indexing has had about as long as the last sync took (`yieldAt`). When it's done it
+/// keeps a warm worker for `linger` seconds (screenshots come in bursts), then exits.
 ///
 /// Before the model has downloaded it only syncs (file names are searchable at once), says it's "waiting", and exits.
 /// Folders that aren't there (an unplugged drive) or can't be read are skipped, and what was indexed from them stays.
@@ -36,6 +40,8 @@ final class IndexService: @unchecked Sendable {
     private let main: Part
     /// The code index (`--code-root`), when there are code folders.
     private let code: Part?
+    /// The index folder (where `Watchdog` leaves a note about a file it stopped on).
+    private let folder: URL
     private let model: SharedEmbedder
     /// The last report of folders that aren't there or can't be read, by index (said again only when it changes).
     private var unavailable: [Bool: (missing: [String], unreadable: [String])] = [:]
@@ -48,12 +54,17 @@ final class IndexService: @unchecked Sendable {
     private var codeSyncRequested = true
     private var stopRequested = false
     private var backfillAllowed: Bool
+    /// A sync asked for while files are being indexed waits until then. A crawl of a big folder can take minutes, and
+    /// a folder that keeps changing asks for the next one meanwhile: yielding at once, every pass went back to crawling
+    /// before a single file was read. Indexing gets at least as long as the sync before it (2 s at the least).
+    private var yieldAt = Date.distantPast
     private let wake = DispatchSemaphore(value: 0)
 
-    init(main: Part, code: Part?, model: SharedEmbedder, modelReady: @escaping () -> Bool, backfill: Bool,
-         newFilesLimit: Int, linger: Double) {
+    init(main: Part, code: Part?, folder: URL, model: SharedEmbedder, modelReady: @escaping () -> Bool,
+         backfill: Bool, newFilesLimit: Int, linger: Double) {
         self.main = main
         self.code = code
+        self.folder = folder
         self.model = model
         self.modelReady = modelReady
         self.backfillAllowed = backfill
@@ -66,6 +77,15 @@ final class IndexService: @unchecked Sendable {
     func serve() -> Int32 {
         removeStaleScratchFolders()
         do {
+            // A file an earlier helper had to stop on (`Watchdog`) isn't read again until it changes.
+            if let stopped = StoppedFile.take(from: folder), let path = stopped.path {
+                for part in parts {
+                    guard try part.store.markStopped(path, why: stopped.why) else { continue }
+                    emit(["event": "stopped", "path": path, "why": stopped.why, "code": part.code])
+                }
+            }
+            let again = try main.store.readAgainOnce()   // what older indexes couldn't read: scans' words, SVGs
+            if again > 0 { emit(["event": "rescan", "files": again]) }
             for part in parts {
                 try part.indexer.checkModel()   // a new model: everything is queued again
                 if let keepOnly = part.keepOnly {
@@ -80,9 +100,18 @@ final class IndexService: @unchecked Sendable {
         }
         Thread.detachNewThread { [self] in readCommands() }
         var newFiles = Set<Int64>(), newCode = Set<Int64>()
+        var codeCounted = code == nil
         while true {
             if lock.withLock({ () -> Bool in defer { syncRequested = false }; return syncRequested }) {
                 sync(main, into: &newFiles)
+            }
+            // The code folders are crawled with the first sync, so their counts show from the start (a big first pass
+            // of the main index takes hours); their files are read once the main index has nothing waiting, below.
+            if !codeCounted, let code {
+                codeCounted = true
+                if lock.withLock({ () -> Bool in defer { codeSyncRequested = false }; return codeSyncRequested }) {
+                    sync(code, into: &newCode)
+                }
             }
             if lock.withLock({ stopRequested }) { break }
             guard modelReady() else {
@@ -148,9 +177,21 @@ final class IndexService: @unchecked Sendable {
         let temp = FileManager.default.temporaryDirectory
         for name in (try? FileManager.default.contentsOfDirectory(atPath: temp.path)) ?? [] {
             guard name.hasPrefix("DigUp-"), let pid = Int32(name.dropFirst("DigUp-".count)),
-                  pid != getpid(), kill(pid, 0) != 0, errno == ESRCH else { continue }
+                  pid != ProcessInfo.processInfo.processIdentifier, Self.isGone(pid) else { continue }
             try? FileManager.default.removeItem(at: temp.appendingPathComponent(name))
         }
+    }
+
+    /// No process has this id now.
+    private static func isGone(_ pid: Int32) -> Bool {
+        #if os(Windows)
+        guard let process = OpenProcess(DWORD(PROCESS_QUERY_LIMITED_INFORMATION), false, DWORD(pid)) else { return true }
+        defer { CloseHandle(process) }
+        var code: DWORD = 0
+        return GetExitCodeProcess(process, &code) && code != 259   // STILL_ACTIVE
+        #else
+        return kill(pid, 0) != 0 && errno == ESRCH
+        #endif
     }
 
     /// A part's chosen folders that are there and readable right now; also what `pending` and the counts look at.
@@ -169,6 +210,10 @@ final class IndexService: @unchecked Sendable {
 
     private func sync(_ part: Part, into newFiles: inout Set<Int64>) {
         let started = Date()
+        defer {
+            let took = Date().timeIntervalSince(started)
+            lock.withLock { yieldAt = Date() + max(took, 2) }
+        }
         do {
             let summary = try part.indexer.sync(availableRoots(part))
             if summary.queued.count <= newFilesLimit { newFiles.formUnion(summary.queued) }
@@ -193,7 +238,8 @@ final class IndexService: @unchecked Sendable {
         do {
             let states = try part.indexer.run(only: ids, shouldStop: { [self] in
                 lock.withLock {
-                    syncRequested || stopRequested || (!isNew && !backfillAllowed) || (part.code && codeSyncRequested)
+                    stopRequested || (!isNew && !backfillAllowed)
+                        || Date() >= yieldAt && (syncRequested || part.code && codeSyncRequested)
                 }
             }, onEvent: { event in
                 emit(["event": "file", "new": isNew, "done": event.done, "total": event.total, "path": event.path,
@@ -217,7 +263,10 @@ final class IndexService: @unchecked Sendable {
         let started = Date()
         do {
             let states = try main.indexer.finishLongFiles(shouldStop: { [self] in
-                lock.withLock { syncRequested || codeSyncRequested && code != nil || stopRequested || !backfillAllowed }
+                lock.withLock {
+                    stopRequested || !backfillAllowed
+                        || Date() >= yieldAt && (syncRequested || codeSyncRequested && code != nil)
+                }
             }, onStep: { step in
                 emit(["event": "rest", "done": step.done, "total": step.total, "files": step.files, "path": step.path,
                       "kind": step.kind.rawValue, "state": step.state, "seconds": step.seconds, "note": step.note ?? ""])

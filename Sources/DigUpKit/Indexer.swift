@@ -47,6 +47,10 @@ public final class Indexer {
     /// The vector source of the embedders `makeEmbedder` makes, when it's known without starting one (llama.cpp's is):
     /// then `checkModel()` can notice a new model before anything needs embedding.
     public var embedderSource: String?
+    /// The index folder, where what indexing costs on this Mac is kept (`MeasuredCosts`) for estimates. Unset: nothing
+    /// is kept.
+    public var costsFolder: URL?
+    private var measured = MeasuredCosts()
 
     public init(store: IndexStore, options: IndexOptions, makeEmbedder: @escaping () throws -> any Embedder) throws {
         self.store = store
@@ -221,6 +225,10 @@ public final class Indexer {
         defer {
             // A job prepared for a run that stopped early: throw its files away.
             if let ahead { try? FileManager.default.removeItem(at: ahead.wait().folder) }
+            if let costsFolder, !measured.tallies.isEmpty {
+                MeasuredCosts.merge(measured, into: costsFolder)
+                measured = MeasuredCosts()
+            }
         }
         for (index, job) in jobs.enumerated() {
             guard !shouldStop() else { break }
@@ -229,8 +237,31 @@ public final class Indexer {
             ahead = index + 1 < jobs.count ? prepare(jobs[index + 1]) : nil
             defer { try? FileManager.default.removeItem(at: prepared.folder) }
             guard !skip(job) else { continue }
-            let results = try commit(prepared)
-            committed(index, job, results, Date().timeIntervalSince(started) / Double(job.files.count))
+            // The helper's and the CLI's main thread has no run loop to drain what Foundation autoreleases while a job
+            // commits: without a pool per job it all stayed until the process exited (~30 KB a text chunk).
+            let modelWasRunning = worker != nil
+            let results = try autoreleasepool { try commit(prepared) }
+            let seconds = Date().timeIntervalSince(started)
+            if modelWasRunning { measure(prepared, seconds: seconds) }   // else it's seconds of the model starting
+            committed(index, job, results, seconds / Double(job.files.count))
+        }
+    }
+
+    /// What a job read and how long it took (its reading and its model's work, which overlap), for `MeasuredCosts`.
+    private func measure(_ prepared: Prepared, seconds: Double) {
+        switch prepared.payload {
+        case .images(let screenshot, let ready):
+            measured.add(screenshot ? "screenshot" : "image", units: Double(ready.count), seconds: seconds)
+        case .pdf(let pages, _, _, _): measured.add("pdfPage", units: Double(pages.count), seconds: seconds)
+        case .doc(let chunks, _, _, _):
+            // Chunks with a vector: a data dump's go to keyword search only and take next to nothing, which isn't
+            // what a chunk of prose costs (the estimate can't tell them apart from a file's size).
+            let worded = chunks.filter(SearchText.hasWords).count
+            if worded > 0 { measured.add("docChunk", units: Double(worded), seconds: seconds) }
+        case .audio(_, let duration): measured.add("audioSecond", units: duration, seconds: seconds)
+        case .video(_, _, let duration): measured.add("videoSecond", units: duration, seconds: seconds)
+        case .code(let file): measured.add("codeStretch", units: Double(file.pieces.count), seconds: seconds)
+        case .nothing: break
         }
     }
 
@@ -345,6 +376,18 @@ public final class Indexer {
     private let preparing = DispatchQueue(label: "DigUp.prepare", qos: .utility)
     private var jobsPrepared = 0   // names the scratch folders
 
+    /// The file being read (extracted) right now, and since when: for a watchdog. Apple's frameworks have run away on
+    /// some files (PDF text extraction growing by gigabytes a minute, never returning), and nothing stops them from
+    /// outside but ending the process, so it has to know which file that was. One value for the whole process, since
+    /// files are read one at a time.
+    public static var nowReading: (path: String, since: Date)? { readingLock.withLock { reading } }
+    nonisolated(unsafe) private static var reading: (path: String, since: Date)?
+    private static let readingLock = NSLock()
+
+    private static func startReading(_ path: String) {
+        readingLock.withLock { reading = (path, Date()) }
+    }
+
     private func prepare(_ job: Job) -> PendingBatch {
         let pending = PendingBatch()
         jobsPrepared += 1
@@ -359,6 +402,8 @@ public final class Indexer {
         let batch = job.files
         var prepared = Prepared(batch: batch, step: job.step, folder: folder)
         let url = URL(fileURLWithPath: batch[0].path)
+        startReading(batch[0].path)
+        defer { readingLock.withLock { reading = nil } }
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             switch batch[0].kind {
@@ -367,11 +412,12 @@ public final class Indexer {
                 var ready: [ReadyImage] = []
                 for (slot, file) in batch.enumerated() {
                     let url = URL(fileURLWithPath: file.path)
+                    startReading(file.path)
                     do {
                         let image = try ImageExtractor.prepare(url, maxPixel: screenshot ? 1536 : 1024,
                                                                minSide: options.minImageSide, to: folder,
                                                                png: screenshot)
-                        let ocr = screenshot ? ImageExtractor.fullImage(url).map(OCR.text(in:)) ?? "" : ""
+                        let ocr = screenshot ? OCR.text(ofImageAt: url) : ""
                         ready.append(ReadyImage(slot: slot, image: image, ocr: ocr))
                     } catch let error as ExtractError {
                         if case .tooSmall = error {

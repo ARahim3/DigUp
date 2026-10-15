@@ -4,7 +4,9 @@ import LlamaRuntime
 
 // DigUp's developer CLI. Every command works on an explicit index folder, so tests never touch the real one.
 
-signal(SIGPIPE, SIG_IGN)   // a dead worker must surface as an error, not kill us
+#if !os(Windows)
+signal(SIGPIPE, SIG_IGN)   // a dead worker must surface as an error, not kill us (Windows has no SIGPIPE)
+#endif
 
 let usage = """
     digup: search your files by meaning (DigUp developer CLI)
@@ -15,13 +17,24 @@ let usage = """
       digup search <words>... [--kind K,K] [-n 10] [--json]
                                               "code: <words>" searches the code index
       digup status                            what's in the index
+      digup speed [--model [--if-needed] [--when-quiet S] [--tries N]] [--json]
+                                              this machine's speed next to the M4 Pro behind the estimates, and
+                                              what indexing has measured here (costs.json in the index folder);
+                                              --model times the model itself (Linux and Windows) and keeps it
       digup eval <queries.json> [-n 10]       recall of known answers (see evals/; "code: …" queries search code)
       digup index-service <folder>... [--code-root DIR]... [--code-exclude DIR]... [--backfill] [--prune]
-                                              the app's indexing helper (JSON lines; see IndexService)
+                          [--memory-limit MB] [--time-limit S]
+                                              the app's indexing helper (JSON lines; see IndexService); it stops
+                                              on a file whose reading passes the limits (see Watchdog)
       digup worker [--text-only]              the model as a process (JSON lines; the app's query encoder)
+      digup search-service <folder>... [--code-root DIR]... [--encoder-idle S]
+                                              the searcher as a process, index open and encoder warm (JSON lines;
+                                              see SearchService): for shells that can't link DigUpKit
+      digup download-model [--to DIR]         the model files, from the Hugging Face cache or downloaded with
+                                              resume, checked (JSON lines: see DownloadModel)
 
     Options:
-      --index DIR          index folder (default: ~/Library/Application Support/DigUp/index.noindex)
+      --index DIR          index folder (default: DigUp's Application Support folder; see `digup status`)
       --code               estimate, index or show the code index of these folders (code.sqlite in the index
                            folder): source files, their repos' docs and notebooks, minus what git ignores
       --kind K,K           screenshot, image, pdf, doc, audio, video
@@ -51,7 +64,8 @@ struct Arguments {
     var lists: [String: [String]] = [:]
     var flags: Set<String> = []
     static let valued: Set<String> = ["--index", "--limit", "--kind", "-n", "--zgate", "--word-weight", "--new-limit",
-                                      "--linger", "--shot-tokens", "--code-stretch"]
+                                      "--linger", "--shot-tokens", "--code-stretch", "--encoder-idle", "--to",
+                                      "--memory-limit", "--time-limit", "--tries", "--when-quiet"]
     static let repeated: Set<String> = ["--exclude", "--exclude-ext", "--code-root", "--code-exclude"]
 
     init(_ raw: ArraySlice<String>) throws {
@@ -77,8 +91,8 @@ struct Arguments {
     }
 
     var indexFolder: URL {
-        URL(fileURLWithPath: ((values["--index"] ?? "~/Library/Application Support/DigUp/index.noindex")
-            as NSString).expandingTildeInPath).standardizedFileURL
+        guard let chosen = values["--index"] else { return AppPaths.defaultIndex.standardizedFileURL }
+        return URL(fileURLWithPath: (chosen as NSString).expandingTildeInPath).standardizedFileURL
     }
 
     /// `--code`: the code index, not the main one.
@@ -198,6 +212,17 @@ func embedderSource() -> String? {
 func estimate(_ args: Arguments) throws {
     guard !args.positional.isEmpty else { throw CLIError("which folders? e.g. digup estimate ~/Documents") }
     let options = args.options
+    // What indexing costs on this machine: as measured by indexing here, kind by kind, once there's enough of it;
+    // until then the M4 Pro's fixed costs, scaled by a second's speed check (done once and kept beside the index).
+    var measured = MeasuredCosts.load(from: args.indexFolder)
+    if measured.speed == nil, let speed = MeasuredCosts.Speed.measure() {
+        measured.speed = speed
+        MeasuredCosts.setSpeed(speed, in: args.indexFolder)
+    }
+    let costs = measured.costs
+    // The times are this machine's (a speed check or indexing measured it); off the Mac, before `digup speed --model`
+    // has run, they're the M4 Pro's, far too short for most PCs.
+    let calibrated = measured.speed != nil || !measured.tallies.isEmpty
     var total = 0.0
     for folder in args.positional.map(Arguments.folderURL) {
         // One folder that isn't there or can't be read (a denied privacy prompt) mustn't sink the others.
@@ -212,7 +237,7 @@ func estimate(_ args: Arguments) throws {
         }
         let started = Date()
         let crawl = Crawler.crawl([folder], options: options)
-        let parts = Estimator.estimates(bySubfolder: crawl.candidates, of: folder.path, options: options)
+        let parts = Estimator.estimates(bySubfolder: crawl.candidates, of: folder.path, options: options, costs: costs)
         let estimate = parts.values.reduce(Estimate(), +)
         // Biggest first; the app lists them under the folder, so that a long first pass can be cut down.
         let subfolders = parts.filter { $0.key != folder.path }.sorted {
@@ -225,12 +250,15 @@ func estimate(_ args: Arguments) throws {
             }
             // One line per folder, as soon as it's done (the app's onboarding shows them as they come).
             emit(["folder": folder.path, "seconds": estimate.seconds, "readable": true, "files": files(estimate),
+                  "kind_seconds": Dictionary(uniqueKeysWithValues: estimate.kindSeconds.map { ($0.key.rawValue, $0.value) }),
+                  "calibrated": calibrated,
                   "pdf_pages": estimate.pdfPages, "pdf_pages_total": estimate.pdfPagesTotal,
                   "audio_seconds": estimate.audioSeconds, "video_seconds": estimate.videoSeconds,
                   "long_files": estimate.longFiles, "later_seconds": estimate.laterSeconds,
                   "code_stretches": estimate.codeStretches, "bytes": estimate.bytes,
                   "subfolders": subfolders.prefix(500).map {
                       ["folder": $0.key, "seconds": $0.value.seconds, "files": files($0.value),
+                       "kind_seconds": Dictionary(uniqueKeysWithValues: $0.value.kindSeconds.map { ($0.key.rawValue, $0.value) }),
                        "long_files": $0.value.longFiles, "later_seconds": $0.value.laterSeconds,
                        "bytes": $0.value.bytes] as [String: Any]
                   },
@@ -279,6 +307,8 @@ func index(_ args: Arguments) throws {
         try makeEmbedder(textOnly: false, log: store.directory.appendingPathComponent("worker.log"))
     })
     indexer.embedderSource = embedderSource()
+    indexer.costsFolder = store.directory
+    try store.readAgainOnce()   // what older indexes couldn't read: scanned pages' words, SVGs
     try indexer.checkModel()
     let folders = try args.folders()
     let sync = try indexer.sync(folders)
@@ -347,18 +377,7 @@ func search(_ args: Arguments) throws {
                                    wordWeight: args.wordWeight)
     let searched = Date()
     if args.flags.contains("--json") {
-        let rows: [[String: Any]] = hits.map { hit in
-            var row: [String: Any] = ["path": hit.path, "kind": hit.kind.rawValue, "segment": hit.segment.rawValue,
-                                      "score": hit.score]
-            if let z = hit.z { row["z"] = z }
-            if let cosine = hit.cosine { row["cosine"] = cosine }
-            if let rank = hit.keywordRank { row["keyword_rank"] = rank }
-            if let loc = hit.loc { row["loc"] = loc }
-            if let end = hit.locEnd { row["loc_end"] = end }
-            if let focus = hit.focus { row["focus"] = focus }
-            if let excerpt = hit.excerpt { row["excerpt"] = excerpt }
-            return row
-        }
+        let rows = hits.map(hitFields)
         let data = try JSONSerialization.data(withJSONObject: rows, options: [.prettyPrinted, .sortedKeys])
         print(String(data: data, encoding: .utf8) ?? "[]")
         return
@@ -404,6 +423,7 @@ func indexService(_ args: Arguments) throws -> Int32 {
     func part(_ file: String, options: IndexOptions, roots: [URL]) throws -> IndexService.Part {
         let store = try IndexStore(directory: args.indexFolder, file: file)
         let indexer = try Indexer(store: store, options: options, makeEmbedder: { try model.embedder() })
+        indexer.costsFolder = args.indexFolder   // what indexing costs here, for later estimates
         // A new app version may bring a new model: the index starts over by itself (keyword search on names goes on).
         indexer.embedderSource = embedderSource()
         indexer.resetOnModelChange = { indexed, now in
@@ -418,16 +438,162 @@ func indexService(_ args: Arguments) throws -> Int32 {
     codeOptions.code = true
     codeOptions.excludedFolders = (args.lists["--code-exclude"] ?? []).map { Arguments.folderURL($0).path }
     let codeRoots = (args.lists["--code-root"] ?? []).map(Arguments.folderURL)
+    // A file whose reading runs away ends this helper, noted for the next one (`Watchdog`).
+    Watchdog(folder: args.indexFolder,
+             memoryLimit: args.values["--memory-limit"].flatMap(UInt64.init).map { $0 << 20 } ?? Watchdog.defaultMemoryLimit,
+             timeLimit: args.values["--time-limit"].flatMap(Double.init) ?? Watchdog.defaultTimeLimit).start()
     let service = IndexService(main: try part(IndexStore.mainFile, options: args.options,
                                               roots: args.positional.map(Arguments.folderURL)),
                                code: codeRoots.isEmpty ? nil : try part(IndexStore.codeFile, options: codeOptions,
                                                                         roots: codeRoots),
+                               folder: args.indexFolder,
                                model: model,
                                modelReady: { embedderSource() == nil || LlamaModels.complete },
                                backfill: args.flags.contains("--backfill"),
                                newFilesLimit: args.values["--new-limit"].flatMap(Int.init) ?? 50,
                                linger: args.values["--linger"].flatMap(Double.init) ?? 60)
     return service.serve()
+}
+
+/// `digup speed`: the speed check estimates start from, and what indexing has measured on this machine. `--model`
+/// times the model itself instead (`ModelSpeed`: Linux and Windows) and keeps the result beside the index.
+func speed(_ args: Arguments) throws {
+    if args.flags.contains("--model") { return try modelSpeed(args) }
+    if let seconds = MeasuredCosts.Speed.measuredSeconds() {
+        let speed = MeasuredCosts.Speed.compared(seconds)
+        print(String(format: "20 float16 matrix multiplies (2048²) %.3f s · Vision on a made-up screenshot %.3f s",
+                     seconds.multiplies, seconds.ocr))
+        print(String(format: "next to the M4 Pro behind the fixed costs: the model's work ×%.2f, OCR ×%.2f (1 = as fast)",
+                     speed.embedding, speed.ocr))
+    } else {
+        print("no speed check here (no Metal): the fixed costs stand in until indexing has measured this machine's")
+    }
+    let measured = MeasuredCosts.load(from: args.indexFolder)
+    print("measured by indexing (\(tilde(MeasuredCosts.file(in: args.indexFolder).path))):"
+          + (measured.tallies.isEmpty ? " nothing yet" : ""))
+    for (name, tally) in measured.tallies.sorted(by: { $0.key < $1.key }) {
+        print(String(format: "  %@ %.4f s each, over %.0f", name, tally.seconds / tally.units, tally.units))
+    }
+}
+
+/// The model timed on the processor alone, in a process of its own (llama.cpp loads its backends once a process), with
+/// the vectors it made, and how long it took to load.
+func processorAlone(folder: URL, tries: Int) throws -> (measured: ModelSpeed.Measurement, load: Double) {
+    guard let program = Bundle.main.executableURL else { throw CLIError("where is digup?") }
+    let process = Process()
+    process.executableURL = program
+    process.arguments = ["speed", "--model", "--measure-only", "--json", "--tries", String(tries), "--index", folder.path]
+    process.environment = ProcessInfo.processInfo.environment.merging(["DIGUP_DEVICE": "cpu"]) { $1 }
+    let output = Pipe()
+    process.standardOutput = output
+    try process.run()
+    let data = output.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    let line = String(decoding: data, as: UTF8.self).split(separator: "\n").last.map(String.init) ?? ""
+    guard process.terminationStatus == 0,
+          let reply = try JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+          let seconds = reply["seconds"] as? [String: Double], let load = reply["load"] as? Double,
+          let times = ModelSpeed.Times(fields: seconds)
+    else { throw CLIError("the processor's speed check failed") }
+    let vectors = (reply["vectors"] as? [String: [Double]] ?? [:]).mapValues { $0.map(Float.init) }
+    return (ModelSpeed.Measurement(times: times, vectors: vectors, tries: reply["tries"] as? [Double] ?? [],
+                                   steady: reply["steady"] as? Bool ?? true, others: reply["others"] as? Double ?? 0),
+            load)
+}
+
+/// `digup speed --model [--if-needed] [--when-quiet S] [--tries N] [--json]`: the model timed on this machine, kept in
+/// costs.json beside the index for estimates. Where there's a GPU it's timed against the processor alone, and the
+/// faster is kept (`device`) for every helper: a weak integrated GPU can be slower than its processor (an i5-8350U's
+/// UHD 620 under Vulkan: 76 s against 44 s). The GPU is kept only if its vectors are the processor's too (cosine 0.999,
+/// as ReferenceVectorTests asks): Mesa's lavapipe made pictures and sound at 0.94–0.97. The processor goes first, so a
+/// GPU that's clearly slower stops after two tries.
+///
+/// One check was timed at a bad moment (an RTX 4050 laptop taken for 30 times slower than its indexing went), so
+/// `--when-quiet` waits up to S seconds for other programs to settle, each input's time is the best of up to `--tries`
+/// (3), and a check with reason for doubt (its best try wasn't seen twice, or indexing went four times faster than it
+/// said) is timed again by the next `--if-needed`, up to three checks. A machine that never settled isn't a reason by
+/// itself: the same laptop kept 1.3 processors busy with other work through a whole minute, and its check came out
+/// right (steady tries, the GPU's times as timed by hand). `--if-needed` otherwise leaves one measured before alone, unless it predates the GPU's choice.
+/// The shell runs it once the model is in. `--measure-only`: the times, nothing kept (the processor's run).
+func modelSpeed(_ args: Arguments) throws {
+    let folder = args.indexFolder
+    let json = args.flags.contains("--json")
+    let tries = args.values["--tries"].flatMap(Int.init) ?? 3
+    let log = folder.appendingPathComponent("worker.log")
+    if args.flags.contains("--measure-only") {
+        let started = Date()
+        let model = try makeEmbedder(textOnly: false, log: log)
+        let load = Date().timeIntervalSince(started)
+        let measured = try ModelSpeed.measure(model, tries: tries)
+        model.close()
+        emit(["event": "speed", "seconds": measured.times.fields, "load": load, "vectors": measured.vectors,
+              "tries": measured.tries, "steady": measured.steady, "others": measured.others])
+        return
+    }
+    let saved = MeasuredCosts.load(from: folder)
+    var speed = saved.speed ?? MeasuredCosts.Speed(embedding: 1, ocr: 1)
+    let compares = !LlamaEmbedder.cpuOnly && LlamaEmbedder.hasGPU && embedderSource() != nil
+    let checks = speed.kinds == nil ? 0 : speed.checks ?? 1
+    let again = checks < 3 && (speed.doubtful == true || saved.pace.map { $0 < 0.25 } == true)
+    if args.flags.contains("--if-needed"), let kinds = speed.kinds, speed.device != nil || !compares, !again {
+        if json { emit(["event": "speed", "kinds": kinds, "measured": false]) }
+        return
+    }
+    let quiet = args.values["--when-quiet"].flatMap(Double.init).map { SystemLoad.waitForQuiet(limit: $0) }
+        ?? (waited: 0, settled: true, calmest: nil)
+    let started = Date()
+    let alone = compares ? try processorAlone(folder: folder, tries: tries) : nil
+    let loading = Date()
+    let model = try makeEmbedder(textOnly: false, log: log)
+    var load = Date().timeIntervalSince(loading)
+    let measured = try ModelSpeed.measure(model, tries: tries, rival: alone?.measured.total)
+    model.close()
+    var (kept, other) = (measured, alone?.measured)
+    var compared: [String: Any] = [:]
+    if let alone {
+        let agreement = ModelSpeed.agreement(measured.vectors, alone.measured.vectors)
+        func fields(_ run: ModelSpeed.Measurement, load: Double) -> [String: Any] {
+            ["seconds": run.times.fields, "load": load, "tries": run.tries, "steady": run.steady, "others": run.others]
+        }
+        compared = ["gpu": fields(measured, load: load), "cpu": fields(alone.measured, load: alone.load),
+                    "agreement": agreement]
+        speed.device = agreement >= 0.999 && measured.total <= alone.measured.total ? "gpu" : "cpu"
+        if speed.device == "cpu" { (kept, other, load) = (alone.measured, measured, alone.load) }
+    }
+    // Close times from a run whose best wasn't seen twice could have gone the other way. (Other programs' work while it
+    // timed isn't a reason: with every processor busy, the system's count and this process's differ by more than they
+    // do, and a busy machine shows as tries that don't match.)
+    let close = other.map { !$0.steady && $0.total < kept.total * 1.3 } ?? false
+    speed.kinds = ModelSpeed.factors(kept.times)
+    speed.checks = checks + 1
+    speed.doubtful = !kept.steady || close ? true : nil
+    // What indexing measured on the other device doesn't hold on this one.
+    MeasuredCosts.setSpeed(speed, in: folder, forgetTallies: saved.speed?.device.map { $0 != speed.device } ?? false)
+    let total = Date().timeIntervalSince(started)
+    if json {
+        var fields: [String: Any] = ["event": "speed", "kinds": speed.kinds ?? [:], "seconds": kept.times.fields,
+                                     "load": load, "total": total, "measured": true, "tries": kept.tries,
+                                     "others": kept.others, "waited": quiet.waited, "settled": quiet.settled,
+                                     "doubtful": speed.doubtful ?? false, "checks": checks + 1]
+        if let calmest = quiet.calmest { fields["calmest"] = calmest }
+        if let device = speed.device { fields["device"] = device }
+        fields.merge(compared) { $1 }
+        emit(fields)
+        return
+    }
+    if quiet.waited > 0 {
+        print(String(format: "waited %.0f s for other programs to settle%@", quiet.waited, quiet.settled ? "" : " (they didn't)"))
+    }
+    if let device = speed.device { print("runs on the \(device == "cpu" ? "processor (faster here than the GPU)" : "GPU")") }
+    print(String(format: "the model loaded in %.2f s; the check took %.1f s; tries %@", load, total,
+                 kept.tries.map { String(format: "%.2f s", $0) }.joined(separator: ", ")))
+    for (name, seconds) in kept.times.fields.sorted(by: { $0.key < $1.key }) {
+        let base = ModelSpeed.baseline.fields[name] ?? seconds
+        print(String(format: "  %@ %.3f s (M4 Pro %.3f s, ×%.1f)", name, seconds, base, seconds / base))
+    }
+    if speed.doubtful == true { print("in doubt (a busy moment): timed again at the next --if-needed") }
+    print("kept in \(tilde(MeasuredCosts.file(in: folder).path)): " + (speed.kinds ?? [:]).sorted { $0.key < $1.key }
+        .map { String(format: "%@ ×%.1f", $0.key, $0.value) }.joined(separator: " · "))
 }
 
 // MARK: Eval
@@ -446,7 +612,12 @@ struct EvalFile: Decodable {
 func evaluate(_ args: Arguments) throws {
     guard let file = args.positional.first else { throw CLIError("which eval file?") }
     let eval = try JSONDecoder().decode(EvalFile.self, from: Data(contentsOf: URL(fileURLWithPath: (file as NSString).expandingTildeInPath)))
-    let base = (eval.base as NSString).expandingTildeInPath
+    var base = (eval.base as NSString).expandingTildeInPath
+    // The testbed kept elsewhere (another drive on Windows, wherever CI puts it): DIGUP_TESTBED stands for
+    // ~/DigUpTestbed in the eval's base.
+    if let testbed = ProcessInfo.processInfo.environment["DIGUP_TESTBED"], eval.base.hasPrefix("~/DigUpTestbed") {
+        base = testbed + eval.base.dropFirst("~/DigUpTestbed".count)
+    }
     // "code: …" queries search the code index (with its prompt), the others the main one.
     let isCode = eval.queries.map { CodeQuery.text(of: $0.q) != nil }
     let texts = eval.queries.map { CodeQuery.text(of: $0.q) ?? $0.q }
@@ -526,14 +697,32 @@ do {
         exit(0)
     }
     let args = try Arguments(raw.dropFirst())
+    if ["index-service", "worker", "search-service", "download-model"].contains(command)
+        || command == "estimate" && args.flags.contains("--json") {
+        ParentWatch.start()   // an app's helper goes when the app does
+    }
+    // Where this machine's speed check found its processor faster than its GPU, the model runs on the processor.
+    if command != "speed", MeasuredCosts.load(from: args.indexFolder).speed?.device == "cpu" {
+        LlamaEmbedder.cpuOnly = true
+    }
+    #if !os(macOS)
+    // Queries are a few words: the processor encodes one in hundredths of a second, and starts sooner than a GPU (an RTX
+    // 4050 laptop: a search from scratch 1.8 s on its i7, 3.0 s on the GPU under Vulkan). Indexing keeps the GPU.
+    if command == "search-service" {
+        LlamaEmbedder.cpuOnly = true
+    }
+    #endif
     switch command {
     case "estimate": try estimate(args)
     case "index": try index(args)
     case "search": try search(args)
     case "status": try status(args)
+    case "speed": try speed(args)
     case "eval": try evaluate(args)
     case "index-service": exit(try indexService(args))
     case "worker": exit(workerService(args))
+    case "search-service": exit(try searchService(args))
+    case "download-model": exit(try downloadModel(args))
     default:
         print(usage)
         exit(2)

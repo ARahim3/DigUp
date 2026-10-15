@@ -1,0 +1,77 @@
+/* The Settings window: setup.css's look (colors, keys, notes), with tabs: General, Folders, Code, Storage. */
+
+body { display: flex; flex-direction: column; }
+
+.tabs { flex: none; display: flex; justify-content: center; gap: 4px; padding: 12px 20px 10px; border-bottom: 1px solid var(--line); }
+.tabs button { border: 0; border-radius: 7px; padding: 5px 14px; background: none; color: var(--secondary); font-weight: 500; }
+.tabs button:hover { background: var(--line); }
+.tabs button[aria-selected="true"] { background: var(--moss); color: white; }
+
+main.settings { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 32px 24px; }
+main.settings h3:first-child { margin-top: 14px; }
+
+.option { display: flex; gap: 12px; align-items: flex-start; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.option input[type="checkbox"] { width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--moss); flex: none; }
+.option .text { display: flex; flex-direction: column; gap: 3px; }
+.option .name { font-size: 13px; font-weight: 600; }
+.option .info { font-size: 12px; color: var(--secondary); line-height: 1.45; }
+.hours-option { border-bottom: 0; margin-top: 14px; }
+.option .choice { display: flex; align-items: center; gap: 8px; font-size: 13px; margin-top: 4px; }
+.option .choice input { margin: 0; accent-color: var(--moss); }
+.link.inline { padding: 0; font-size: inherit; }
+.update-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; }
+.update-row .link { padding: 0; color: var(--secondary); cursor: default; }
+.update-row .link.available { color: var(--ember); cursor: pointer; }
+.times { margin-top: 6px; font-size: 12px; color: var(--secondary); display: flex; align-items: center; gap: 8px; }
+.times input { font: inherit; font-size: 12px; color: var(--text); background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
+
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
+.status-card { display: flex; align-items: center; gap: 14px; padding: 12px 14px; margin-top: 14px; }
+.status-text { flex: 1; min-width: 0; }
+.status-line { font-size: 13px; font-weight: 600; }
+.status-detail { font-size: 11px; color: var(--secondary); margin-top: 4px; }
+.status-card .bar { margin-top: 7px; }
+
+.list .row { display: flex; align-items: center; gap: 12px; padding: 9px 12px; border-top: 1px solid var(--line); }
+.list .row:first-child { border-top: 0; }
+.list .empty { padding: 10px 12px; font-size: 12px; color: var(--secondary); }
+.row .text { flex: 1; min-width: 0; }
+.row .name { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.row .path, .row .counts { font-size: 11px; color: var(--secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .side { flex: none; text-align: right; }
+.row .indexed { font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.row .states { font-size: 11px; color: var(--secondary); }
+.row .flag { font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 99px; background: rgba(242, 162, 42, 0.22); }
+.remove {
+  flex: none; width: 22px; height: 22px; border: 0; border-radius: 50%; padding: 0; background: var(--line);
+  color: var(--secondary); font-size: 15px; line-height: 22px; text-align: center;
+}
+.remove:hover { background: rgba(217, 123, 26, 0.25); color: var(--text); }
+.confirm { padding: 10px 12px; border-top: 1px solid var(--line); background: rgba(217, 123, 26, 0.08); }
+.confirm p { margin: 0 0 8px; font-size: 12px; line-height: 1.45; }
+.confirm .actions { display: flex; justify-content: flex-end; gap: 8px; }
+.confirm .danger { background: #c4441c; color: white; border-color: transparent; }
+
+input.field {
+  width: 100%; font: inherit; font-size: 13px; color: var(--text); background: var(--card);
+  border: 1px solid var(--line); border-radius: 7px; padding: 6px 10px;
+}
+input.field:focus, select.field:focus { outline: 2px solid color-mix(in srgb, var(--moss) 50%, transparent); outline-offset: -1px; }
+select.field {
+  font: inherit; font-size: 13px; color: var(--text); background: var(--card); border: 1px solid var(--line);
+  border-radius: 7px; padding: 5px 8px; min-width: 240px;
+}
+
+.intro { font-size: 12px; color: var(--secondary); line-height: 1.5; margin: 14px 0 0; }
+.link.danger { color: #c4441c; margin-top: 14px; }
+#code-off-confirm { border: 1px solid var(--line); border-radius: 10px; margin-top: 14px; }
+
+.facts .fact { display: flex; justify-content: space-between; gap: 16px; padding: 9px 12px; border-top: 1px solid var(--line); font-size: 13px; }
+.facts .fact:first-child { border-top: 0; }
+.facts .fact span:last-child { color: var(--secondary); text-align: right; }
+/* A long path loses its start: "…/DigUp/Models". */
+.path-button { font: inherit; font-size: 12px; color: var(--secondary); background: none; border: 0; padding: 0; max-width: 70%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: right; }
+.path-button bdi { direction: ltr; unicode-bidi: isolate; }
+.path-button:hover { color: var(--text); text-decoration: underline; }
+.privacy-text { font-size: 12px; color: var(--secondary); line-height: 1.5; margin: 0; }
+.problem { color: #c4441c; }

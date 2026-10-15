@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>DigUp</title>
+  <link rel="stylesheet" href="window.css">
+</head>
+<body>
+  <header class="top">
+    <div class="bar">
+      <label class="field" id="field">
+        <span class="glass" id="glass" aria-hidden="true"></span>
+        <input id="query" type="text" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Search">
+        <button class="clear" id="clear" title="Clear" aria-label="Clear" hidden>
+          <svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="8"/><path d="M7 7 L13 13 M13 7 L7 13"/></svg>
+        </button>
+      </label>
+      <button class="tool" id="toggle-preview" aria-pressed="true">
+        <svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><path d="M14.5 5 V19"/></svg>
+      </button>
+      <button class="tool" id="settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24"><path d="M18.7 10.0 L21.3 10.5 L21.3 13.5 L18.7 14.0 L18.2 15.3 L19.6 17.5 L17.5 19.6 L15.3 18.2 L14.0 18.7 L13.5 21.3 L10.5 21.3 L10.0 18.7 L8.7 18.2 L6.5 19.6 L4.4 17.5 L5.8 15.3 L5.3 14.0 L2.7 13.5 L2.7 10.5 L5.3 10.0 L5.8 8.7 L4.4 6.5 L6.5 4.4 L8.7 5.8 L10.0 5.3 L10.5 2.7 L13.5 2.7 L14.0 5.3 L15.3 5.8 L17.5 4.4 L19.6 6.5 L18.2 8.7 Z"/><circle cx="12" cy="12" r="3"/></svg>
+      </button>
+      <button class="tool" id="more" title="More" aria-label="More" aria-haspopup="menu">
+        <svg viewBox="0 0 24 24"><circle cx="5.5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="18.5" cy="12" r="1.6"/></svg>
+      </button>
+    </div>
+    <nav class="kinds" id="kinds" aria-label="Kinds of files"></nav>
+  </header>
+
+  <div class="split">
+    <main class="content" id="content"></main>
+    <aside class="side" id="side" aria-live="polite"></aside>
+  </div>
+
+  <footer class="status">
+    <span class="ring" id="ring" hidden></span>
+    <button class="status-line" id="status-line" title="Folders and indexing"></button>
+    <span class="spacer"></span>
+    <span class="count" id="count"></span>
+    <button class="update" id="update" title="See what's new and update" hidden></button>
+  </footer>
+
+  <div class="menu" id="menu" role="menu" hidden></div>
+  <script src="results.js"></script>
+  <script src="window.js"></script>
+</body>
+</html>
