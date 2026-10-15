@@ -14,17 +14,19 @@ const FILTERS = [
   { key: "video", title: "Video", kinds: ["video"], icon: "video" },
   { key: "audio", title: "Audio", kinds: ["audio"], icon: "audio" },
 ];
+/// Shown when the index has mail (Outlook .pst files, on Windows), after the others: Ctrl+8.
+const MAIL_FILTER = { key: "mail", title: "Mail", kinds: ["mail"], icon: "mail" };
 const FILTER_OF_KIND = { screenshot: "screenshots", image: "images", pdf: "documents", doc: "documents", video: "video",
-                         audio: "audio" };
+                         audio: "audio", mail: "mail" };
 const EXAMPLES = [
   ["a screenshot of an error message", "screenshots"], ["receipt", "documents"], ["whiteboard notes", "images"],
   ["someone laughing", "audio"], ["a dog on the beach", "video"], ["slides about the budget", "documents"],
 ];
 /// What the home counts, in this order: "136 screenshots, 104 images, 25 PDFs…"
-const KIND_ORDER = ["screenshot", "image", "pdf", "doc", "audio", "video", "code"];
+const KIND_ORDER = ["screenshot", "image", "pdf", "doc", "mail", "audio", "video", "code"];
 const COUNTED = { screenshot: ["screenshot", "screenshots"], image: ["image", "images"], pdf: ["PDF", "PDFs"],
                   doc: ["document", "documents"], audio: ["audio file", "audio files"], video: ["video", "videos"],
-                  code: ["code file", "code files"] };
+                  code: ["code file", "code files"], mail: ["mail", "mails"] };
 const SEARCH_ICON = '<svg viewBox="0 0 24 24"><circle cx="10" cy="10" r="6.5"/><path d="M15 15 L20.5 20.5"/></svg>';
 
 const $ = (id) => document.getElementById(id);
@@ -80,7 +82,7 @@ function run() {
   // Results of an earlier query stay until these are in; with none to show, a spinner.
   renderBar();
   if (!state.hasResults) renderContent();
-  const filter = FILTERS.find((item) => item.key === state.filter);
+  const filter = filters().find((item) => item.key === state.filter);
   state.timer = setTimeout(async () => {
     try {
       const all = await ask({ op: "search", q: text, code, meaning: true, limit: LIMIT });
@@ -161,6 +163,11 @@ function renderBar() {
     $kinds.append(chip(filter.title, filter.icon, code ? null : state.counts[filter.key], selected,
                        () => setFilter(selected ? null : filter.key), index + 2));
   });
+  if (hasMail()) {
+    const selected = state.filter === MAIL_FILTER.key && !code;
+    $kinds.append(chip(MAIL_FILTER.title, MAIL_FILTER.icon, code ? null : state.counts.mail, selected,
+                       () => setFilter(selected ? null : MAIL_FILTER.key), 8));
+  }
   if (state.info.hasCode) {
     $kinds.append(element("span", "divider"));
     $kinds.append(chip("Code", "code", code ? state.counts.code : null, code,
@@ -169,6 +176,15 @@ function renderBar() {
 }
 
 /// All · Screenshots 4 · Images 9 · …: what the query found of each kind; a click shows only that kind.
+function hasMail() {
+  return (state.indexed?.mail ?? 0) > 0;
+}
+
+/// The filters shown: Mail too when there's mail.
+function filters() {
+  return hasMail() ? [...FILTERS, MAIL_FILTER] : FILTERS;
+}
+
 function chip(title, icon, count, selected, action, number) {
   const button = element("button", "chip" + (selected ? " selected" : ""));
   if (icon) button.insertAdjacentHTML("beforeend", ICONS[icon]);
@@ -429,7 +445,7 @@ function home() {
   const shown = [...EXAMPLES, ...(state.info.hasCode ? [["code: where the settings are saved", "code"]] : [])];
   for (const [text, kind] of shown) {
     const example = element("button", "example");
-    example.innerHTML = ICONS[FILTERS.find((filter) => filter.key === kind)?.icon ?? kind];
+    example.innerHTML = ICONS[filters().find((filter) => filter.key === kind)?.icon ?? kind];
     example.append(text);
     example.title = `Search for “${text}”`;
     example.onmousedown = (event) => event.preventDefault();
@@ -1001,6 +1017,11 @@ document.addEventListener("keydown", (event) => {
     if (number === 7 && state.info.hasCode) {
       event.preventDefault();
       setFilter("code");
+      return;
+    }
+    if (number === 8 && hasMail()) {
+      event.preventDefault();
+      setFilter(MAIL_FILTER.key);
       return;
     }
     switch (event.key.toLowerCase()) {
