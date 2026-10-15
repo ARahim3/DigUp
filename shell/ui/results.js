@@ -16,9 +16,9 @@ const FILE_MANAGER = isMac ? "Finder" : isWindows ? "Explorer" : "Files";
 // Pictures every web view shows as they are; anything else (HEIC, TIFF, RAW…) comes as JPEG from the helper.
 const SHOWN_AS_IS = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp"]);
 const GROUP_OF = { screenshot: "Screenshots", image: "Images", pdf: "Documents", doc: "Documents", video: "Video",
-                   audio: "Audio", code: "Code" };
+                   audio: "Audio", code: "Code", mail: "Mail" };
 const KIND_TITLE = { screenshot: "Screenshot", image: "Image", pdf: "PDF", doc: "Document", audio: "Audio",
-                     video: "Video", code: "Code" };
+                     video: "Video", code: "Code", mail: "Mail" };
 
 /// The home folder, for "~/Pictures" (filled in as the page starts).
 let homeFolder = "";
@@ -45,6 +45,7 @@ function placeOf(hit) {
 /// default apps (where those apps can be told), anything else plainly.
 function openResult(hit) {
   if (hit.kind === "code") return invoke("open_code", { path: hit.path, line: codeLine(hit) });
+  if (hit.kind === "mail") return invoke("open_mail", { path: hit.path });
   return invoke("open_path", { path: hit.path, ...placeToOpen(hit) });
 }
 
@@ -55,7 +56,7 @@ function copyResult(event, hit, navigated) {
   const fieldText = field?.selectionStart != null && field.selectionStart !== field.selectionEnd;
   // (WebKit may count the field's selected text in the page's.)
   const textSelected = fieldText ? !navigated : Boolean(window.getSelection()?.toString());
-  if (!hit || textSelected) return false;
+  if (!hit || textSelected || hit.kind === "mail") return false;   // a mail is no file of its own
   event.preventDefault();
   invoke("copy_file", { path: hit.path }).catch(() => {});
   return true;
@@ -113,9 +114,19 @@ function reasonOf(hit) {
   }
 }
 
-/// "Screenshot · Oct 7, 2026 · 1440 × 900 · 62 KB", "PDF · … · 463 pages, 120 read so far · 23 MB"
+/// "Screenshot · Oct 7, 2026 · 1440 × 900 · 62 KB", "PDF · … · 463 pages, 120 read so far · 23 MB",
+/// "Mail · Jean Dupont <jean@x.fr> · Mar 3, 2024 · 2 attachments"
 function details(hit) {
   const info = hit.info || {};
+  if (hit.kind === "mail") {
+    const parts = ["Mail"];
+    if (info.from) parts.push(info.from);
+    const sent = Date.parse(info.date ?? "");
+    parts.push(dateOf(Number.isNaN(sent) ? hit.modified : sent / 1000));
+    const attached = info.attachments ? info.attachments.split(", ").length : 0;
+    if (attached) parts.push(attached === 1 ? "1 attachment" : `${attached} attachments`);
+    return parts.join(" · ");
+  }
   const parts = [KIND_TITLE[hit.kind] || "File", dateOf(hit.modified)];
   if (info.width && info.height) parts.push(`${info.width} × ${info.height}`);
   const readTo = info.read_to != null ? Number(info.read_to) : null;
@@ -133,14 +144,27 @@ function nameOf(path) {
   return path.split(/[\\/]/).pop();
 }
 
+/// What a result is called: a file's name, a mail's subject.
+function titleOf(hit) {
+  if (hit.kind === "mail") return hit.info?.subject || "(no subject)";
+  return nameOf(hit.path);
+}
+
+/// The file a result is in: itself, or a mail's PST ("…\archive.pst::2097412" is a mail of archive.pst).
+function fileOf(hit) {
+  return hit.kind === "mail" ? hit.path.slice(0, hit.path.lastIndexOf("::")) : hit.path;
+}
+
 function extensionOf(path) {
   const name = nameOf(path);
   const dot = name.lastIndexOf(".");
   return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
 }
 
-/// Where the file is: "~/Downloads/Screenshots"; code says where it is in its repo: "billing/payments".
+/// Where the file is: "~/Downloads/Screenshots"; code says where it is in its repo: "billing/payments"; a mail, its PST
+/// and its folder there: "archive.pst › /Inbox/Clients".
 function folderOf(hit) {
+  if (hit.kind === "mail") return [nameOf(fileOf(hit)), hit.info?.folder].filter(Boolean).join(" › ");
   const folder = hit.path.slice(0, Math.max(0, hit.path.search(/[\\/][^\\/]*$/)));
   const repo = hit.info?.repo;
   if (hit.kind === "code" && repo && hit.path.startsWith(repo + "/")) {
@@ -266,4 +290,5 @@ const ICONS = {
   video: '<svg viewBox="0 0 24 24"><path d="M4 6 H15 V18 H4 Z M15 10 L20 7 V17 L15 14"/></svg>',
   image: '<svg viewBox="0 0 24 24"><path d="M4 5 H20 V19 H4 Z M4 16 L9 11 L13 15 L16 12 L20 16"/></svg>',
   screenshot: '<svg viewBox="0 0 24 24"><path d="M4 8 V4 H8 M16 4 H20 V8 M20 16 V20 H16 M8 20 H4 V16 M9 12 A3 3 0 1 0 15 12 A3 3 0 1 0 9 12"/></svg>',
+  mail: '<svg viewBox="0 0 24 24"><path d="M3 6 H21 V18 H3 Z M3 6 L12 13 L21 6"/></svg>',
 };
