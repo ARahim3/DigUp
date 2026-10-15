@@ -45,11 +45,15 @@ struct EXIF {
     private static func webp(_ file: FileBytes) -> EXIF? {
         var i = 12
         while let name = file.bytes(i, 4), let size = file.u32(i + 4, little: true) {
+            guard let start = file.offset(i, by: 8), let end = file.offset(start, by: size),
+                  let next = file.offset(end, by: size & 1) else { return nil }
             if name.elementsEqual("EXIF".utf8) {
-                let start = file.bytes(i + 8, 6)?.elementsEqual("Exif\0\0".utf8) == true ? i + 14 : i + 8
-                return parse(file, tiff: start, end: min(file.size, i + 8 + size))
+                let tiff = file.bytes(start, 6)?.elementsEqual("Exif\0\0".utf8) == true
+                    ? file.offset(start, by: 6) : start
+                guard let tiff, tiff <= end else { return nil }
+                return parse(file, tiff: tiff, end: end)
             }
-            i += 8 + size + (size & 1)
+            i = next
         }
         return nil
     }
@@ -57,29 +61,36 @@ struct EXIF {
     /// HEIF and AVIF: the meta box lists the file's items (iinf) and where their bytes are (iloc). The Exif item's
     /// bytes start with the offset of the TIFF header after them (ISO/IEC 23008-12, annex A).
     private static func heif(_ file: FileBytes) -> EXIF? {
-        guard let meta = box("meta", in: 0..<file.size, file) else { return nil }
-        let children = (meta.lowerBound + 4)..<meta.upperBound   // meta is a full box: version and flags first
+        guard let meta = box("meta", in: 0..<file.size, file),
+              let firstChild = file.offset(meta.lowerBound, by: 4), firstChild <= meta.upperBound
+        else { return nil }
+        let children = firstChild..<meta.upperBound   // meta is a full box: version and flags first
         guard let iinf = box("iinf", in: children, file), let iloc = box("iloc", in: children, file),
               let exifItem = item(ofType: "Exif", in: iinf, file),
-              let bytes = extent(ofItem: exifItem, in: iloc, file), let skip = file.u32(bytes.start, little: false)
+              let bytes = extent(ofItem: exifItem, in: iloc, file), bytes.length >= 4,
+              let afterOffset = file.offset(bytes.start, by: 4),
+              let skip = file.u32(bytes.start, little: false),
+              let tiff = file.offset(afterOffset, by: skip),
+              let end = file.offset(bytes.start, by: bytes.length), tiff <= end
         else { return nil }
-        return parse(file, tiff: bytes.start + 4 + skip, end: min(file.size, bytes.start + bytes.length))
+        return parse(file, tiff: tiff, end: end)
     }
 
     /// The body (after size and type) of the first box named `type` among the boxes filling `range`.
     private static func box(_ type: String, in range: Range<Int>, _ file: FileBytes) -> Range<Int>? {
         var i = range.lowerBound
-        while i + 8 <= range.upperBound, let declared = file.u32(i, little: false), let name = file.bytes(i + 4, 4) {
+        while let body = file.offset(i, by: 8), body <= range.upperBound,
+              let declared = file.u32(i, little: false), let name = file.bytes(i + 4, 4) {
             var header = 8, size = declared
             if declared == 1 {   // a 64-bit size follows
-                guard let large = file.uint(i + 8, 8) else { return nil }
+                guard let large = file.uint(body, 8) else { return nil }
                 (header, size) = (16, large)
             } else if declared == 0 {   // to the end
                 size = range.upperBound - i
             }
-            guard size >= header, i + size <= range.upperBound else { return nil }
-            if name.elementsEqual(type.utf8) { return (i + header)..<(i + size) }
-            i += size
+            guard size >= header, let end = file.offset(i, by: size), end <= range.upperBound else { return nil }
+            if name.elementsEqual(type.utf8) { return (i + header)..<end }
+            i = end
         }
         return nil
     }
@@ -87,9 +98,11 @@ struct EXIF {
     /// The id of the first item of `type` in an iinf box (its infe entries, version 2 or 3).
     private static func item(ofType type: String, in iinf: Range<Int>, _ file: FileBytes) -> Int? {
         guard let version = file.byte(iinf.lowerBound) else { return nil }
-        var i = iinf.lowerBound + 4 + (version == 0 ? 2 : 4)
-        while i + 8 <= iinf.upperBound, let size = file.u32(i, little: false), size >= 8 {
-            let body = i + 8
+        guard let start = file.offset(iinf.lowerBound, by: version == 0 ? 6 : 8),
+              start <= iinf.upperBound else { return nil }
+        var i = start
+        while let body = file.offset(i, by: 8), body <= iinf.upperBound,
+              let size = file.u32(i, little: false), size >= 8 {
             if file.bytes(i + 4, 4)?.elementsEqual("infe".utf8) == true, let infeVersion = file.byte(body),
                infeVersion >= 2 {
                 let idSize = infeVersion == 2 ? 2 : 4
@@ -97,7 +110,8 @@ struct EXIF {
                     return file.uint(body + 4, idSize)
                 }
             }
-            i += size
+            guard let end = file.offset(i, by: size), end <= iinf.upperBound else { return nil }
+            i = end
         }
         return nil
     }
@@ -131,7 +145,11 @@ struct EXIF {
                 guard let offset = file.uint(i, offsetSize), let length = file.uint(i + offsetSize, lengthSize)
                 else { return nil }
                 i += offsetSize + lengthSize
-                if first == nil { first = (base + offset, length) }
+                if first == nil {
+                    guard let start = file.offset(base, by: offset), file.offset(start, by: length) != nil
+                    else { return nil }
+                    first = (start, length)
+                }
             }
             if id == wanted { return method == 0 ? first : nil }
             guard i < iloc.upperBound else { return nil }
@@ -141,18 +159,25 @@ struct EXIF {
 
     /// A TIFF header at `tiff` and the IFDs it points to, within `end`.
     private static func parse(_ file: FileBytes, tiff: Int, end: Int) -> EXIF? {
-        guard tiff + 8 <= end, let order = file.bytes(tiff, 2) else { return nil }
+        guard let headerEnd = file.offset(tiff, by: 8), headerEnd <= end,
+              let order = file.bytes(tiff, 2) else { return nil }
         let little: Bool
         if order == [0x49, 0x49] { little = true }
         else if order == [0x4D, 0x4D] { little = false }
         else { return nil }
-        func u16(_ at: Int) -> Int? { at >= tiff && at + 2 <= end ? file.u16(at, little: little) : nil }
-        func u32(_ at: Int) -> Int? { at >= tiff && at + 4 <= end ? file.u32(at, little: little) : nil }
+        func u16(_ at: Int) -> Int? {
+            guard at >= tiff, let after = file.offset(at, by: 2), after <= end else { return nil }
+            return file.u16(at, little: little)
+        }
+        func u32(_ at: Int) -> Int? {
+            guard at >= tiff, let after = file.offset(at, by: 4), after <= end else { return nil }
+            return file.u32(at, little: little)
+        }
         /// Calls `visit(tag, type, count, valueAt)` for each entry of the IFD at `at`.
         func scan(_ at: Int, _ visit: (Int, Int, Int, Int) -> Void) {
             guard let count = u16(at) else { return }
             for n in 0..<min(count, 500) {
-                let entry = at + 2 + n * 12
+                guard let entry = file.offset(at, by: 2 + n * 12) else { return }
                 guard let tag = u16(entry), let type = u16(entry + 2), let number = u32(entry + 4) else { return }
                 visit(tag, type, number, entry + 8)
             }
@@ -160,15 +185,19 @@ struct EXIF {
         var exif = EXIF()
         var exifIFD: Int?
         guard let ifd0 = u32(tiff + 4) else { return nil }
-        scan(tiff + ifd0) { tag, type, _, at in
+        guard let ifd0Start = file.offset(tiff, by: ifd0), ifd0Start <= end else { return nil }
+        scan(ifd0Start) { tag, type, _, at in
             if tag == 0x0112, type == 3, let value = u16(at) { exif.orientation = value }
-            if tag == 0x8769, type == 4, let offset = u32(at) { exifIFD = tiff + offset }
+            if tag == 0x8769, type == 4, let offset = u32(at),
+               let start = file.offset(tiff, by: offset), start <= end { exifIFD = start }
             if tag == 0x0142, tiff == 0 { exif.tiled = true }
         }
         if let exifIFD {
             scan(exifIFD) { tag, type, count, at in
-                guard tag == 0x9003, type == 2, count >= 19, let offset = u32(at), tiff + offset + 19 <= end,
-                      let text = file.bytes(tiff + offset, 19) else { return }
+                guard tag == 0x9003, type == 2, count >= 19, let offset = u32(at),
+                      let start = file.offset(tiff, by: offset),
+                      let after = file.offset(start, by: 19), after <= end,
+                      let text = file.bytes(start, 19) else { return }
                 exif.dateTimeOriginal = String(decoding: text, as: UTF8.self)
             }
         }
@@ -184,7 +213,8 @@ private final class FileBytes {
     private var blocks: [Int: [UInt8]] = [:]
 
     init?(_ url: URL) {
-        guard let handle = try? FileHandle(forReadingFrom: url), let end = try? handle.seekToEnd() else { return nil }
+        guard let handle = try? FileHandle(forReadingFrom: url), let end = try? handle.seekToEnd(),
+              end <= UInt64(Int.max) else { return nil }
         self.handle = handle
         size = Int(end)
     }
@@ -204,7 +234,7 @@ private final class FileBytes {
     }
 
     func bytes(_ at: Int, _ count: Int) -> [UInt8]? {
-        guard count >= 0 else { return nil }
+        guard offset(at, by: count) != nil else { return nil }
         var out: [UInt8] = []
         out.reserveCapacity(count)
         for i in at..<(at + count) {
@@ -212,6 +242,12 @@ private final class FileBytes {
             out.append(value)
         }
         return out
+    }
+
+    /// Add a file-derived position and length only when the resulting position is inside the file.
+    func offset(_ at: Int, by count: Int) -> Int? {
+        guard at >= 0, at <= size, count >= 0, count <= size - at else { return nil }
+        return at + count
     }
 
     /// An unsigned big-endian number of `width` bytes (0, 1, 2, 4 or 8; 0 reads as 0, as iloc means it).

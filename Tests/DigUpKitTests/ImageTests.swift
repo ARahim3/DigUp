@@ -42,6 +42,30 @@ import ImageIO
         }
     }
 
+    #if !canImport(ImageIO)
+    @Test func malformedHeifExtentsAreIgnored() throws {
+        func bigEndian(_ value: UInt64, width: Int) -> [UInt8] {
+            (0..<width).reversed().map { UInt8(truncatingIfNeeded: value >> ($0 * 8)) }
+        }
+        func box(_ type: String, _ body: [UInt8]) -> [UInt8] {
+            bigEndian(UInt64(body.count + 8), width: 4) + Array(type.utf8) + body
+        }
+        let infe = box("infe", [2, 0, 0, 0] + bigEndian(1, width: 2) + [0, 0] + Array("Exif".utf8) + [0])
+        let iinf = box("iinf", [0, 0, 0, 0] + bigEndian(1, width: 2) + infe)
+        let ftyp = box("ftyp", Array("heic".utf8) + [0, 0, 0, 0])
+
+        let extents: [(UInt64, UInt64, UInt64)] = [(UInt64(Int.max), 1, 4), (12, 0, UInt64(Int.max))]
+        for (base, offset, length) in extents {
+            let iloc = box("iloc", [0, 0, 0, 0, 0x88, 0x80] + bigEndian(1, width: 2)
+                + bigEndian(1, width: 2) + [0, 0] + bigEndian(base, width: 8)
+                + bigEndian(1, width: 2) + bigEndian(offset, width: 8) + bigEndian(length, width: 8))
+            let file = folder.appendingPathComponent("bad-extent-\(base).heic")
+            try Data(ftyp + box("meta", [0, 0, 0, 0] + iinf + iloc)).write(to: file)
+            #expect(EXIF.read(file)?.orientation == nil)
+        }
+    }
+    #endif
+
     #if canImport(AppKit)
     @Test func vectorPicturesAreDrawn() throws {
         // An SVG, which ImageIO doesn't open: red on the left, blue on the right, 800×400 points.
