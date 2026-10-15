@@ -199,6 +199,23 @@ import Testing
             .map { String($0.path.dropFirst(folder.path.count + 1)) }.sorted()
     }
 
+    @Test func cacheTagsExcludeSubtreesAndChosenRootsInBothModes() throws {
+        let signature = "Signature: 8a477f597d28d172789f06886806bc55\n# Cached data\n"
+        try write("cache/CACHEDIR.TAG", signature)
+        try write("cache/nested/notes.md", "cached")
+        try write("ordinary/CACHEDIR.TAG", "not a cache tag")
+        try write("ordinary/notes.md", "keep")
+        try write("short/CACHEDIR.TAG", "Signature: 8a477f597d28d172789f06886806bc5")
+        try write("short/notes.md", "keep")
+        for options in [IndexOptions(), codeOptions] {
+            #expect(crawlNames(options) == ["ordinary/notes.md", "short/notes.md"])
+            let root = folder.appendingPathComponent("cache")
+            #expect(Crawler.crawl([root], options: options).candidates.isEmpty)
+            #expect(!Rules.isWalked(root.path + "/nested/notes.md", root: folder.path, home: "", excluded: []))
+            #expect(!Rules.isWalked(root.path, root: root.path, home: "", excluded: []))
+        }
+    }
+
     @Test(.enabled(if: FileSystem.git != nil)) func codeCrawlKeepsWhatGitKeeps() throws {
         try write("app/main.py", "print(1)\n")
         try write("app/README.md", "# App\n")
