@@ -53,6 +53,9 @@ import Testing
         #expect(Mail.split("C:\\Mail\\archive.pst::2097412")! == ("C:\\Mail\\archive.pst", 2097412))
         #expect(Mail.split("/Users/me/notes.txt") == nil)
         #expect(Mail.split("/Users/me/odd::name.txt") == nil)
+        // What search checks is there on disk (and not skipped): a mail's PST.
+        #expect(Mail.file(of: "C:/Mail/archive.pst::2097412") == "C:/Mail/archive.pst")
+        #expect(Mail.file(of: "/Users/me/notes.txt") == "/Users/me/notes.txt")
     }
 
     @Test func aPSTIsAMailbox() {

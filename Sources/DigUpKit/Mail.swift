@@ -41,6 +41,9 @@ public enum Mail {
         return (String(path[..<range.lowerBound]), node)
     }
 
+    /// The file on disk a result is in: the path itself, or a mail's PST.
+    public static func file(of path: String) -> String { split(path)?.mailbox ?? path }
+
     /// Why a mail waits: its PST is open in Outlook. A sync that can read the PST queues it again.
     static let waiting = "waiting: the PST is open in Outlook"
 
