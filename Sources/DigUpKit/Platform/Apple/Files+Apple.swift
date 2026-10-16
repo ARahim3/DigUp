@@ -40,18 +40,15 @@ extension Rules {
 }
 
 enum FileSystem {
-    /// What the crawl asks of each URL.
-    static let crawlKeys: [URLResourceKey] = [.isDirectoryKey, .isPackageKey, .contentTypeKey, .isUbiquitousItemKey,
-                                              .ubiquitousItemDownloadingStatusKey]
+    /// What the crawl asks of each URL. Not iCloud's download status: in a File Provider folder (iCloud Drive, Google
+    /// Drive, OneDrive…) that's a round trip to the provider for every entry, about 1.2 ms against 0.02 ms without, which
+    /// made a sync over a few hundred thousand entries take ten minutes. A file that isn't downloaded is `dataless`
+    /// (`info`) on every macOS DigUp runs on.
+    static let crawlKeys: [URLResourceKey] = [.isDirectoryKey, .isPackageKey, .contentTypeKey]
 
     /// An app, a framework, a library bundle: one thing to the Finder, skipped whole.
     static func isPackage(_ url: URL, _ values: URLResourceValues?) -> Bool {
         values?.isPackage == true
-    }
-
-    /// An iCloud file that isn't downloaded (reading it would download it).
-    static func isInCloud(_ values: URLResourceValues?) -> Bool {
-        values?.isUbiquitousItem == true && values?.ubiquitousItemDownloadingStatus != .current
     }
 
     /// The file's own facts, without following a link. `dataless`: a placeholder ("Optimize Mac Storage", File Providers)

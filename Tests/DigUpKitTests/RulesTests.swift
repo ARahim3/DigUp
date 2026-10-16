@@ -139,6 +139,16 @@ import Testing
         #expect(report.candidates.map { ($0.path as NSString).lastPathComponent } == ["trip.txt"])
     }
 
+    /// A File Provider (iCloud Drive, Google Drive…) answers these with a round trip per entry: a sync over a few hundred
+    /// thousand of them took ten minutes. A file that isn't downloaded is `dataless` instead.
+    @Test func crawlDoesNotAskFileProvidersAboutEachEntry() {
+        #if os(macOS)
+        let keys = Set(FileSystem.crawlKeys)
+        #expect(!keys.contains(.isUbiquitousItemKey))
+        #expect(!keys.contains(.ubiquitousItemDownloadingStatusKey))
+        #endif
+    }
+
     @Test func changesCountOnlyWhereTheCrawlGoes() {
         let home = "/Users/me"
         func walked(_ path: String, root: String = home, skipping excluded: [String] = []) -> Bool {
