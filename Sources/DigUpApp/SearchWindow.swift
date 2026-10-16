@@ -24,8 +24,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate {
     func show(query: String? = nil, kind: ResultGroupKind? = nil) {
         let window = self.window ?? makeWindow()
         if let query {
-            search.filter = kind
-            search.query = query
+            search.show(query: query, kind: kind)
         }
         app.present(window)
         if !AppController.offscreen { window.makeFirstResponder(search.field) }
@@ -61,9 +60,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        if QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared().isVisible {
-            QLPreviewPanel.shared().orderOut(nil)
-        }
+        QuickLookController.hide()
         removeKeyMonitor()
         PreviewPlayback.shared.stop()
         window?.contentView = nil
@@ -82,7 +79,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, let window else { return event }
             // Keys typed here, or in Quick Look while this window is the one showing it (not the panel's).
-            let previewing = QLPreviewPanel.sharedPreviewPanelExists() && QLPreviewPanel.shared().isVisible
+            let previewing = QuickLookController.isShowing
                 && event.window === QLPreviewPanel.shared() && QLPreviewPanel.shared().dataSource === window
             guard event.window === window || previewing else { return event }
             return handle(event) ? nil : event
@@ -105,18 +102,17 @@ final class SearchWindowController: NSObject, NSWindowDelegate {
     /// ↩ opens, ⌘↩ reveals, Space previews, ⌘C copies, Esc closes the preview or clears the search.
     private func handle(_ event: NSEvent) -> Bool {
         // An input method is composing (Japanese, Chinese…): ↩, the arrows and Esc are its keys until it's done.
-        if (search.field?.currentEditor() as? NSTextView)?.hasMarkedText() == true { return false }
-        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            .subtracting([.capsLock, .numericPad, .function])
-        let previewing = QLPreviewPanel.sharedPreviewPanelExists() && QLPreviewPanel.shared().isVisible
-        switch event.keyCode {
-        case 125, 126:   // ↓ ↑
+        guard let press = KeyCommands.press(event, field: search.field) else { return false }
+        let modifiers = press.modifiers
+        let previewing = QuickLookController.isShowing
+        switch press.keyCode {
+        case KeyCommands.downArrow, KeyCommands.upArrow:   // ↓ ↑
             guard modifiers.isEmpty else { return false }
-            search.move(by: event.keyCode == 125 ? search.columns : -search.columns)
-        case 123, 124:   // ← →
+            search.move(by: press.keyCode == KeyCommands.downArrow ? search.columns : -search.columns)
+        case KeyCommands.leftArrow, KeyCommands.rightArrow:   // ← →
             guard modifiers.isEmpty, search.navigated || previewing else { return false }
-            search.move(by: event.keyCode == 124 ? 1 : -1)
-        case 36, 76:   // ↩
+            search.move(by: press.keyCode == KeyCommands.rightArrow ? 1 : -1)
+        case KeyCommands.enter, KeyCommands.keypadEnter:   // ↩
             guard let row = search.selectedRow else { return false }
             if modifiers == .command {
                 NSWorkspace.shared.activateFileViewerSelecting([row.url])
@@ -125,23 +121,22 @@ final class SearchWindowController: NSObject, NSWindowDelegate {
             } else {
                 return false
             }
-        case 49 where modifiers.isEmpty && (search.navigated || previewing) && search.selectedRow != nil:   // Space
+        case KeyCommands.space where modifiers.isEmpty && (search.navigated || previewing) && search.selectedRow != nil:   // Space
             toggleQuickLook()
-        case 16 where modifiers == .command:   // ⌘Y
+        case KeyCommands.y where modifiers == .command:   // ⌘Y
             toggleQuickLook()
-        case 18...23 where modifiers == .command:   // ⌘1 all, ⌘2…⌘6 one kind
+        case let code where modifiers == .command && KeyCommands.numberKeys.contains(code):   // ⌘1 all, ⌘2…⌘6 one kind
             let kinds: [ResultGroupKind?] = [nil] + ResultGroupKind.files
-            let index = [18, 19, 20, 21, 23, 22].firstIndex(of: Int(event.keyCode)) ?? 0   // key codes of 1…6
-            search.filter = kinds[index]
-        case 26 where modifiers == .command && app.model.hasCode:   // ⌘7: code
+            search.filter = kinds[KeyCommands.numberKeys.firstIndex(of: code) ?? 0]
+        case KeyCommands.seven where modifiers == .command && app.model.hasCode:   // ⌘7: code
             search.filter = .code
-        case 8 where modifiers == .command && search.navigated:   // ⌘C
+        case KeyCommands.c where modifiers == .command && search.navigated:   // ⌘C
             guard let row = search.selectedRow else { return false }
             NSPasteboard.general.clearContents()
             NSPasteboard.general.writeObjects([row.url as NSURL])
-        case 53:   // Esc
+        case KeyCommands.escape:   // Esc
             if previewing {
-                QLPreviewPanel.shared().orderOut(nil)
+                QuickLookController.hide()
             } else if !search.query.isEmpty {
                 search.query = ""
             } else {
@@ -150,30 +145,22 @@ final class SearchWindowController: NSObject, NSWindowDelegate {
         default:
             return false
         }
-        if QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared().isVisible { updateQuickLook() }
+        if QuickLookController.isShowing { updateQuickLook() }
         return true
     }
 
     func toggleQuickLook() {
-        let panel = QLPreviewPanel.shared()!
-        if QLPreviewPanel.sharedPreviewPanelExists(), panel.isVisible {
-            panel.orderOut(nil)
-        } else if search.selectedRow != nil {
-            updateQuickLook()
-            panel.makeKeyAndOrderFront(nil)
-        }
+        QuickLookController.toggle(on: window, row: search.selectedRow)
     }
 
     /// Quick Look shows the selected result at its page or moment.
     private func updateQuickLook() {
-        window?.previewURL = search.selectedRow?.url
-        QLPreviewPanel.shared().reloadData()
-        QuickLookMoment.show(search.selectedRow, in: QLPreviewPanel.shared())
+        QuickLookController.update(on: window, row: search.selectedRow)
     }
 }
 
 /// A window that hands Quick Look the selected file (Space / ⌘Y).
-final class QuickLookWindow: NSWindow, QLPreviewPanelDataSource {
+final class QuickLookWindow: NSWindow, QLPreviewPanelDataSource, QuickLookHost {
     var previewURL: URL?
 
     nonisolated override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool { true }
@@ -187,11 +174,11 @@ final class QuickLookWindow: NSWindow, QLPreviewPanelDataSource {
     }
 
     func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
-        previewURL == nil ? 0 : 1
+        QuickLookController.itemCount(for: previewURL)
     }
 
     func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> (any QLPreviewItem)! {
-        previewURL as NSURL?
+        QuickLookController.item(for: previewURL)
     }
 }
 
@@ -221,6 +208,8 @@ final class SearchModel {
     @ObservationIgnored private let engine: Engine
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var task: Task<Void, Never>?
+    /// `show(query:kind:)` is setting both properties: their `didSet`s skip `run()`, which it then runs once itself.
+    @ObservationIgnored private var batching = false
 
     init(engine: Engine) {
         self.engine = engine
@@ -244,6 +233,15 @@ final class SearchModel {
         navigated = false
     }
 
+    /// The window's query and kind filter at once: one search run, not one per property.
+    func show(query newQuery: String, kind: ResultGroupKind?) {
+        batching = true
+        filter = kind
+        query = newQuery
+        batching = false
+        run()
+    }
+
     /// Puts the cursor in the search field (a click on the empty window lands there).
     func focusField() {
         guard let field, field.currentEditor() == nil else { return }
@@ -264,6 +262,7 @@ final class SearchModel {
     }
 
     private func run() {
+        guard !batching else { return }
         generation += 1
         let current = generation
         task?.cancel()

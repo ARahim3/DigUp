@@ -144,9 +144,14 @@ final class AppController {
     }
 
     func setExcluded(_ folders: [URL]) {
-        AppSettings.save(excludedFolders: folders)
-        model.settings.excludedFolders = folders
-        engine.setFolders(roots: model.settings.roots, excluded: folders, excludedTypes: model.settings.excludedTypes)
+        // Normalize like `applyFolders`: paths go through `AppSettings.folderURL` and `FolderSelection` drops a
+        // skip with nothing around it to skip from, so both save paths agree.
+        let selection = FolderSelection(chosen: model.settings.roots.map { AppSettings.folderURL($0.path).path },
+                                        skipped: folders.map(\.path))
+        let excluded = selection.effectiveSkips.map(AppSettings.folderURL)
+        AppSettings.save(excludedFolders: excluded)
+        model.settings.excludedFolders = excluded
+        engine.setFolders(roots: model.settings.roots, excluded: excluded, excludedTypes: model.settings.excludedTypes)
     }
 
     /// File extensions never to index ("heic, .txt"); files of those types already indexed leave the index.

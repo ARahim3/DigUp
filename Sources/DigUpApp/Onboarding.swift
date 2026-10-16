@@ -115,20 +115,27 @@ final class OnboardingState {
     }
 
     /// The folders it offers: the usual home folders that exist, or `-onboardingLocations a:b:c` (tests point it at
-    /// the testbed, never at real folders).
+    /// the testbed, never at real folders). Cached after the first call: the existence checks are filesystem work,
+    /// and `init` runs while the window is being built on the main thread.
+    private static var cachedCandidates: [URL]?
+
     static func candidates() -> [URL] {
+        if let cached = cachedCandidates { return cached }
+        let found: [URL]
         if let list = UserDefaults.standard.string(forKey: "onboardingLocations") {
-            return list.split(separator: ":").map { AppSettings.folderURL(String($0)) }
-        }
-        // A dev or test run (its own defaults suite) never offers, and so never estimates, the real home folders.
-        if UserDefaults.standard.string(forKey: "defaultsSuite") != nil {
+            found = list.split(separator: ":").map { AppSettings.folderURL(String($0)) }
+        } else if UserDefaults.standard.string(forKey: "defaultsSuite") != nil {
+            // A dev or test run (its own defaults suite) never offers, and so never estimates, the real home folders.
             log("onboarding: no -onboardingLocations in a dev run, so no folders are offered")
-            return []
+            found = []
+        } else {
+            let home = FileManager.default.homeDirectoryForCurrentUser
+            found = ["Desktop", "Documents", "Downloads", "Pictures", "Movies", "Music"]
+                .map { AppSettings.folderURL(home.appendingPathComponent($0).path) }
+                .filter(AppSettings.isFolder)
         }
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        return ["Desktop", "Documents", "Downloads", "Pictures", "Movies", "Music"]
-            .map { AppSettings.folderURL(home.appendingPathComponent($0).path) }
-            .filter(AppSettings.isFolder)
+        cachedCandidates = found
+        return found
     }
 
     // MARK: Steps

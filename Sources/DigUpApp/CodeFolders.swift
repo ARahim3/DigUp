@@ -7,34 +7,43 @@ enum CodeFolders {
     /// or `-codeLocations a:b` (tests point it at the testbed; a dev run never offers real folders). Desktop, Documents
     /// and Downloads are only looked into when they're searched already (macOS would ask first), for the usual names
     /// people keep repos under there.
+    /// Cached by the searched-roots key: the scan probes up to 500 children per folder for `.git`, and callers
+    /// (onboarding, Settings) ask repeatedly while the main thread builds windows.
+    nonisolated(unsafe) private static var cache: [String: [URL]] = [:]
+
     static func candidates(searched roots: [URL]) -> [URL] {
+        let key = roots.map(\.path).joined(separator: ":")
+        if let cached = cache[key] { return cached }
+        let found: [URL]
         if let list = UserDefaults.standard.string(forKey: "codeLocations") {
-            return list.split(separator: ":").map { AppSettings.folderURL(String($0)) }
-        }
-        if UserDefaults.standard.string(forKey: "defaultsSuite") != nil {
+            found = list.split(separator: ":").map { AppSettings.folderURL(String($0)) }
+        } else if UserDefaults.standard.string(forKey: "defaultsSuite") != nil {
             log("code: no -codeLocations in a dev run, so no code folders are offered")
-            return []
-        }
-        let fm = FileManager.default
-        let home = fm.homeDirectoryForCurrentUser
-        let asked: Set<String> = ["Desktop", "Documents", "Downloads", "Library", "Pictures", "Movies", "Music", "Public",
-                                  "Applications", "Sites"]
-        var found: [URL] = []
-        for name in (try? fm.contentsOfDirectory(atPath: home.path)) ?? []
-        where !name.hasPrefix(".") && !asked.contains(name) {
-            let folder = AppSettings.folderURL(home.appendingPathComponent(name).path)
-            if AppSettings.isFolder(folder), holdsCode(folder) { found.append(folder) }
-        }
-        for parent in ["Documents", "Desktop"] {
-            let folder = home.appendingPathComponent(parent)
-            guard roots.contains(where: { $0.path == folder.path || FolderSelection.isInside(folder.path, $0.path) })
-            else { continue }
-            for name in ["GitHub", "Code", "Projects", "Developer", "dev", "src", "repos", "Repositories"] {
-                let inner = AppSettings.folderURL(folder.appendingPathComponent(name).path)
-                if AppSettings.isFolder(inner), holdsCode(inner) { found.append(inner) }
+            found = []
+        } else {
+            let fm = FileManager.default
+            let home = fm.homeDirectoryForCurrentUser
+            let asked: Set<String> = ["Desktop", "Documents", "Downloads", "Library", "Pictures", "Movies", "Music", "Public",
+                                      "Applications", "Sites"]
+            var urls: [URL] = []
+            for name in (try? fm.contentsOfDirectory(atPath: home.path)) ?? []
+            where !name.hasPrefix(".") && !asked.contains(name) {
+                let folder = AppSettings.folderURL(home.appendingPathComponent(name).path)
+                if AppSettings.isFolder(folder), holdsCode(folder) { urls.append(folder) }
             }
+            for parent in ["Documents", "Desktop"] {
+                let folder = home.appendingPathComponent(parent)
+                guard roots.contains(where: { $0.path == folder.path || FolderSelection.isInside(folder.path, $0.path) })
+                else { continue }
+                for name in ["GitHub", "Code", "Projects", "Developer", "dev", "src", "repos", "Repositories"] {
+                    let inner = AppSettings.folderURL(folder.appendingPathComponent(name).path)
+                    if AppSettings.isFolder(inner), holdsCode(inner) { urls.append(inner) }
+                }
+            }
+            found = urls.sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
         }
-        return found.sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+        cache[key] = found
+        return found
     }
 
     /// A repo, or a folder with one in it (one level down).
