@@ -399,8 +399,8 @@ nonisolated final class Engine: @unchecked Sendable {
         watchedRoots = spellings(present)
         watchedSkips = spellings(excluded)
         guard !present.isEmpty else { return }
-        watcher = FolderWatcher(paths: present.map(\.path), latency: 0.25, queue: watchQueue) { [weak self] paths in
-            self?.foldersChanged(paths)
+        watcher = FolderWatcher(paths: present.map(\.path), latency: 0.25, queue: watchQueue) { [weak self] changes in
+            self?.foldersChanged(changes)
         }
         log(watcher == nil ? "watch: can't watch the folders" : "watch: \(present.count) folders")
     }
@@ -412,8 +412,8 @@ nonisolated final class Engine: @unchecked Sendable {
         codeChangedSince = nil
         let present = lock.withLock { codeRoots }.filter(AppSettings.isFolder)
         guard !present.isEmpty else { return }
-        codeWatcher = FolderWatcher(paths: present.map(\.path), latency: 2, queue: watchQueue) { [weak self] paths in
-            self?.codeChanged(paths)
+        codeWatcher = FolderWatcher(paths: present.map(\.path), latency: 2, queue: watchQueue) { [weak self] changes in
+            self?.codeChanged(changes.map(\.path))
         }
         log(codeWatcher == nil ? "watch: can't watch the code folders" : "watch: \(present.count) code folders")
     }
@@ -453,12 +453,15 @@ nonisolated final class Engine: @unchecked Sendable {
     }
 
     /// FSEvents, on watchQueue. Waits for things to settle (a copy in progress, a burst of screenshots), then asks
-    /// the helper to sync; a running batch yields to that at its next boundary.
-    private func foldersChanged(_ paths: [String]) {
+    /// the helper to sync; a running batch yields to that at its next boundary. Changes to files the crawl never
+    /// indexes (databases, logs, temp files) don't count: each sync rereads every folder.
+    private func foldersChanged(_ changes: [FolderWatcher.Change]) {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let paths = paths.filter { path in
-            watchedRoots.contains { Rules.isWalked(path, root: $0, home: home, excluded: watchedSkips) }
-        }
+        let types = Set(lock.withLock { excludedTypes })
+        let paths = changes.filter { change in
+            watchedRoots.contains { Rules.isWalked(change.path, root: $0, home: home, excluded: watchedSkips) }
+                && Rules.changeMayMatter(change.path, isFolder: change.isFolder, excludedExtensions: types)
+        }.map(\.path)
         guard !paths.isEmpty else { return }
         log("watch: \(paths.count) changed (\((paths.first as NSString?)?.lastPathComponent ?? ""))")
         syncDebounce?.cancel()

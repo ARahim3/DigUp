@@ -139,6 +139,28 @@ import Testing
         #expect(report.candidates.map { ($0.path as NSString).lastPathComponent } == ["trip.txt"])
     }
 
+    @Test func changesCountOnlyForWhatCouldBeIndexed() throws {
+        func matters(_ path: String, folder: Bool = false, skipping types: Set<String> = []) -> Bool {
+            Rules.changeMayMatter(path, isFolder: folder, excludedExtensions: types)
+        }
+        #expect(matters("/Users/me/Desktop/trip.pdf"))
+        #expect(matters("/Users/me/Pictures/beach.heic"))
+        #expect(matters("/Users/me/Documents/notes.md"))
+        #expect(matters("/Users/me/Desktop/New Folder", folder: true))
+        // A database on the Desktop rewrote these every 10 s, and each asked for a sync of every folder.
+        #expect(!matters("/Users/me/Desktop/LibreChat/data-node/WiredTiger.turtle.set"))
+        #expect(!matters("/Users/me/Desktop/LibreChat/data-node/diagnostic.data/metrics.interim.temp"))
+        #expect(!matters("/Users/me/Desktop/LibreChat/data-node/collection-0.wt"))
+        #expect(!matters("/Users/me/Downloads/app/server.log"))
+        // Inside a bundle the crawl skips whole (Photos' own library).
+        let library = folder.appendingPathComponent("Photos Library.photoslibrary")
+        try FileManager.default.createDirectory(at: library.appendingPathComponent("database"),
+                                                withIntermediateDirectories: true)
+        #expect(!matters(library.path + "/originals/A/IMG_1.heic"))
+        #expect(!matters(library.path + "/database", folder: true))
+        #expect(!matters("/Users/me/Desktop/trip.pdf", skipping: ["pdf"]))
+    }
+
     @Test func changesCountOnlyWhereTheCrawlGoes() {
         let home = "/Users/me"
         func walked(_ path: String, root: String = home, skipping excluded: [String] = []) -> Bool {
