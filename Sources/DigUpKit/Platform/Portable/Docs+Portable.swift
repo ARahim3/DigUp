@@ -37,6 +37,10 @@ extension DocExtractor {
 
 /// One entry of a zip file, through miniz (reading through `FileReader`, so any file name opens).
 enum Zip {
+    /// The most an entry may declare. The indexer keeps at most 5,000 chunks of a document (about 9 M characters), so
+    /// 64 MB of XML is already far more than it can use.
+    static let maxEntryBytes: UInt64 = 64 << 20
+
     static func entry(_ name: String, in url: URL) throws -> String {
         let reader = try FileReader(url)
         var zip = mz_zip_archive()
@@ -50,9 +54,20 @@ enum Zip {
                 throw ExtractError.unreadable("not a zip file")
             }
             defer { mz_zip_reader_end(&zip) }
+            // The entry's declared size first, before anything is allocated for it: a zip of a few KB can declare
+            // gigabytes, and extracting allocates the declared size whole.
+            let index = mz_zip_reader_locate_file(&zip, name, nil, 0)
+            guard index >= 0 else { throw ExtractError.unreadable("no \(name) inside") }
+            var stat = mz_zip_archive_file_stat()
+            guard mz_zip_reader_file_stat(&zip, UInt32(index), &stat) != 0 else {
+                throw ExtractError.unreadable("can't read \(name)")
+            }
+            guard stat.m_uncomp_size <= maxEntryBytes else {
+                throw ExtractError.unreadable("\(name) is \(stat.m_uncomp_size >> 20) MB, more than is read")
+            }
             var size = 0
-            guard let bytes = mz_zip_reader_extract_file_to_heap(&zip, name, &size, 0) else {
-                throw ExtractError.unreadable("no \(name) inside")
+            guard let bytes = mz_zip_reader_extract_to_heap(&zip, UInt32(index), &size, 0) else {
+                throw ExtractError.unreadable("can't read \(name)")
             }
             defer { mz_free(bytes) }
             return String(decoding: UnsafeRawBufferPointer(start: bytes, count: size), as: UTF8.self)
