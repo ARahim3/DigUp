@@ -1,0 +1,5 @@
+"NSAppleEventsUsageDescription" = "DigUp 会请 QuickTime Player 打开录音或视频，并跳到匹配搜索内容的时间点。";
+"NSDesktopFolderUsageDescription" = "DigUp 会为你选择的文件夹创建索引，让你依内容描述搜索文件。所有内容都留在这台 Mac 上。";
+"NSDocumentsFolderUsageDescription" = "DigUp 会为你选择的文件夹创建索引，让你依内容描述搜索文件。所有内容都留在这台 Mac 上。";
+"NSDownloadsFolderUsageDescription" = "DigUp 会为你选择的文件夹创建索引，让你依内容描述搜索文件。所有内容都留在这台 Mac 上。";
+"NSRemovableVolumesUsageDescription" = "DigUp 会为你选择的文件夹创建索引，让你依内容描述搜索文件。所有内容都留在这台 Mac 上。";

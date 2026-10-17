@@ -1,3 +1,4 @@
+import DigUpLocalization
 import AppKit
 import DigUpKit
 import Observation
@@ -89,8 +90,8 @@ final class FolderChoices {
                 expanded.insert(row.path)
             } else if selection.isSearched(path) {
                 let by = selection.searchedAs(path)
-                note = "“\(folder.lastPathComponent)” is searched already"
-                    + (by == nil || by == path ? "." : ", as part of “\((by! as NSString).lastPathComponent)”.")
+                note = L10n.format("“%1$@” is searched already", String(describing: folder.lastPathComponent))
+                    + (by == nil || by == path ? "." : L10n.format(", as part of “%1$@”.", String(describing: (by! as NSString).lastPathComponent)))
             } else {
                 rows.append(folder)
                 selection.setFolder(path, on: true)
@@ -116,7 +117,7 @@ final class FolderChoices {
                 selection.setSubfolder(path, on: false)
                 deeper.append(path)
             } else {
-                note = "“\(folder.lastPathComponent)” isn't searched anyway."
+                note = L10n.format("“%1$@” isn't searched anyway.", String(describing: folder.lastPathComponent))
             }
         }
         estimate(rows.filter { row in deeper.contains { FolderSelection.isInside($0, row.path) } })
@@ -267,10 +268,10 @@ private struct FolderRow: View {
     let row: URL
     @State private var showAll = false
 
-    static let laterHelp = "The first pass takes this long. Long PDFs and documents get their first pages in it, "
-        + "and the rest afterwards, once everything else is in."
-    static let codeHelp = "How long reading this code takes, once, and about how much room its index needs. After "
-        + "that, only what changes is read again."
+    static let laterHelp = L10n.text("The first pass takes this long. Long PDFs and documents get their first pages in it, ")
+        + L10n.text("and the rest afterwards, once everything else is in.")
+    static let codeHelp = L10n.text("How long reading this code takes, once, and about how much room its index needs. After ")
+        + L10n.text("that, only what changes is read again.")
 
     /// Subfolders shown before "Show N more".
     private static let shortList = 8
@@ -289,7 +290,7 @@ private struct FolderRow: View {
                         SubfolderRow(choices: choices, subfolder: subfolder)
                     }
                     if !showAll, subfolders.count > Self.shortList {
-                        Button("Show \(subfolders.count - Self.shortList) more") { showAll = true }
+                        Button(L10n.format("Show %1$@ more", String(describing: subfolders.count - Self.shortList))) { showAll = true }
                             .buttonStyle(.link)
                             .font(.system(size: 11))
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -326,9 +327,9 @@ private struct FolderRow: View {
             .buttonStyle(.plain)
             .opacity(canOpen ? 1 : 0)
             .disabled(!canOpen)
-            .help(open ? "Hide its subfolders" : "Choose among its subfolders")
-            .accessibilityLabel(open ? "Hide the subfolders of \(row.lastPathComponent)"
-                                : "Show the subfolders of \(row.lastPathComponent)")
+            .help(open ? L10n.text("Hide its subfolders") : L10n.text("Choose among its subfolders"))
+            .accessibilityLabel(open ? L10n.format("Hide the subfolders of %1$@", String(describing: row.lastPathComponent))
+                                : L10n.format("Show the subfolders of %1$@", String(describing: row.lastPathComponent)))
             Checkbox(mark: mark, label: row.lastPathComponent) { choices.toggle(row) }
             Image(nsImage: NSWorkspace.shared.icon(forFile: row.path))
                 .resizable()
@@ -336,15 +337,15 @@ private struct FolderRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(row.lastPathComponent).font(.system(size: 13, weight: .semibold))
                 if let estimate, estimate.failed {
-                    Text("Couldn't look inside it; it can still be searched.")
+                    Text(L10n.text("Couldn't look inside it; it can still be searched."))
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 } else if let estimate, !estimate.readable {
                     HStack(spacing: 6) {
-                        Text("macOS isn't letting DigUp read it.")
+                        Text(L10n.text("macOS isn't letting DigUp read it."))
                             .font(.system(size: 11))
                             .foregroundStyle(.orange)
-                        Button("Allow in Settings…", action: openFolderPrivacySettings)
+                        Button(L10n.text("Allow in Settings…"), action: openFolderPrivacySettings)
                             .buttonStyle(.link)
                             .font(.system(size: 11))
                     }
@@ -352,8 +353,8 @@ private struct FolderRow: View {
                     KindCounts(counts: part.files)
                 } else {
                     Text(estimate == nil ? tildePath(row.path)
-                         : estimate!.files.isEmpty ? (choices.code ? "No code here" : "Nothing to search here yet")
-                         : "Nothing to search in the subfolders checked")
+                         : estimate!.files.isEmpty ? (choices.code ? L10n.text("No code here") : L10n.text("Nothing to search here yet"))
+                         : L10n.text("Nothing to search in the subfolders checked"))
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -371,7 +372,7 @@ private struct FolderRow: View {
                             .font(.system(size: 10).monospacedDigit())
                             .foregroundStyle(.tertiary)
                     } else if let later = part?.later, later >= 30 {
-                        Text("+ \(roughDuration(later)) later")
+                        Text(L10n.format("+ %1$@ later", String(describing: roughDuration(later))))
                             .font(.system(size: 10).monospacedDigit())
                             .foregroundStyle(.tertiary)
                     }
@@ -413,7 +414,7 @@ private struct SubfolderRow: View {
             Spacer(minLength: 8)
             Text(approximately(subfolder.seconds)
                  + (choices.code ? " · \(roughBytes(subfolder.bytes))"
-                    : subfolder.laterSeconds >= 30 ? " + \(roughDuration(subfolder.laterSeconds)) later" : ""))
+                    : subfolder.laterSeconds >= 30 ? L10n.format(" + %1$@ later", String(describing: roughDuration(subfolder.laterSeconds))) : ""))
                 .font(.system(size: 11, weight: .medium).monospacedDigit())
                 .foregroundStyle(on ? .secondary : .tertiary)
                 .help(choices.code ? FolderRow.codeHelp : FolderRow.laterHelp)

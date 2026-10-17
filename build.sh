@@ -47,6 +47,14 @@ cp "$ICON" "$APP/Contents/Resources/AppIcon.icns"   # over actool's plainer fall
 cp Resources/Acknowledgements.txt "$APP/Contents/Resources/Acknowledgements.txt"
 cp Resources/AppIcon/tray.png Resources/AppIcon/tray-dim.png Resources/AppIcon/tray-paused.png "$APP/Contents/Resources/"   # the menubar's logo
 
+# SwiftPM's localization bundle and main-bundle permission descriptions.
+ditto "$BIN_DIR/DigUp_DigUpLocalization.bundle" "$APP/Contents/Resources/DigUp_DigUpLocalization.bundle"
+for localization in Sources/DigUpLocalization/Resources/*.lproj; do
+  language="$(basename "$localization")"
+  mkdir -p "$APP/Contents/Resources/$language"
+  cp "$localization/InfoPlist.strings" "$APP/Contents/Resources/$language/InfoPlist.strings"
+done
+
 # Sparkle (in-app updates): the framework in Frameworks/, where the app's runpath looks. Its XPC services are for
 # sandboxed apps and its headers for building against it: left out.
 FW="$APP/Contents/Frameworks/Sparkle.framework"

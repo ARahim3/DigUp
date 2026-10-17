@@ -1,3 +1,4 @@
+import DigUpLocalization
 import AppKit
 import DigUpKit
 import Observation
@@ -121,7 +122,7 @@ final class SearchPanelController {
         installKeyMonitor()
         if activity == nil {
             activity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep,
-                                                             reason: "Search panel open")
+                                                             reason: L10n.text("Search panel open"))
         }
         let shown = Date()
         DispatchQueue.main.async {
@@ -374,7 +375,7 @@ final class SearchPanelController {
         pasteboard.clearContents()
         // As a file, like ⌘C in Finder: paste into a folder, a chat or a mail.
         pasteboard.writeObjects([row.url as NSURL])
-        flash("Copied \(row.name)")
+        flash(L10n.format("Copied %1$@", String(describing: row.name)))
     }
 
     /// The search window, with this query (and only one kind, if given): for a bigger look.
