@@ -1,0 +1,98 @@
+# Builds and tests the engine on every pull request and push to main: on macOS with the Mac app, on Linux in the
+# Ubuntu 22.04 container the packages are built in, plus the Windows/Linux shell's Rust tests. The model files aren't
+# fetched, so the reference-vector test skips itself; everything else runs. Also by hand: `gh workflow run ci.yml`.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: Vendor/llama
+          key: llama-macos-${{ hashFiles('scripts/build-llama.sh') }}
+      - name: llama.cpp
+        run: scripts/build-llama.sh
+      - name: Build
+        run: swift build -c release
+      - name: Test
+        run: swift test
+
+  linux:
+    runs-on: ubuntu-24.04
+    container: ubuntu:22.04
+    steps:
+      - name: Build tools
+        run: |
+          apt-get update -q
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends ca-certificates curl git gnupg \
+            xz-utils unzip python3 binutils build-essential cmake ninja-build meson nasm pkg-config file \
+            zlib1g-dev libcurl4-openssl-dev libxml2-dev libedit2 libsqlite3-0 libz3-dev libpython3-dev tzdata
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Swift
+        run: |
+          version=6.4.0
+          url=https://download.swift.org/swift-$version-release/ubuntu2204/swift-$version-RELEASE/swift-$version-RELEASE-ubuntu22.04.tar.gz
+          curl -fsSL -o swift.tar.gz "$url"
+          curl -fsSL -o swift.tar.gz.sig "$url.sig"
+          curl -fsSL --compressed https://www.swift.org/keys/all-keys.asc | gpg --quiet --import
+          gpg --verify swift.tar.gz.sig swift.tar.gz
+          mkdir -p "$RUNNER_TEMP/swift"
+          tar -xzf swift.tar.gz -C "$RUNNER_TEMP/swift" --strip-components 1
+          rm swift.tar.gz swift.tar.gz.sig
+          echo "$RUNNER_TEMP/swift/usr/bin" >> "$GITHUB_PATH"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: Vendor/ffmpeg
+          key: ffmpeg-linux-${{ hashFiles('scripts/build-ffmpeg.sh') }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: Vendor/llama
+          key: llama-linux-cpu-${{ hashFiles('scripts/build-llama.sh') }}
+      - name: Vendored libraries, ffmpeg, llama.cpp
+        # The small ffmpeg the packages carry (the image and video tests read HEIC, WebP and MPEG-TS through it);
+        # built once per version of its script, then cached. llama.cpp with the CPU backend only.
+        run: |
+          scripts/fetch-vendor.sh
+          scripts/build-ffmpeg.sh
+          scripts/build-llama.sh
+      - name: Build
+        run: swift build -c release
+      - name: Test
+        run: |
+          export PATH="$PWD/Vendor/ffmpeg/bin:$PATH"
+          swift test
+
+  shell:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build tools
+        run: |
+          sudo apt-get update -q
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev pkg-config
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            shell/src-tauri/target
+          key: cargo-${{ hashFiles('shell/src-tauri/Cargo.lock') }}
+      - name: Test
+        working-directory: shell/src-tauri
+        run: cargo test
