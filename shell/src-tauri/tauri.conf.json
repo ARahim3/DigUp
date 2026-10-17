@@ -37,7 +37,7 @@
   "plugins": {
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE1RDdFMkE2N0Y2RkRERkEKUldUNjNXOS9wdUxYRmRKRUZHQk4zZFYrVTV5amV5akxqT0Q3UjduVk9aRHpuVlduRkE4Z2dDQjYK",
-      "endpoints": ["https://raw.githubusercontent.com/ARahim3/DigUp/main/updates/latest.json"],
+      "endpoints": ["https://raw.githubusercontent.com/ARahim3/DigUp/main/updates/{{target}}-{{arch}}.json"],
       "requireSignedVersion": true
     }
   }
