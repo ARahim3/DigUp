@@ -366,6 +366,7 @@ public final class Searcher {
         return text
     }
 
+    /// (The Windows and Linux app's previews keep the same list in shell/ui/results.js.)
     static let stopwords: Set<String> = [
         "a", "an", "the", "of", "in", "on", "at", "to", "for", "with", "and", "or", "my", "me", "that", "this",
         "these", "those", "from", "about", "where", "what", "which", "who", "when", "is", "was", "are", "were", "be",
