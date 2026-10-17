@@ -148,11 +148,21 @@ impl Shell {
     }
 
     /// A background helper (indexing, the download), below the person's own programs for the processor.
+    /// What every helper gets: where the model is, and `DIGUP_DEVICE=cpu` when the person chose the processor.
+    fn helper_env(&self) -> Vec<(String, String)> {
+        let mut env: Vec<(String, String)> =
+            self.options.models.iter().map(|models| ("DIGUP_MODELS".to_string(), models.display().to_string())).collect();
+        if self.settings.lock().unwrap().processor_only {
+            env.push(("DIGUP_DEVICE".to_string(), "cpu".to_string()));
+        }
+        env
+    }
+
     fn launch(&self, args: Vec<String>, log: &str) -> Launch {
         Launch {
             program: self.options.helper.clone(),
             args,
-            env: self.options.models.iter().map(|models| ("DIGUP_MODELS".to_string(), models.display().to_string())).collect(),
+            env: self.helper_env(),
             log: Some(self.logs.join(log)),
             background: true,
         }
@@ -623,7 +633,7 @@ fn main() {
         .setup(move |app| setup(app, options))
         .invoke_handler(tauri::generate_handler![
             ask, estimate, setup_info, pick_folders, apply_setup_folders, finish_setup, open_path, open_code, reveal, hide_panel, panel_height,
-            panel_area, settings_info, set_open_at_login, set_center_panel, debug_query, debug_report, window_info,
+            panel_area, settings_info, set_open_at_login, set_center_panel, set_processor_only, debug_query, debug_report, window_info,
             app_state, open_window, open_settings, choose_folders, index_now, quit_app, close_window, pause_indexing,
             remove_folder, set_skipped, set_skip_types, set_index_hours, code_setup_info, set_code_folders, choose_code_folders,
             remove_code_folder, turn_off_code, set_code_editor, window_resized, copy_file, drag_out, set_hotkey, hold_hotkey,
@@ -1191,6 +1201,7 @@ fn settings_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Value {
         "openAtLogin": shell.opens_at_login() && app.autolaunch().is_enabled().unwrap_or(false),
         "canOpenAtLogin": shell.opens_at_login(),
         "centered": shell.settings.lock().unwrap().center_panel,
+        "processorOnly": settings.processor_only,
         // Windows' tray reports clicks (Linux's open the menu, a Mac's too).
         "canChooseTrayClick": cfg!(windows),
         "trayClick": if settings.tray_click == "panel" { "panel" } else { "window" },
@@ -1487,6 +1498,21 @@ fn set_open_at_login(app: AppHandle, shell: State<'_, Arc<Shell>>, on: bool) -> 
     }
     let autolaunch = app.autolaunch();
     (if on { autolaunch.enable() } else { autolaunch.disable() }).map_err(|error| error.to_string())
+}
+
+/// The model on the processor from now on (the running search service and indexing helper are ended; they start
+/// again with the new environment when next needed).
+#[tauri::command]
+fn set_processor_only(app: AppHandle, shell: State<'_, Arc<Shell>>, on: bool) -> Result<(), String> {
+    {
+        let mut settings = shell.settings.lock().unwrap();
+        settings.processor_only = on;
+        settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
+    }
+    shell.search.stop();
+    shell.index.stop();
+    later(&app, run_index);
+    Ok(())
 }
 
 #[tauri::command]
