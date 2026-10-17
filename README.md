@@ -205,11 +205,12 @@ carry their own PDF, video and image readers.
 **Will it slow my computer down?** Only the first pass is heavy. After that it reads new files only. The model runs in
 a separate process that quits when it's done, and the search side only loads while you're searching.
 
-**Which languages?** The model knows more than 100, and DigUp searches in all of them, across languages too. The evals
-cover only English, Bengali and Arabic because those are the languages of the files DigUp was tested on, and Google
-notes that the model isn't equally strong in every language. Two limits apply to exact words, not to meaning: the
-text inside screenshots is read only on a Mac, by Apple's text recognition, which knows about 25 languages, and
-languages written without spaces, like Chinese, Japanese and Thai, aren't split into words.
+**Which languages?** The model knows more than 100, and DigUp searches in all of them, across languages too. The semantic
+evals cover only English, Bengali and Arabic because those are the languages of the files DigUp was tested on, and
+Google notes that the model isn't equally strong in every language. Exact-word search reads screenshot text only on
+a Mac, using Apple's text recognition (about 25 languages). Han characters in text bodies match as contiguous
+sequences; other text written without spaces, such as Japanese kana and Thai, is not split into words. See
+[Han body search](docs/han-body-search.md) for index-upgrade details.
 
 **How do I remove it?**
 On a Mac, quit it, then delete DigUp.app and `~/Library/Application Support/DigUp`, which holds the model and the

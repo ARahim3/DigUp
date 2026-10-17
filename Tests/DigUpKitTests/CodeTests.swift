@@ -72,10 +72,10 @@ import Testing
         #expect(pieces.last?.last == 102)
     }
 
-    @Test func aVeryLongLineIsCutForTheModel() {
+    @Test func aVeryLongLineIsPreservedForTokenizerSplitting() {
         let pieces = CodeExtractor.lines("let a = 1\n" + String(repeating: "y", count: 9000) + "\nlet b = 2\n", size: 1800)
         #expect(pieces.map(\.first) == [1, 2, 3])
-        #expect(pieces[1].text.count == CodeExtractor.longestPiece)
+        #expect(pieces[1].text.count == 9000)
     }
 
     @Test func windowsLineEndingsAndBlankEdges() {
@@ -228,6 +228,50 @@ import Testing
 
     // MARK: The code index
 
+    @Test func chineseCodePassagesRespectTokenBudgetAndKeepTheirLine() throws {
+        try write("chinese/.git/HEAD", "ref: refs/heads/main\n")
+        let longLine = String(repeating: "公开合成的中文资料", count: 600) + "尾部检索标记"
+        let url = try write("chinese/README.md", "# Public synthetic notes\n" + longLine + "\nFinal line.\n")
+        let store = try IndexStore(directory: folder.appendingPathComponent("budget-index"), file: IndexStore.codeFile)
+        let embedder = BudgetCheckingCodeEmbedder()
+        let indexer = try Indexer(store: store, options: codeOptions, makeEmbedder: { embedder })
+        _ = try indexer.sync([folder.appendingPathComponent("chinese")])
+        #expect(try indexer.run() == ["done": 1])
+        #expect(embedder.inputs.count > 3)
+        #expect(embedder.inputs.allSatisfy { embedder.textTokenCount($0) <= embedder.textTokenLimit })
+        #expect(embedder.inputs.contains { $0.contains("尾部检索标记") })
+        let hits = try Searcher(store: store, loadVectors: false).search("尾部检索标记", queryVector: nil)
+        let hit = try #require(hits.first)
+        #expect(hit.path == url.path)
+        #expect(hit.segment == .lines && hit.loc == 2 && hit.locEnd == 2)
+    }
+
+    @Test func chineseMultilineBudgetSplitKeepsOriginalFocusLine() throws {
+        try write("multiline/.git/HEAD", "ref: refs/heads/main\n")
+        // One character-sized code piece, but several tokenizer-sized parts. Repeated
+        // lines make searching for each part's text an ambiguous way to recover offsets.
+        let repeated = String(repeating: "公开合成的中文资料", count: 12)
+        let lines = ["# Public synthetic notes"] + Array(repeating: repeated, count: 12) + ["尾部检索标记"]
+        let text = lines.joined(separator: "\n") + "\n"
+        #expect(CodeExtractor.lines(text).count == 1)
+        let url = try write("multiline/README.md", text)
+        let store = try IndexStore(directory: folder.appendingPathComponent("multiline-index"), file: IndexStore.codeFile)
+        let embedder = BudgetCheckingCodeEmbedder()
+        let indexer = try Indexer(store: store, options: codeOptions, makeEmbedder: { embedder })
+        _ = try indexer.sync([folder.appendingPathComponent("multiline")])
+        #expect(try indexer.run() == ["done": 1])
+        #expect(embedder.inputs.count > 1)
+        #expect(embedder.inputs.allSatisfy { embedder.textTokenCount($0) <= embedder.textTokenLimit })
+        #expect(embedder.inputs.contains { $0.contains("尾部检索标记") })
+        let hit = try #require(try Searcher(store: store, loadVectors: false)
+            .search("尾部检索标记", queryVector: nil).first)
+        #expect(hit.path == url.path && hit.segment == .lines)
+        #expect(hit.focus == 14)
+        let firstLine = try #require(hit.loc)
+        #expect(firstLine > 1)
+        #expect(hit.locEnd == 14)
+    }
+
     @Test func codeIndexIsAFileOfItsOwn() throws {
         try write("billing/.git/HEAD", "ref: refs/heads/main\n")
         try write("billing/retry.py", [function("retryWithBackoff", body: 22), function("circuit", body: 22),
@@ -338,4 +382,25 @@ import Testing
         #expect(abs(estimate.seconds - 21 * Costs().codeStretch) < 1e-9)
         #expect(estimate.bytes > 21 * 1600 && estimate.bytes < 200_000)
     }
+}
+
+/// Deterministic tokenizer stand-in that rejects overflow as both production runtimes do.
+/// Kept local to code regressions so existing FakeEmbedder-based tests retain their behavior.
+private final class BudgetCheckingCodeEmbedder: Embedder {
+    private let base = FakeEmbedder()
+    var info: WorkerInfo { base.info }
+    var textTokenLimit: Int { 2048 }
+    var inputs: [String] { base.textInputs }
+    func textTokenCount(_ text: String) -> Int { text.utf8.count + 2 }
+    func embedTexts(_ texts: [String]) throws -> [[Float]] {
+        guard texts.allSatisfy({ textTokenCount($0) <= textTokenLimit }) else {
+            throw WorkerError.failed("code regression: prompt exceeds tokenizer budget")
+        }
+        return try base.embedTexts(texts)
+    }
+    func embedImages(_ paths: [String], budget: Int) throws -> [Embedding] {
+        try base.embedImages(paths, budget: budget)
+    }
+    func embedAudio(_ paths: [String]) throws -> [Embedding] { try base.embedAudio(paths) }
+    func close() { base.close() }
 }

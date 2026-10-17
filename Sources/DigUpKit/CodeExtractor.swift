@@ -23,9 +23,6 @@ public enum CodeExtractor {
         let cells: Int?
     }
 
-    /// The model reads 2,048 tokens of an input at most; a single line longer than this is cut here.
-    static let longestPiece = 4000
-
     static func read(_ url: URL, options: IndexOptions) throws -> File {
         let data = try Data(contentsOf: url)
         let (repo, title) = place(of: url.path)
@@ -117,8 +114,8 @@ public enum CodeExtractor {
             }
             var last = end
             while last > start + 1, blank(last - 1) { last -= 1 }   // blank lines at its end don't count
-            var body = lines[start..<last].joined(separator: "\n")
-            if body.count > longestPiece { body = String(body.prefix(longestPiece)) }
+            // The indexer splits complete prompts using the runtime tokenizer. Never discard a long line here.
+            let body = lines[start..<last].joined(separator: "\n")
             pieces.append(Piece(text: body, first: start + 1, last: last))
             start = natural ? end : max(end - 2, start + 1)
         }
