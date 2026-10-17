@@ -1,0 +1,30 @@
+name: Feature request
+description: Something you'd like DigUp to do
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks. Please open the issue before writing code: it gets you a clear "yes", "not now" or "here's how it
+        should fit" first (see CONTRIBUTING.md). Not every feature fits where the project is going, and that's said
+        early rather than after the work.
+  - type: textarea
+    id: what
+    attributes:
+      label: What you'd like
+      description: What it would do, and where in the app.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why
+      description: What you're trying to find or do that doesn't work today.
+    validations:
+      required: true
+  - type: dropdown
+    id: system
+    attributes:
+      label: System
+      multiple: true
+      options: [Mac, Windows, Linux, All]

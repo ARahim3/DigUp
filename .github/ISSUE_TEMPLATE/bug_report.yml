@@ -1,0 +1,43 @@
+name: Bug report
+description: Something doesn't work the way it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for the report. A few details save a round of questions.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens
+      description: What you did (or searched for), what DigUp did, and what you expected instead.
+    validations:
+      required: true
+  - type: dropdown
+    id: system
+    attributes:
+      label: System
+      options: [Mac, Windows, Linux]
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: DigUp version and system version
+      placeholder: "DigUp 0.6.1, macOS 26.1 · or DigUp 0.7.0-beta.1, Windows 11 · or Ubuntu 24.04, GNOME, Wayland"
+    validations:
+      required: true
+  - type: input
+    id: machine
+    attributes:
+      label: Computer
+      placeholder: "M2 MacBook Air, 16 GB · or i7-12700, RTX 3060, 32 GB"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Mac: `~/Library/Application Support/DigUp/index.noindex` (`app.log`, `indexer.log`).
+        Windows: `%LOCALAPPDATA%\com.abdurrahim.DigUp\logs`, and `worker.log` in `%LOCALAPPDATA%\DigUp\index`.
+        Linux: `~/.local/share/com.abdurrahim.DigUp/logs`, and `worker.log` in `~/.local/share/digup/index`.
+        They can contain file names and your searches, so look through them before you paste.
+      render: text
