@@ -123,8 +123,12 @@ nonisolated final class Engine: @unchecked Sendable {
     private var watchedRoots: [String] = []
     private var watchedSkips: [String] = []
     private var syncDebounce: DispatchWorkItem?
+    private var changedPathsSinceSync = Set<String>()
+    private var fullSyncRequired = false
     private var codeWatcher: FolderWatcher?
     private var codeSyncDebounce: DispatchWorkItem?
+    private var codeChangedPathsSinceSync = Set<String>()
+    private var codeFullSyncRequired = false
     private var codeChangedSince: Date?
 
     // Any thread, under `lock`
@@ -391,6 +395,9 @@ nonisolated final class Engine: @unchecked Sendable {
     /// Watches the chosen folders that are there (a missing one is picked up when a drive connects).
     private func startWatching() {
         watcher = nil
+        syncDebounce?.cancel()
+        changedPathsSinceSync.removeAll()
+        fullSyncRequired = false
         let (roots, excluded) = lock.withLock { (self.roots, self.excluded) }
         let present = roots.filter(AppSettings.isFolder)
         func spellings(_ folders: [URL]) -> [String] {
@@ -399,8 +406,8 @@ nonisolated final class Engine: @unchecked Sendable {
         watchedRoots = spellings(present)
         watchedSkips = spellings(excluded)
         guard !present.isEmpty else { return }
-        watcher = FolderWatcher(paths: present.map(\.path), latency: 0.25, queue: watchQueue) { [weak self] paths in
-            self?.foldersChanged(paths)
+        watcher = FolderWatcher(paths: present.map(\.path), latency: 0.25, queue: watchQueue) { [weak self] paths, fullScan in
+            self?.foldersChanged(paths, fullScan: fullScan)
         }
         log(watcher == nil ? "watch: can't watch the folders" : "watch: \(present.count) folders")
     }
@@ -410,10 +417,12 @@ nonisolated final class Engine: @unchecked Sendable {
         codeWatcher = nil
         codeSyncDebounce?.cancel()
         codeChangedSince = nil
+        codeChangedPathsSinceSync.removeAll()
+        codeFullSyncRequired = false
         let present = lock.withLock { codeRoots }.filter(AppSettings.isFolder)
         guard !present.isEmpty else { return }
-        codeWatcher = FolderWatcher(paths: present.map(\.path), latency: 2, queue: watchQueue) { [weak self] paths in
-            self?.codeChanged(paths)
+        codeWatcher = FolderWatcher(paths: present.map(\.path), latency: 2, queue: watchQueue) { [weak self] paths, fullScan in
+            self?.codeChanged(paths, fullScan: fullScan)
         }
         log(codeWatcher == nil ? "watch: can't watch the code folders" : "watch: \(present.count) code folders")
     }
@@ -421,20 +430,26 @@ nonisolated final class Engine: @unchecked Sendable {
     /// FSEvents in the code folders, on watchQueue. Code that's being worked on changes all the time: the code index
     /// catches up once it's been quiet for `codeQuietSeconds` (or every `codeLongestWait` while it isn't). Changes
     /// code search never reads (git's own files, builds, dependencies) don't count.
-    private func codeChanged(_ paths: [String]) {
+    private func codeChanged(_ paths: [String], fullScan: Bool = false) {
         let relevant = paths.filter { path in
             !path.split(separator: "/").contains { part in
                 part.hasPrefix(".") || Self.codeNoise.contains(String(part))
             }
         }
-        guard !relevant.isEmpty else { return }
+        guard fullScan || !relevant.isEmpty else { return }
+        codeChangedPathsSinceSync.formUnion(relevant)
+        codeFullSyncRequired = codeFullSyncRequired || fullScan
         let now = Date()
         if codeChangedSince == nil { codeChangedSince = now }
         codeSyncDebounce?.cancel()
         let work = DispatchWorkItem { [self] in
             codeChangedSince = nil
             log("watch: code changed (\((relevant.first as NSString?)?.lastPathComponent ?? ""))")
-            indexQueue.async { [self] in requestCodeSync() }
+            let paths = Array(codeChangedPathsSinceSync)
+            let full = codeFullSyncRequired
+            codeChangedPathsSinceSync.removeAll()
+            codeFullSyncRequired = false
+            indexQueue.async { [self] in requestCodeSync(changedPaths: full ? nil : paths) }
         }
         codeSyncDebounce = work
         let waited = now.timeIntervalSince(codeChangedSince ?? now)
@@ -448,30 +463,44 @@ nonisolated final class Engine: @unchecked Sendable {
         "mlruns", "lightning_logs",
     ]
 
-    private func requestCodeSync() {
-        if helper != nil { send("sync code") } else { startHelper() }
+    private func requestCodeSync(changedPaths: [String]? = nil) {
+        if helper != nil, let changedPaths,
+           let data = try? JSONSerialization.data(withJSONObject: changedPaths),
+           let json = String(data: data, encoding: .utf8) {
+            send("sync code \(json)")
+        } else if helper != nil { send("sync code") } else { startHelper() }
     }
 
     /// FSEvents, on watchQueue. Waits for things to settle (a copy in progress, a burst of screenshots), then asks
     /// the helper to sync; a running batch yields to that at its next boundary.
-    private func foldersChanged(_ paths: [String]) {
+    private func foldersChanged(_ paths: [String], fullScan: Bool) {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let paths = paths.filter { path in
             watchedRoots.contains { Rules.isWalked(path, root: $0, home: home, excluded: watchedSkips) }
         }
-        guard !paths.isEmpty else { return }
+        guard fullScan || !paths.isEmpty else { return }
         log("watch: \(paths.count) changed (\((paths.first as NSString?)?.lastPathComponent ?? ""))")
+        changedPathsSinceSync.formUnion(paths)
+        fullSyncRequired = fullSyncRequired || fullScan
         syncDebounce?.cancel()
         let work = DispatchWorkItem { [self] in
-            indexQueue.async { [self] in requestSync() }
+            let paths = Array(changedPathsSinceSync)
+            let full = fullSyncRequired
+            changedPathsSinceSync.removeAll()
+            fullSyncRequired = false
+            indexQueue.async { [self] in requestSync(changedPaths: full ? nil : paths) }
         }
         syncDebounce = work
         watchQueue.asyncAfter(deadline: .now() + 0.75, execute: work)
     }
 
-    private func requestSync() {
+    private func requestSync(changedPaths: [String]? = nil) {
         syncWantedAt = Date()
-        if helper != nil { send("sync") } else { startHelper() }
+        if helper != nil, let changedPaths,
+           let data = try? JSONSerialization.data(withJSONObject: changedPaths),
+           let json = String(data: data, encoding: .utf8) {
+            send("sync \(json)")
+        } else if helper != nil { send("sync") } else { startHelper() }
     }
 
     /// Starts `digup index-service` unless one is running (or indexing is paused). It syncs first, indexes up to

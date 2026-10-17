@@ -87,9 +87,42 @@ public final class Indexer {
 
     /// Crawls `roots` and reconciles the index: new files are queued, changed ones re-queued, moved ones re-pathed
     /// (no re-embedding), and files that are gone or newly excluded are removed.
-    public func sync(_ roots: [URL]) throws -> SyncSummary {
-        let crawl = Crawler.crawl(roots, options: options)
-        let existing = try store.files(under: roots.map { $0.standardizedFileURL.path })
+    /// `changedPaths` limits reconciliation to their affected folders; nil requests a full sync, [] does nothing.
+    public func sync(_ roots: [URL], changedPaths: [String]? = nil) throws -> SyncSummary {
+        let roots = roots.map { URL(fileURLWithPath: FolderSelection.crawlPath($0.path), isDirectory: true) }
+        // A file event reconciles its containing directory: besides handling deletes and atomic saves, this
+        // keeps folder-level rules (notably dataset detection) correct. Directory events walk that subtree.
+        // Paths outside selected roots cannot affect this index.
+        let scopes: [URL]? = changedPaths.map { paths in
+            var selected = Set<String>()
+            for raw in paths {
+                let path = FolderSelection.crawlPath(raw)
+                guard let root = roots.filter({
+                    FolderSelection.isInside(path, $0.path) || path == $0.path
+                })
+                    .max(by: { $0.path.count < $1.path.count }) else { continue }
+                var isDirectory: ObjCBool = false
+                let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+                let scopePath = exists && isDirectory.boolValue ? path : (path as NSString).deletingLastPathComponent
+                guard FolderSelection.isInside(scopePath, root.path) || scopePath == root.path else { continue }
+                selected.insert(scopePath)
+            }
+            // Drop nested scopes when an ancestor already covers them.
+            return selected.sorted().filter { path in
+                !selected.contains { other in other != path && FolderSelection.isInside(path, other) }
+            }.map { URL(fileURLWithPath: $0, isDirectory: true) }
+        }
+        // A broader scope may cross an exclusion that contains an explicitly selected subfolder. Walk that
+        // selection on its own as a full sync does, otherwise reconciling the broad scope would remove its rows.
+        let walkRoots = scopes.map { scopes in
+            scopes + roots.filter { root in
+                scopes.contains { FolderSelection.isInside(root.path, $0.path) }
+            }
+        } ?? roots
+        let crawl = Crawler.crawl(walkRoots, options: options, chosenRoots: roots)
+        let pathsToReconcile = scopes?.map(\.path) ?? roots.map(\.path)
+        guard !pathsToReconcile.isEmpty else { return SyncSummary(crawl: crawl) }
+        let existing = try store.files(under: pathsToReconcile)
         var byPath: [String: FileRecord] = [:]
         var byInode: [String: FileRecord] = [:]
         for file in existing {
@@ -121,7 +154,7 @@ public final class Indexer {
             }
             // A root that went away while it was being walked (a drive ejected mid-crawl) looked emptier than it is:
             // keep its rows rather than take that for "deleted".
-            let vanished = roots.map { $0.standardizedFileURL.path }
+            let vanished = roots.map(\.path)
                 .filter { !FileManager.default.fileExists(atPath: $0) }.map { $0.hasSuffix("/") ? $0 : $0 + "/" }
             for row in existing where !seen.contains(row.path) && !movedFrom.contains(row.path)
                 && !vanished.contains(where: { row.path.hasPrefix($0) }) {
