@@ -719,7 +719,15 @@ do {
     case "status": try status(args)
     case "speed": try speed(args)
     case "eval": try evaluate(args)
-    case "index-service": exit(try indexService(args))
+    case "index-service":
+        let status = try indexService(args)
+        #if os(Linux)
+        // glibc's exit() flushes the C streams under stdin's lock, which the command reader holds in readLine():
+        // the helper would never end. Its events went straight to the file descriptor; nothing is left to flush.
+        _exit(status)
+        #else
+        exit(status)
+        #endif
     case "worker": exit(workerService(args))
     case "search-service": exit(try searchService(args))
     case "download-model": exit(try downloadModel(args))
