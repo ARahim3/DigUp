@@ -37,17 +37,19 @@ nonisolated final class FolderWatcher: @unchecked Sendable {
     }
 
     fileprivate func received(_ paths: [String], fullScan: Bool) {
-        // Git's hidden rules affect visible siblings too; a crawl beside the rule file would miss them.
-        let rulesChanged = paths.contains { path in
+        // Git's hidden rules affect visible siblings too. Report their containing subtree so the engine can
+        // apply its usual selection/exclusion filters before asking for a broader reconciliation.
+        let relevant = paths.map { path in
             let name = (path as NSString).lastPathComponent
-            return name == ".gitignore" || name == ".git"
-                || path.hasSuffix("/.git/info/exclude") || path.hasSuffix("/.git/index")
-        }
-        if fullScan || rulesChanged { handler([], true); return }
-        let relevant = paths.filter { path in
+            if name == ".gitignore" || name == ".git" { return (path as NSString).deletingLastPathComponent }
+            for suffix in ["/.git/info/exclude", "/.git/index"] where path.hasSuffix(suffix) {
+                return String(path.dropLast(suffix.count))
+            }
+            return path
+        }.filter { path in
             !path.split(separator: "/").contains { $0.hasPrefix(".") }
         }
-        if !relevant.isEmpty { handler(relevant, false) }
+        if fullScan || !relevant.isEmpty { handler(Array(Set(relevant)), fullScan) }
     }
 }
 
