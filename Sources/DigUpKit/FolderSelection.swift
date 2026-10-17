@@ -115,4 +115,14 @@ public struct FolderSelection: Equatable, Sendable {
         var seen = Set<String>()
         return paths.filter { seen.insert($0).inserted }
     }
+
+    /// The crawl's spelling, even for a deleted path: resolve its closest surviving ancestor first.
+    static func crawlPath(_ path: String) -> String {
+        let path = URL(fileURLWithPath: path).standardizedFileURL.path
+        if FileManager.default.fileExists(atPath: path) { return realPath(path) }
+        let parent = Self.parent(path)
+        guard parent != path, !parent.isEmpty else { return path }
+        let realParent = crawlPath(parent)
+        return realParent + (realParent.hasSuffix("/") ? "" : "/") + (path as NSString).lastPathComponent
+    }
 }

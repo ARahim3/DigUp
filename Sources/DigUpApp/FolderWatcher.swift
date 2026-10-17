@@ -6,16 +6,16 @@ import Foundation
 /// are ignored, since browsing a folder in Finder writes those.
 nonisolated final class FolderWatcher: @unchecked Sendable {
     private var stream: FSEventStreamRef?
-    private let handler: @Sendable ([String]) -> Void
+    private let handler: @Sendable ([String], Bool) -> Void
 
     init?(paths: [String], latency: TimeInterval, queue: DispatchQueue,
-          handler: @escaping @Sendable ([String]) -> Void) {
+          handler: @escaping @Sendable ([String], Bool) -> Void) {
         self.handler = handler
         guard !paths.isEmpty else { return nil }
         var context = FSEventStreamContext(version: 0, info: Unmanaged.passUnretained(self).toOpaque(),
                                            retain: nil, release: nil, copyDescription: nil)
         let flags = kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagFileEvents
-            | kFSEventStreamCreateFlagNoDefer
+            | kFSEventStreamCreateFlagNoDefer | kFSEventStreamCreateFlagWatchRoot
         guard let stream = FSEventStreamCreate(kCFAllocatorDefault, folderWatcherCallback, &context,
                                                paths as CFArray, FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
                                                latency, FSEventStreamCreateFlags(flags)) else { return nil }
@@ -36,11 +36,18 @@ nonisolated final class FolderWatcher: @unchecked Sendable {
         FSEventStreamRelease(stream)
     }
 
-    fileprivate func received(_ paths: [String]) {
+    fileprivate func received(_ paths: [String], fullScan: Bool) {
+        // Git's hidden rules affect visible siblings too; a crawl beside the rule file would miss them.
+        let rulesChanged = paths.contains { path in
+            let name = (path as NSString).lastPathComponent
+            return name == ".gitignore" || name == ".git"
+                || path.hasSuffix("/.git/info/exclude") || path.hasSuffix("/.git/index")
+        }
+        if fullScan || rulesChanged { handler([], true); return }
         let relevant = paths.filter { path in
             !path.split(separator: "/").contains { $0.hasPrefix(".") }
         }
-        if !relevant.isEmpty { handler(relevant) }
+        if !relevant.isEmpty { handler(relevant, false) }
     }
 }
 
@@ -52,5 +59,8 @@ private nonisolated func folderWatcherCallback(
     guard let info else { return }
     let watcher = Unmanaged<FolderWatcher>.fromOpaque(info).takeUnretainedValue()
     let list = Unmanaged<CFArray>.fromOpaque(paths).takeUnretainedValue() as? [String] ?? []
-    watcher.received(list)
+    let rescan = kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagUserDropped
+        | kFSEventStreamEventFlagKernelDropped | kFSEventStreamEventFlagRootChanged
+    let fullScan = (0..<count).contains { flags[$0] & FSEventStreamEventFlags(rescan) != 0 }
+    watcher.received(list, fullScan: fullScan)
 }
