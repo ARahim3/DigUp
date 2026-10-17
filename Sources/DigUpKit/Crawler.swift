@@ -223,11 +223,19 @@ enum GitFiles {
         guard let git = FileSystem.git else { return nil }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: git)
-        // A downloaded repo can configure core.fsmonitor to execute an arbitrary program, even for ls-files.
-        process.arguments = ["-c", "core.fsmonitor=false", "-C", repo,
+        // A repo that arrived unzipped or copied keeps its own .git/config, which can name a program (core.fsmonitor
+        // runs for ls-files; hooks could for anything else): those settings are overridden, and the system's and
+        // the user's config files are left out, so no config git reads here can run anything.
+        #if os(Windows)
+        let nullDevice = "NUL"
+        #else
+        let nullDevice = "/dev/null"
+        #endif
+        process.arguments = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=\(nullDevice)", "-C", repo,
                              "ls-files", "-z", "--cached", "--others", "--exclude-standard"]
         // Reading only: never wait for, or take, the repo's lock (an editor's git may be busy in it).
-        process.environment = ["GIT_OPTIONAL_LOCKS": "0", "PATH": "/usr/bin:/bin", "HOME": NSHomeDirectory()]
+        process.environment = ["GIT_OPTIONAL_LOCKS": "0", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": nullDevice,
+                               "PATH": "/usr/bin:/bin", "HOME": NSHomeDirectory()]
         let output = Pipe()
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
