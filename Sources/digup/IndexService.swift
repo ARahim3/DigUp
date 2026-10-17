@@ -368,6 +368,8 @@ final class SharedEmbedder: @unchecked Sendable {
         let model: any Embedder
         init(_ model: any Embedder) { self.model = model }
         var info: WorkerInfo { model.info }
+        var textTokenLimit: Int { model.textTokenLimit }
+        func textTokenCount(_ text: String) throws -> Int { try model.textTokenCount(text) }
         func embedTexts(_ texts: [String]) throws -> [[Float]] { try model.embedTexts(texts) }
         func embedImages(_ paths: [String], budget: Int) throws -> [Embedding] {
             try model.embedImages(paths, budget: budget)

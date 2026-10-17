@@ -17,6 +17,7 @@ func workerService(_ args: Arguments) -> Int32 {
     let infoFields: [String: Any] = [
         "model": info.model, "revision": info.revision, "runtime": info.runtime, "dtype": info.dtype, "dim": info.dim,
         "text_only": info.textOnly, "load_seconds": info.loadSeconds ?? 0,
+        "text_token_limit": embedder.textTokenLimit,
     ]
     emit(["ready": true, "info": infoFields])
     while let line = readLine() {
@@ -36,6 +37,9 @@ func workerService(_ args: Arguments) -> Int32 {
                 continue
             case "text":
                 embeddings = try embedder.embedTexts(inputs).map { Embedding(vector: $0, error: nil) }
+            case "token_count":
+                emit(["id": id, "ok": true, "counts": try inputs.map(embedder.textTokenCount)])
+                continue
             case "image":
                 embeddings = try embedder.embedImages(inputs, budget: request["budget"] as? Int ?? 280)
             case "audio":

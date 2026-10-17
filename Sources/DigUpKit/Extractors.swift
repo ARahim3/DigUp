@@ -123,7 +123,9 @@ enum DocExtractor {
             var next = clean.index(end, offsetBy: -overlap, limitedBy: start) ?? end
             if next <= start { next = end }
             // Start the next chunk on a word boundary.
-            while next < end, !clean[next].isWhitespace { next = clean.index(after: next) }
+            while next < end, !clean[next].isWhitespace, !SearchText.isHan(clean[next]) {
+                next = clean.index(after: next)
+            }
             start = next < end ? next : end
         }
         return chunks

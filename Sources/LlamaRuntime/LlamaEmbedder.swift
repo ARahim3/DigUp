@@ -58,7 +58,7 @@ public final class LlamaEmbedder: Embedder {
             throw WorkerError.failed("can't load \(models.text.path)")
         }
         // One input must fit one micro-batch: 2048 tokens (the reference's cut), which also holds a 1120-token image or
-        // a 750-token 30 s clip. Queries are short, so the query encoder reserves less and cuts at 512.
+        // a 750-token 30 s clip. Queries are short, so the query encoder reserves a smaller 512-token budget.
         let maxTokens = textOnly ? 512 : 2048
         var params = llama_context_default_params()
         params.n_ctx = UInt32(maxTokens)
@@ -104,7 +104,7 @@ public final class LlamaEmbedder: Embedder {
         self.maxTokens = maxTokens
         let known = Self.modelInfo
         info = WorkerInfo(model: known.model, revision: known.revision, runtime: known.runtime, dtype: known.dtype,
-                          dim: embeddingSize, textOnly: textOnly, loadSeconds: nil)
+                          dim: embeddingSize, textOnly: textOnly, loadSeconds: nil, textTokenLimit: maxTokens)
         // The first calls build the Metal pipelines: pay that now (the panel is opening).
         do {
             for _ in 0..<2 { _ = try embedTexts([Prompts.query("warm up")]) }
@@ -114,7 +114,7 @@ public final class LlamaEmbedder: Embedder {
         }
         let seconds = (Date().timeIntervalSince(started) * 100).rounded() / 100
         info = WorkerInfo(model: info.model, revision: info.revision, runtime: info.runtime, dtype: info.dtype,
-                          dim: info.dim, textOnly: textOnly, loadSeconds: seconds)
+                          dim: info.dim, textOnly: textOnly, loadSeconds: seconds, textTokenLimit: maxTokens)
         LlamaLog.shared.line("ready in \(seconds) s (\(textOnly ? "text-only" : "full"), llama.cpp \(Self.buildTag), "
                              + "vectors \(Self.vectorVersion))")
     }
@@ -136,6 +136,9 @@ public final class LlamaEmbedder: Embedder {
         var vectors: [[Float]] = []
         for text in texts {
             let tokens = tokenize(text)
+            guard tokens.count <= maxTokens else {
+                throw WorkerError.failed("text has \(tokens.count) tokens; limit is \(maxTokens). Split it before embedding")
+            }
             if sequences == Self.maxSequences || self.tokens + tokens.count > maxTokens { vectors += try run() }
             begin()
             for token in tokens { try add(token: token) }
@@ -143,6 +146,9 @@ public final class LlamaEmbedder: Embedder {
         if sequences > 0 { vectors += try run() }
         return vectors
     }
+
+    public var textTokenLimit: Int { maxTokens }
+    public func textTokenCount(_ text: String) throws -> Int { tokenize(text).count }
 
     public func embedImages(_ paths: [String], budget: Int) throws -> [Embedding] {
         guard media != nil else { throw WorkerError.failed("this embedder was started text-only") }
@@ -247,7 +253,7 @@ public final class LlamaEmbedder: Embedder {
 
     // MARK: Text model
 
-    /// `<bos> text <eos>`, cut to `maxTokens` the way transformers cuts (keeping both special tokens).
+    /// `<bos> text <eos>`, never silently truncated. Embedding validates the budget.
     private func tokenize(_ text: String) -> [llama_token] {
         let utf8 = Array(text.utf8CString)
         var tokens = [llama_token](repeating: 0, count: utf8.count + 8)
@@ -257,9 +263,6 @@ public final class LlamaEmbedder: Embedder {
             count = llama_tokenize(vocab, utf8, Int32(utf8.count - 1), &tokens, Int32(tokens.count), true, true)
         }
         tokens.removeLast(tokens.count - Int(max(count, 0)))
-        if tokens.count > maxTokens {
-            tokens = Array(tokens[0..<(maxTokens - 1)]) + [llama_vocab_eos(vocab)]
-        }
         return tokens
     }
 

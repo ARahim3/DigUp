@@ -2,6 +2,36 @@ import Foundation
 
 /// Text the way keyword search keeps it and matches it, so that a word is found however it was typed or extracted.
 public enum SearchText {
+    /// Body text and body query phrases only; filenames retain their unspaced representation. Han characters
+    /// become adjacent tokens, so "租房" matches inside "租房合同" without losing two-character words.
+    public static func indexed(_ text: String) -> String {
+        var result = ""
+        let characters = Array(normalized(text))
+        for (index, character) in characters.enumerated() {
+            if isHan(character) { result += " " + String(character) + " " }
+            else {
+                result.append(character)
+                let boundary = !character.unicodeScalars.contains { CharacterSet.alphanumerics.contains($0) }
+                let besideHan = (index > 0 && isHan(characters[index - 1]))
+                    || (index + 1 < characters.count && isHan(characters[index + 1]))
+                // Co is indexed but is never a query word. Source separators must
+                // not disappear between adjacent Han tokens.
+                if boundary && besideHan { result += " \u{E000} " }
+            }
+        }
+        return result.replacingOccurrences(of: #"[ \t]+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+    }
+
+    public static func isHan(_ character: Character) -> Bool {
+        character.unicodeScalars.contains {
+            switch $0.value {
+            case 0x3400...0x4DBF, 0x4E00...0x9FFF, 0xF900...0xFAFF, 0x20000...0x2FFFF, 0x30000...0x323AF: true
+            default: false
+            }
+        }
+    }
+
     /// NFKC (Arabic presentation forms and ligatures become plain letters, full-width becomes ASCII, and Bengali's
     /// two spellings of "ো" become one), invisible formatting characters dropped (Bengali's zero-width joiners,
     /// direction marks), and Arabic the way people type it: no tatweel, no short-vowel marks, one alef.
@@ -59,13 +89,16 @@ public enum SearchText {
             guard hit.location != NSNotFound else { break }
             searchRange = NSRange(location: hit.upperBound, length: haystack.length - hit.upperBound)
             guard var range = folded.original(hit) else { continue }
-            if range.lowerBound > text.startIndex, isWordCharacter(text[text.index(before: range.lowerBound)]) {
+            if word.first.map(isHan) != true,
+               range.lowerBound > text.startIndex, isWordCharacter(text[text.index(before: range.lowerBound)]),
+               !isHan(text[text.index(before: range.lowerBound)]) {
                 continue
             }
-            if range.upperBound < text.endIndex, isWordCharacter(text[range.upperBound]) {
+            if word.last.map(isHan) != true,
+               range.upperBound < text.endIndex, isWordCharacter(text[range.upperBound]), !isHan(text[range.upperBound]) {
                 guard prefix else { continue }
                 var end = range.upperBound
-                while end < text.endIndex, isWordCharacter(text[end]) { end = text.index(after: end) }
+                while end < text.endIndex, isWordCharacter(text[end]), !isHan(text[end]) { end = text.index(after: end) }
                 range = range.lowerBound..<end
             }
             if let last = found.last, last.overlaps(range) { continue }
@@ -77,21 +110,26 @@ public enum SearchText {
     /// One line from `text` around the first of `terms` it has, the terms marked « » as SQLite's snippet() marks them:
     /// the excerpt of a keyword match, from the text as it's written. Nil when none of the terms is in it.
     public static func snippet(_ text: String, terms: [String], words: Int = 12) -> String? {
-        let marks = terms.flatMap { matches(of: $0, in: text) }.sorted { $0.lowerBound < $1.lowerBound }
+        let marks = terms.flatMap { matches(of: $0, in: text) }
+            .sorted { $0.lowerBound < $1.lowerBound }
         guard let first = marks.first else { return nil }
         // About `words` words, starting a few before the first match.
-        var start = first.lowerBound, before = 0
-        while start > text.startIndex, before < words / 3 {
+        let han = text.contains(where: isHan)
+        var start = first.lowerBound, before = 0, characters = 0
+        while start > text.startIndex, before < words / 3, !han || characters < words * 3 {
             start = text.index(before: start)
+            characters += 1
             if text[start].isWhitespace, start < first.lowerBound, !text[text.index(after: start)].isWhitespace {
                 before += 1
             }
         }
         if start > text.startIndex || text[start].isWhitespace { start = text.index(after: start) }
         var end = first.upperBound, after = 0
-        while end < text.endIndex, after < words - before {
+        characters = 0
+        while end < text.endIndex, after < words - before, !han || characters < words * 6 {
             if text[end].isWhitespace { after += 1 }
             end = text.index(after: end)
+            characters += 1
         }
         var out = start > text.startIndex ? "…" : ""
         var cursor = start
@@ -148,7 +186,7 @@ public enum Landmark {
         guard page > 1, texts.count >= page else { return nil }
         let target = texts[page - 1]
         let before = texts.prefix(page - 1).map { SearchText.normalized($0).lowercased() }
-        let onPage = words.filter { $0.count >= 3 }.compactMap { word in
+        let onPage = words.filter { $0.count >= 3 || ($0.count >= 2 && $0.contains(where: SearchText.isHan)) }.compactMap { word in
             SearchText.matches(of: word, in: target).first.map { String(target[$0]) }
         }
         return onPage.first { word in !before.contains { $0.contains(SearchText.normalized(word).lowercased()) } }

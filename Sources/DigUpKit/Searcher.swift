@@ -143,8 +143,15 @@ public final class Searcher {
         // as typed stays whole, so "cat" doesn't bring in "category"; so does a word of two letters, the start of too
         // many words to stand for one.
         if identifier == nil {
-            for index in terms.indices where terms[index].count >= 3 && !patterns[index].hasSuffix("*") {
-                if try !isIndexed(patterns[index]) { patterns[index] += "*" }
+            for index in terms.indices where terms[index].count >= 3
+                && !(prefixLast && index == terms.count - 1) && !SearchText.inflects(terms[index]) {
+                if try !isIndexed(patterns[index]) {
+                    if terms[index].contains(where: SearchText.isHan) {
+                        // Names are still whole Han tokens: retain their schema-5 missing-word prefix fallback.
+                        // Body phrases must remain contiguous exact sequences of Han characters.
+                        patterns[index] = "(name : \"\(terms[index])\"* OR body : \"\(SearchText.indexed(terms[index]))\")"
+                    } else { patterns[index] += "*" }
+                }
             }
         }
         if !patterns.isEmpty {
@@ -157,7 +164,8 @@ public final class Searcher {
                 let file = row.int(0)
                 guard words.count < 100, allowed(file), seen.insert(file).inserted else { return }
                 // Text that normalizing changed is quoted as it's written (with its hamza, harakat, joiners).
-                let snippet = row.text(3).flatMap { SearchText.snippet($0, terms: terms) } ?? row.text(2)
+                // Stemming may match without a literal highlight. Never show the indexed Han separators.
+                let snippet = row.text(3).map { SearchText.snippet($0, terms: terms) ?? excerpt($0) } ?? row.text(2)
                 words.append((file, row.int(1), snippet))
             }
             if !words.isEmpty {
@@ -228,7 +236,7 @@ public final class Searcher {
             // never shows page 2's words. A segment with no place and no text of its own (a screenshot's image
             // vector) can borrow them from its file's OCR text, which describes the same picture.
             var snippet = keyword.flatMap { $0.1.segment == segmentID ? $0.1.snippet : nil }
-                .flatMap { $0.contains("«") ? excerpt($0, limit: 400) : nil }
+                .flatMap { $0.contains("«") || segment != .name ? excerpt($0, limit: 400) : nil }
             if snippet == nil, storedExcerpt == nil, loc == nil, let match = keyword?.1,
                let text = match.snippet, text.contains("«") {
                 var matchedKind: String?
@@ -394,7 +402,12 @@ public final class Searcher {
     static func patterns(_ terms: [String], prefixLast: Bool) -> [String] {
         terms.enumerated().map { index, term in
             let prefix = (prefixLast && index == terms.count - 1) || SearchText.inflects(term)
-            return "\"\(term)\"" + (prefix ? "*" : "")
+            let suffix = prefix ? "*" : ""
+            if term.contains(where: SearchText.isHan) {
+                // Keep name matching (and the filename substring fallback) compatible with schema 5.
+                return "(name : \"\(term)\"\(suffix) OR body : \"\(SearchText.indexed(term))\"\(suffix))"
+            }
+            return "\"\(term)\"" + suffix
         }
     }
 

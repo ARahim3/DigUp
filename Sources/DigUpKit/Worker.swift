@@ -9,9 +9,10 @@ public struct WorkerInfo: Codable, Sendable {
     public let dim: Int
     public let textOnly: Bool
     public let loadSeconds: Double?
+    public let textTokenLimit: Int?
 
     public init(model: String, revision: String, runtime: String, dtype: String, dim: Int, textOnly: Bool,
-                loadSeconds: Double?) {
+                loadSeconds: Double?, textTokenLimit: Int? = nil) {
         self.model = model
         self.revision = revision
         self.runtime = runtime
@@ -19,6 +20,7 @@ public struct WorkerInfo: Codable, Sendable {
         self.dim = dim
         self.textOnly = textOnly
         self.loadSeconds = loadSeconds
+        self.textTokenLimit = textTokenLimit
     }
 
     /// Vectors from different models, revisions, runtimes or precisions must never share an index.
@@ -33,8 +35,20 @@ public protocol Embedder: AnyObject {
     func embedTexts(_ texts: [String]) throws -> [[Float]]
     func embedImages(_ paths: [String], budget: Int) throws -> [Embedding]
     func embedAudio(_ paths: [String]) throws -> [Embedding]
+    var textTokenLimit: Int { get }
+    func textTokenCount(_ text: String) throws -> Int
     /// Frees the model. Safe to call twice.
     func close()
+}
+
+public extension Embedder {
+    var textTokenLimit: Int { info.textTokenLimit ?? 2048 }
+    /// Conservative byte bound for simple/test embedders. Production runtimes
+    /// override this with their tokenizer, including its special tokens.
+    func textTokenCount(_ text: String) throws -> Int { text.utf8.count + 2 }
+    func documentChunks(_ text: String, title: String?) throws -> [String] {
+        try TextBudget.chunks(text, title: title, limit: textTokenLimit, count: textTokenCount)
+    }
 }
 
 /// How to start a worker process that speaks the JSON-lines protocol (see `EmbeddingWorker`).
@@ -131,6 +145,7 @@ public final class EmbeddingWorker: Embedder {
         let vectors: String?
         let errors: [String?]?
         let info: WorkerInfo?
+        let counts: [Int]?
     }
 
     public init(_ config: WorkerConfig, textOnly: Bool) throws {
@@ -160,6 +175,23 @@ public final class EmbeddingWorker: Embedder {
     public func embedTexts(_ texts: [String]) throws -> [[Float]] {
         guard !texts.isEmpty else { return [] }
         return try send("text", texts, budget: nil).map { $0.vector ?? [] }
+    }
+
+    public func textTokenCount(_ text: String) throws -> Int {
+        let id = nextID
+        nextID += 1
+        let line = try JSONEncoder().encode(Request(id: id, op: "token_count", inputs: [text], budget: nil))
+        do {
+            try input.fileHandleForWriting.write(contentsOf: line + [0x0A])
+        } catch {
+            throw WorkerError.died("can't write to the worker\(logTail())")
+        }
+        let reply = try readReply()
+        guard reply.id == id, reply.ok == true, reply.counts?.count == 1,
+              let count = reply.counts?.first, count >= 0 else {
+            throw WorkerError.failed(reply.error ?? "worker does not report tokenizer counts")
+        }
+        return count
     }
 
     public func embedImages(_ paths: [String], budget: Int) throws -> [Embedding] {

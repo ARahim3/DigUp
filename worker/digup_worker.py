@@ -100,16 +100,25 @@ class Embedder:
             "dim": DIM,
             "text_only": text_only,
             "load_seconds": round(time.perf_counter() - started, 2),
+            "text_token_limit": 512 if text_only else 2048,
         }
 
     def _vectors(self, output):
         return np.array(output.text_embeds.astype(self.mx.float32))
 
+    def token_counts(self, inputs):
+        if not inputs:
+            return []
+        tokens = self.tokenizer(inputs, padding=False, truncation=False, add_special_tokens=True)
+        return [len(ids) for ids in tokens["input_ids"]]
+
     def text(self, inputs):
+        if any(count > self.info["text_token_limit"] for count in self.token_counts(inputs)):
+            raise ValueError("text exceeds the tokenizer budget; split it before embedding")
         rows = []
         for i in range(0, len(inputs), BATCH["text"]):
             batch = inputs[i : i + BATCH["text"]]
-            tokens = self.tokenizer(batch, padding=True, truncation=True, max_length=2048, return_tensors="np")
+            tokens = self.tokenizer(batch, padding=True, truncation=False, return_tensors="np")
             rows.append(self._vectors(self.model(**{k: self.mx.array(v) for k, v in tokens.items()})))
         return np.concatenate(rows), [None] * len(inputs)
 
@@ -178,6 +187,9 @@ def main():
                 reply({"id": request_id, "ok": True, "info": embedder.info})
                 continue
             inputs = request.get("inputs") or []
+            if op == "token_count":
+                reply({"id": request_id, "ok": True, "counts": embedder.token_counts(inputs)})
+                continue
             if op == "text":
                 vectors, errors = embedder.text(inputs)
             elif op in ("image", "audio"):
