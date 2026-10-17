@@ -352,6 +352,8 @@ fn finish_setup(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Result<(), Stri
         if let Err(error) = app.autolaunch().enable() {
             eprintln!("digup-shell: can't open at login: {error}");
         }
+        #[cfg(target_os = "linux")]
+        repair_login_entry(&app);
     }
     // The first setup adds the shortcut to GNOME's settings; a later one (Choose Folders…) leaves it as the person has
     // it there.
@@ -828,6 +830,8 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         if let Err(error) = app.autolaunch().enable() {
             eprintln!("digup-shell: can't renew opening at login: {error}");
         }
+        #[cfg(target_os = "linux")]
+        repair_login_entry(app);
     }
     Ok(())
 }
@@ -1497,7 +1501,48 @@ fn set_open_at_login(app: AppHandle, shell: State<'_, Arc<Shell>>, on: bool) -> 
         return Err("not in a dev run".into());
     }
     let autolaunch = app.autolaunch();
-    (if on { autolaunch.enable() } else { autolaunch.disable() }).map_err(|error| error.to_string())
+    (if on { autolaunch.enable() } else { autolaunch.disable() }).map_err(|error| error.to_string())?;
+    #[cfg(target_os = "linux")]
+    if on {
+        repair_login_entry(&app);
+    }
+    Ok(())
+}
+
+/// An AppImage unpacked with `--appimage-extract` and started through its AppRun has no $APPIMAGE, so the login entry
+/// the autostart plugin writes names the inner binary. Started that way at login, WebKit can't find its helper
+/// programs (their path is relative to the folder AppRun changes into) and DigUp dies before showing anything. The
+/// entry is made to run AppRun instead.
+#[cfg(target_os = "linux")]
+fn repair_login_entry<M: Manager<Wry>>(app: &M) {
+    if std::env::var_os("APPIMAGE").is_some() {
+        return;
+    }
+    let Some(appdir) = std::env::var_os("APPDIR") else { return };
+    let apprun = PathBuf::from(appdir).join("AppRun");
+    if !apprun.is_file() {
+        return;
+    }
+    let Ok(config) = app.path().config_dir() else { return };
+    let path = config.join("autostart").join(format!("{}.desktop", app.package_info().name));
+    let Ok(text) = std::fs::read_to_string(&path) else { return };
+    let fixed = with_exec(&text, &format!("\"{}\" --at-login", apprun.display()));
+    if fixed != text {
+        if let Err(error) = std::fs::write(&path, fixed) {
+            eprintln!("digup-shell: can't fix the login entry: {error}");
+        }
+    }
+}
+
+/// A desktop entry with its Exec line replaced.
+#[cfg(any(target_os = "linux", test))]
+fn with_exec(text: &str, exec: &str) -> String {
+    let mut lines: Vec<String> = text
+        .lines()
+        .map(|line| if line.starts_with("Exec=") { format!("Exec={exec}") } else { line.to_string() })
+        .collect();
+    lines.push(String::new());
+    lines.join("\n")
 }
 
 /// The model on the processor from now on (the running search service and indexing helper are ended; they start
@@ -1912,4 +1957,14 @@ fn reload(app: &AppHandle, now: bool) {
             println!("search: reload {reply:?}");
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn login_entry_exec_is_replaced() {
+        let entry = "[Desktop Entry]\nType=Application\nExec=/home/me/.local/opt/digup/usr/bin/digup-shell --at-login\nName=DigUp\n";
+        let fixed = super::with_exec(entry, "\"/home/me/.local/opt/digup/AppRun\" --at-login");
+        assert_eq!(fixed, "[Desktop Entry]\nType=Application\nExec=\"/home/me/.local/opt/digup/AppRun\" --at-login\nName=DigUp\n");
+    }
 }
