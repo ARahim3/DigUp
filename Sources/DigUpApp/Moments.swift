@@ -1,3 +1,4 @@
+import DigUpLocalization
 import AVFoundation
 import AVKit
 import AppKit
@@ -43,9 +44,9 @@ extension ResultRow {
     /// opens with your words in Preview's search, but Preview doesn't go to the page by itself. Code opens in the
     /// editor chosen for it: "Open in Zed".
     var openTitle: String {
-        if kind == .code, !CodeEditor.current.id.isEmpty { return "Open in \(CodeEditor.current.name)" }
-        if let moment, moment >= 1, Opener.jumpsToMoments(url) { return "Open at \(Self.clock(moment))" }
-        return "Open"
+        if kind == .code, !CodeEditor.current.id.isEmpty { return L10n.format("Open in %1$@", String(describing: CodeEditor.current.name)) }
+        if let moment, moment >= 1, Opener.jumpsToMoments(url) { return L10n.format("Open at %1$@", String(describing: Self.clock(moment))) }
+        return L10n.text("Open")
     }
 
     /// The line a code result opens at: where the name is defined or the query's words are, else where its stretch

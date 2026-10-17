@@ -1,3 +1,4 @@
+import DigUpLocalization
 import AppKit
 import Carbon.HIToolbox
 
@@ -105,13 +106,13 @@ nonisolated struct KeyCombo: Equatable, Sendable {
         }
         guard taken else { return nil }
         switch (Int(keyCode), Int(carbonModifiers)) {
-        case (kVK_Space, cmdKey): return "Spotlight uses \(display)"
-        case (kVK_Space, cmdKey | optionKey): return "Finder's search window uses \(display)"
-        case (kVK_Space, controlKey), (kVK_Space, controlKey | optionKey): return "Switching input sources uses \(display)"
-        case (kVK_Space, controlKey | cmdKey): return "The emoji picker uses \(display)"
+        case (kVK_Space, cmdKey): return L10n.format("Spotlight uses %1$@", String(describing: display))
+        case (kVK_Space, cmdKey | optionKey): return L10n.format("Finder's search window uses %1$@", String(describing: display))
+        case (kVK_Space, controlKey), (kVK_Space, controlKey | optionKey): return L10n.format("Switching input sources uses %1$@", String(describing: display))
+        case (kVK_Space, controlKey | cmdKey): return L10n.format("The emoji picker uses %1$@", String(describing: display))
         case (kVK_ANSI_3, cmdKey | shiftKey), (kVK_ANSI_4, cmdKey | shiftKey), (kVK_ANSI_5, cmdKey | shiftKey):
-            return "Screenshots use \(display)"
-        default: return "macOS uses \(display) for one of its shortcuts"
+            return L10n.format("Screenshots use %1$@", String(describing: display))
+        default: return L10n.format("macOS uses %1$@ for one of its shortcuts", String(describing: display))
         }
     }
 }

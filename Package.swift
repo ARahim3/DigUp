@@ -60,7 +60,7 @@ let appTargets: [Target] = [
     // "DigUp": on a case-insensitive disk it would collide with the `digup` CLI binary.)
     .executableTarget(
         name: "DigUpApp",
-        dependencies: ["DigUpKit", .product(name: "Sparkle", package: "Sparkle")],
+        dependencies: ["DigUpKit", "DigUpLocalization", .product(name: "Sparkle", package: "Sparkle")],
         swiftSettings: [.defaultIsolation(MainActor.self)],
         linkerSettings: [.unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])]
     ),
@@ -73,6 +73,7 @@ let appTargets: [Target] = []
 
 let package = Package(
     name: "DigUp",
+    defaultLocalization: "en",
     platforms: [.macOS(.v14)],
     products: [
         .executable(name: "digup", targets: ["digup"]),
@@ -82,6 +83,8 @@ let package = Package(
     targets: portableTargets + [
         // The engine: crawler, extractors, index store, the embedder interface and worker client, search. No UI.
         // Platform/ holds what differs by OS (Apple's frameworks on macOS, the C libraries above elsewhere).
+        .target(name: "DigUpLocalization", resources: [.process("Resources")]),
+        .testTarget(name: "DigUpLocalizationTests", dependencies: ["DigUpLocalization"]),
         .target(name: "DigUpKit", dependencies: engineDependencies, linkerSettings: engineLink),
         // llama.cpp (scripts/build-llama.sh builds it into Vendor/llama) and EmbeddingGemma 2 on it.
         .systemLibrary(name: "CLlama", path: llamaModule),
