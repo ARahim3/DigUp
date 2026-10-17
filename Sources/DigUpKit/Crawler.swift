@@ -215,7 +215,9 @@ enum GitFiles {
         guard let git = FileSystem.git else { return nil }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: git)
-        process.arguments = ["-C", repo, "ls-files", "-z", "--cached", "--others", "--exclude-standard"]
+        // A downloaded repo can configure core.fsmonitor to execute an arbitrary program, even for ls-files.
+        process.arguments = ["-c", "core.fsmonitor=false", "-C", repo,
+                             "ls-files", "-z", "--cached", "--others", "--exclude-standard"]
         // Reading only: never wait for, or take, the repo's lock (an editor's git may be busy in it).
         process.environment = ["GIT_OPTIONAL_LOCKS": "0", "PATH": "/usr/bin:/bin", "HOME": NSHomeDirectory()]
         let output = Pipe()
