@@ -95,6 +95,8 @@ struct Shell {
     /// The speed check is running (`measure_then_index`): indexing waits for it, so that the two don't share the
     /// processor.
     measuring: AtomicBool,
+    /// The model download was run once more after it ended without a final word (model_event).
+    model_rerun: AtomicBool,
     /// Folder estimates running (setup's list): the speed check waits for them, for the same reason.
     estimating: AtomicUsize,
     /// A folder was taken out: the next index helper drops its files from the index (`--prune`).
@@ -148,6 +150,15 @@ impl Shell {
     }
 
     /// A background helper (indexing, the download), below the person's own programs for the processor.
+    /// `download-model`: fetches what's missing of the model, verifies what's there, says done.
+    fn download_launch(&self) -> Launch {
+        let mut download = vec!["download-model".to_string()];
+        if let Some(models) = &self.options.models {
+            download.extend(["--to".to_string(), models.display().to_string()]);
+        }
+        self.launch(download, "model.log")
+    }
+
     /// What every helper gets: where the model is, and `DIGUP_DEVICE=cpu` when the person chose the processor.
     fn helper_env(&self) -> Vec<(String, String)> {
         let mut env: Vec<(String, String)> =
@@ -739,6 +750,7 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         debug_query_sent: AtomicBool::new(false),
         quitting: AtomicBool::new(false),
         measuring: AtomicBool::new(false),
+        model_rerun: AtomicBool::new(false),
         estimating: AtomicUsize::new(0),
         prune: AtomicBool::new(false),
         logs,
@@ -796,11 +808,7 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
             changed(&counted);
         }
     });
-    let mut download = vec!["download-model".to_string()];
-    if let Some(models) = &shell.options.models {
-        download.extend(["--to".to_string(), models.display().to_string()]);
-    }
-    if let Err(error) = shell.model.run(&shell.launch(download, "model.log")) {
+    if let Err(error) = shell.model.run(&shell.download_launch()) {
         model_event(&handle, json!({"event": "error", "message": error}));
     }
     if !shell.folders().is_empty() || !shell.code_folders().is_empty() {
@@ -1861,8 +1869,20 @@ fn model_event(app: &AppHandle, event: Value) {
         "waiting" => json!({"state": "waiting"}),
         // Where it got to stays shown while it waits to try again.
         "retry" => json!({"state": "downloading", "bytes": before["bytes"], "total": before["total"], "problem": event["message"]}),
-        "done" => json!({"state": "ready"}),
+        "done" => {
+            shell.model_rerun.store(false, Ordering::SeqCst);
+            json!({"state": "ready"})
+        }
         "error" => json!({"state": "failed", "message": event["message"]}),
+        // The helper ended without saying done or why. The files may all be there (it died after the last one on
+        // some Linux systems before 0.7.0-beta.2): run it once more, which verifies them and says done, or goes on.
+        "stopped" => {
+            if !shell.model_rerun.swap(true, Ordering::SeqCst) && shell.model.run(&shell.download_launch()).is_ok() {
+                json!({"state": "checking"})
+            } else {
+                json!({"state": "failed", "message": "the download stopped"})
+            }
+        }
         _ => return,
     };
     let ready = state["state"] == "ready";

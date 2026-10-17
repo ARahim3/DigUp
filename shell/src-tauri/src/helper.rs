@@ -332,7 +332,9 @@ impl ModelDownload {
             }
             drop(slot);
             if !ended {
-                on_event(json!({"event": "error", "message": "the download stopped"}));
+                // No final word: the helper died (after a finished file, on some Linux systems). What to make of it is
+                // the app's call: the files may all be there.
+                on_event(json!({"event": "stopped"}));
             }
         });
         *running = Some((child, number));
