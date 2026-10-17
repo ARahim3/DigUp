@@ -1,35 +1,81 @@
-# Interface localization
+# macOS interface localization
 
-DigUp follows the language selected for the app in macOS, with English as its development language and fallback.
-Traditional Chinese uses `zh-Hant`, including the system's `zh-TW` preference.
+DigUp follows the language selected for the app in macOS. English is its development
+language and fallback. Simplified Chinese uses `zh-Hans` (including `zh-CN` and
+`zh-SG`); Traditional Chinese uses `zh-Hant` (including `zh-TW` and `zh-HK`). This
+change localizes the native macOS UI only, not the Windows/Linux Tauri shell or CLI.
 
-The `DigUpLocalization` target contains `L10n` and these resources:
+## Framework origin and integration
+
+The localization framework, English/Traditional Chinese tables and native UI
+call-site changes are adapted from [PR #34 by max0071001](https://github.com/ARahim3/DigUp/pull/34),
+through commit `ef69d2658fbdd5885626ddc68e5e7b12f7523fa7`. Credit for that work belongs
+to its original author. The Simplified Chinese table follows those same keys and
+adapts the Traditional Chinese translations with mainland Chinese UI terminology.
+The `Show all` Traditional Chinese string also corrects a duplicated count. The
+previously untranslated `receipt` example is localized in all three languages.
+
+Main does not yet contain that framework. A main-based proposal includes its
+localization-only delta, ported onto `ec28973`; it overlaps with and depends on
+agreement about #34. If #34 merges first, only the language/test additions and the
+small count correction should be retained and rebased. No separate runtime or
+fork-specific app identity is introduced.
+
+## Resources and formatting
+
+`Sources/DigUpLocalization/Resources/{en,zh-Hans,zh-Hant}.lproj` each contain
+`Localizable.strings` (425 keys) and `InfoPlist.strings` (five permission descriptions).
+
+`L10n.text` looks up static interface text. `L10n.format` formats display values with
+positional `%1$@`, `%2$@`, etc. The English format is also the lookup key. Pass
+already formatted strings, for example a count's `.formatted()` value, and escape
+literal percent signs as `%%`. Chinese may omit an English singular/plural noun
+argument, but must preserve counts, paths, times and other display values. Numeric
+duration formats such as `%.1f h` keep their original specifiers.
+
+Search terms, tokenizer behavior, model prompts, file paths, stored settings keys,
+helper commands and diagnostics are unchanged. Translated sample queries are UI
+examples only. System errors and third-party UI retain their own localization.
+
+`build.sh` embeds `DigUp_DigUpLocalization.bundle` in `Contents/Resources` and copies
+each locale's `InfoPlist.strings` into the main app bundle for macOS permission
+prompts. App name, bundle ID, index location and update feed stay production defaults.
+
+## Checks
+
+Run dependency-free source and packaging-command fixture checks:
 
 ```
-Sources/DigUpLocalization/Resources/
-├── en.lproj/       Localizable.strings, InfoPlist.strings
-└── zh-Hant.lproj/  Localizable.strings, InfoPlist.strings
+python3 scripts/check-localizations.py
+python3 scripts/test-localizations.py
 ```
 
-`L10n.text` looks up static interface text. `L10n.format` formats display values with positional `%1$@`, `%2$@`, etc.
-The English format is also the lookup key. Pass already formatted strings (for example a count's `.formatted()` value),
-and escape a literal percent as `%%` in format strings. Translations may reorder or omit an argument; Chinese need not
-include an English singular/plural noun supplied by the calling code. Keep both English noun forms for existing English
-plural behavior. `String(format:)` duration formats such as `%.1f h` are translated before their existing formatting call.
+The fixture uses a mock SwiftPM bundle and runs the actual resource-copy block from
+`build.sh`; it is not a real macOS build. Source validation checks unique/nonempty
+keys, exact language-key parity, positional argument types/multiplicity, literal
+percent signs, permission parity and literal UI lookup coverage. Swift tests also
+exercise key fallback and dynamic display values. Region negotiation and runtime
+formatting with positional gaps (such as `%1$@` followed by `%3$@`) are asserted on
+macOS only: Linux swift-corelibs-foundation does not implement Darwin’s language
+negotiation and consumes the wrong argument for positional gaps. Static format
+validation still covers every resource on Linux; this is not a claim of macOS UI
+validation. Test resource lookup accepts SwiftPM’s lowercase locale directories on
+case-sensitive filesystems.
 
-To add a language, add its `.lproj` directory with both files and the same interface keys. Keep permission descriptions
-consistent with the English Info.plist. Run `swift test`, build with `./build.sh`, and inspect the packaged app's UI in
-both languages, including long explanatory text and strings with counts, percent signs, and file names.
+Before publishing a release, on macOS with the documented build dependencies:
 
-`build.sh` embeds the SwiftPM resource bundle in `Contents/Resources`. It also copies each language's `InfoPlist.strings`
-into the main app bundle so macOS can localize its permission prompts. This step matters: launching from the build
-folder alone does not prove that the distributed `.app` includes its translations.
+```
+swift test
+./build.sh
+python3 scripts/check-localizations.py --app build.noindex/DigUp.app
+codesign --verify --deep --strict build.noindex/DigUp.app
+```
 
-Search terms, tokenizer behavior, model prompts, file paths, stored settings keys, helper commands and diagnostics are
-not localized. Sample queries shown in the UI may be translated; they are examples, not changes to search processing.
-System error descriptions and third-party UI use the localization supplied by macOS or the dependency.
-
-
-## Origin
-
-Adapted from [PR #34 by max0071001](https://github.com/ARahim3/DigUp/pull/34), through commit `ef69d2658fbdd5885626ddc68e5e7b12f7523fa7`, onto current main `ec28973`. This is the original author’s localization framework and translations, not newly authored work. Historical screenshots and test counts are omitted because this rebased build has not been validated on macOS.
+Inspect the packaged app in English, `zh-CN`, `zh-Hans`, `zh-TW` and an unsupported
+language such as French. Cover onboarding; search and no results; menus; all
+settings tabs; code search; scheduled indexing; paused/progress states; manual
+model selection and download errors; and long names/counts/percent signs. Check
+Close/Back/Cancel and reopening flows, truncation and accessibility labels. Verify
+permission descriptions in packaged resources and, in an appropriate test account,
+live macOS permission prompts. Do not reuse historical #34 screenshots or test
+counts as evidence that this rebased Simplified Chinese build passed.

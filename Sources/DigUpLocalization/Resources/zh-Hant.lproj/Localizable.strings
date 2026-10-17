@@ -273,7 +273,7 @@
 "Shortcut %1$@, click to change" = "快捷鍵 %1$@，按一下更改";
 "Show %1$@ more" = "再顯示 %1$@ 個";
 "Show Preview" = "顯示預覽";
-"Show all %1$@ %2$@…" = "顯示全部 %1$@ 筆%1$@…";
+"Show all %1$@ %2$@…" = "顯示全部 %1$@ 筆結果…";
 "Show in Finder" = "在 Finder 中顯示";
 "Show it in Finder" = "在 Finder 中顯示";
 "Show the subfolders of %1$@" = "顯示 %1$@ 的子資料夾";
@@ -425,3 +425,5 @@
 "Use Files…" = "使用檔案…";
 "indexing from %1$@" = "將於 %1$@ 開始建立索引";
 "to" = "至";
+
+"receipt" = "收據";

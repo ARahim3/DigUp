@@ -4,7 +4,9 @@ import Testing
 
 struct LocalizationTests {
     private func localizedBundle(_ language: String) throws -> Bundle {
-        let path = try #require(L10n.bundle.path(forResource: language, ofType: "lproj"))
+        // SwiftPM normalizes locale directories to lowercase on case-sensitive platforms.
+        let path = try #require(L10n.bundle.path(forResource: language, ofType: "lproj")
+                                ?? L10n.bundle.path(forResource: language.lowercased(), ofType: "lproj"))
         return try #require(Bundle(path: path))
     }
 
@@ -24,9 +26,10 @@ struct LocalizationTests {
         #expect(L10n.text("missing.translation.key") == "missing.translation.key")
     }
 
-    @Test func translatedFormatsUseOnlyExistingArguments() throws {
+    @Test(arguments: ["zh-Hant", "zh-Hans"])
+    func translatedFormatsUseOnlyExistingArguments(language: String) throws {
         let english = try strings("en")
-        let chinese = try strings("zh-Hant")
+        let chinese = try strings(language)
         let pattern = try NSRegularExpression(pattern: #"%(\d+)\$@"#)
         func arguments(_ value: String) -> Set<String> {
             Set(pattern.matches(in: value, range: NSRange(value.startIndex..., in: value)).map {
@@ -37,6 +40,13 @@ struct LocalizationTests {
             let translatedArguments = arguments(value)
             let originalArguments = arguments(english[key]!)
             #expect(translatedArguments.isSubset(of: originalArguments))
+            #if !os(macOS)
+            // swift-corelibs-foundation does not preserve positional gaps (e.g.
+            // %1$@ + %3$@ consumes argument 2). The app is macOS-only; keep its
+            // actual formatting assertion on Darwin, not a different formatter.
+            if let highest = translatedArguments.compactMap(Int.init).max(),
+               translatedArguments != Set((1...highest).map(String.init)) { continue }
+            #endif
             if let count = originalArguments.compactMap(Int.init).max() {
                 let values: [CVarArg] = (1...count).map { "⟦\($0)⟧" }
                 let formatted = String(format: value, arguments: values)
@@ -64,8 +74,10 @@ struct LocalizationTests {
         }
         #expect(format("%1$@ code files waiting · indexing from %2$@", "12", "01:00")
                 == "12 個程式碼檔案等待中 · 將於 01:00 開始建立索引")
+        #if os(macOS)
         #expect(format("%1$@ %2$@ indexed · %3$@", "42", "files", "將於 01:00 開始建立索引")
                 == "已為 42 個檔案建立索引 · 將於 01:00 開始建立索引")
+        #endif
         #expect(format("The chosen %1$@ is %2$@, not %3$@", "model.gguf", "10 MB", "865 MB")
                 == "選取的 model.gguf 大小為 10 MB，應為 865 MB")
         #expect(bundle.localizedString(forKey: "Index only at set hours", value: nil, table: nil)
@@ -74,7 +86,7 @@ struct LocalizationTests {
     }
 
     @Test func permissionDescriptionsAreLocalized() throws {
-        for language in ["en", "zh-Hant"] {
+        for language in ["en", "zh-Hant", "zh-Hans"] {
             let bundle = try localizedBundle(language)
             let value = bundle.localizedString(forKey: "NSDocumentsFolderUsageDescription", value: nil, table: "InfoPlist")
             #expect(value.contains("DigUp"))

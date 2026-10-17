@@ -843,7 +843,7 @@ private struct SearchHome: View {
     @State private var kinds: [FileKind: Int] = [:]
 
     private static let examples: [(text: String, kind: ResultGroupKind)] = [
-        (L10n.text("a screenshot of an error message"), .screenshots), ("receipt", .documents), (L10n.text("whiteboard notes"), .images),
+        (L10n.text("a screenshot of an error message"), .screenshots), (L10n.text("receipt"), .documents), (L10n.text("whiteboard notes"), .images),
         (L10n.text("someone laughing"), .audio), (L10n.text("a dog on the beach"), .video), (L10n.text("slides about the budget"), .documents),
     ]
 
