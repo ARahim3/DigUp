@@ -23,29 +23,50 @@ public struct CrawlReport: Sendable {
 /// For the code index (`IndexOptions.code`) it walks the code folders instead: code files only (`Rules.classifyCode`),
 /// in a git repo only those git keeps (`GitFiles`), and none in vendored or built folders.
 public enum Crawler {
-    public static func crawl(_ roots: [URL], options: IndexOptions) -> CrawlReport {
+    /// `chosenRoots` preserves selection boundaries and folder-level rules when `roots` are partial walk scopes.
+    public static func crawl(_ roots: [URL], options: IndexOptions, chosenRoots: [URL]? = nil) -> CrawlReport {
         let fm = FileManager.default
-        let home = fm.homeDirectoryForCurrentUser.path
+        let home = FolderSelection.crawlPath(fm.homeDirectoryForCurrentUser.path)
         let keys = FileSystem.crawlKeys
         var report = CrawlReport()
         var projectRoots = Set<String>()
         var repos = GitRepos()
         var found: [Candidate] = []
         var foundPaths = Set<String>()   // a folder inside another root would be walked twice
-        let rootPaths = Set(roots.map { $0.standardizedFileURL.path })
+        let chosen = (chosenRoots ?? roots).map { FolderSelection.crawlPath($0.path) }
+        let rootPaths = Set(chosen)
+        let excluded = options.excludedFolders.map(FolderSelection.crawlPath)
 
-        for root in roots.map({ $0.standardizedFileURL }) {
-            if options.code {
-                repos.enterRoot(root.path)
-            } else if Rules.isProjectRoot(root.path) {
-                projectRoots.insert(root.path)
+        for input in roots {
+            let path = FolderSelection.crawlPath(input.path)
+            let root = URL(fileURLWithPath: path, isDirectory: true)
+            guard let context = chosen.filter({ path == $0 || FolderSelection.isInside(path, $0) })
+                .max(by: { $0.count < $1.count }) else { continue }
+            // A selection inside an excluded folder is still searched whole. Only its own descendant skips apply.
+            let skips = excluded.filter { FolderSelection.isInside($0, context) }
+            var folder = path
+            var blocked = false
+            // Check the scope and each ancestor strictly below the selected root. Full crawls never look above it.
+            while folder != context {
+                let url = URL(fileURLWithPath: folder, isDirectory: true)
+                let values = try? url.resourceValues(forKeys: Set(keys))
+                if url.lastPathComponent.hasPrefix(".") || FileSystem.isPackage(url, values)
+                    || Rules.skipReason(forFolder: url, home: home, excluded: skips) != nil
+                    || (options.code && Rules.codeSkipReason(forFolder: url) != nil) {
+                    blocked = true
+                    break
+                }
+                if !options.code && Rules.isProjectRoot(folder) { projectRoots.insert(folder) }
+                let parent = FolderSelection.parent(folder)
+                guard parent != folder else { blocked = true; break }
+                folder = parent
             }
-            // A skip applies inside the chosen folders that contain it: a folder chosen inside a skipped one is
-            // walked whole (`FolderSelection`). The walk reports real paths (/private/var, where the root says /var).
-            let real = FolderSelection.realPath(root.path)
-            let skips = options.excludedFolders.filter {
-                FolderSelection.isInside($0, root.path) || FolderSelection.isInside($0, real)
-            }.flatMap { [$0, FolderSelection.realPath($0)] }
+            if blocked { continue }
+            if options.code {
+                repos.enterRoot(path)
+            } else if Rules.isProjectRoot(context) {
+                projectRoots.insert(context)
+            }
             #if os(Windows)
             guard let walker = FileSystem.walk(root) else { continue }
             #else
