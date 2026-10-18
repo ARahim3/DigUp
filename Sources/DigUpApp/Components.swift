@@ -1,3 +1,4 @@
+import DigUpLocalization
 import AppKit
 import DigUpKit
 import SwiftUI
@@ -87,7 +88,7 @@ struct MomentBar: View {
             }
         }
         .frame(height: 4)
-        .accessibilityLabel("At \(ResultRow.clock(start)) of \(ResultRow.clock(duration))")
+        .accessibilityLabel(L10n.format("At %1$@ of %2$@", String(describing: ResultRow.clock(start)), String(describing: ResultRow.clock(duration))))
     }
 }
 
@@ -133,13 +134,13 @@ extension FileKind {
     func counted(_ count: Int) -> String {
         let one = count == 1
         let noun = switch self {
-        case .screenshot: one ? "screenshot" : "screenshots"
-        case .image: one ? "image" : "images"
-        case .pdf: one ? "PDF" : "PDFs"
-        case .doc: one ? "document" : "documents"
-        case .audio: one ? "audio file" : "audio files"
-        case .video: one ? "video" : "videos"
-        case .code: one ? "code file" : "code files"
+        case .screenshot: one ? L10n.text("screenshot") : L10n.text("screenshots")
+        case .image: one ? L10n.text("image") : L10n.text("images")
+        case .pdf: one ? "PDF" : L10n.text("PDFs")
+        case .doc: one ? L10n.text("document") : L10n.text("documents")
+        case .audio: one ? L10n.text("audio file") : L10n.text("audio files")
+        case .video: one ? L10n.text("video") : L10n.text("videos")
+        case .code: one ? L10n.text("code file") : L10n.text("code files")
         }
         return "\(count.formatted()) \(noun)"
     }
@@ -194,11 +195,11 @@ struct ShortcutRecorder: View {
             Button { setRecording(!recording) } label: {
                 Group {
                     if recording {
-                        Text("Press the new shortcut…").foregroundStyle(.secondary)
+                        Text(L10n.text("Press the new shortcut…")).foregroundStyle(.secondary)
                     } else if let combo {
                         Keycaps(caps: combo.caps, size: capSize)
                     } else {
-                        Text("Click to set a shortcut").foregroundStyle(.secondary)
+                        Text(L10n.text("Click to set a shortcut")).foregroundStyle(.secondary)
                     }
                 }
                 .font(.system(size: 13))
@@ -213,8 +214,8 @@ struct ShortcutRecorder: View {
             }
             .buttonStyle(.plain)
             .background(KeyCatcher(active: recording, onKey: handle, onResign: { setRecording(false) }))
-            .accessibilityLabel(recording ? "Recording a new shortcut" : "Shortcut \(combo?.display ?? "none"), click to change")
-            Text(problem ?? (recording ? "Esc cancels" : "Click to change"))
+            .accessibilityLabel(recording ? L10n.text("Recording a new shortcut") : L10n.format("Shortcut %1$@, click to change", String(describing: combo?.display ?? L10n.text("none"))))
+            Text(problem ?? (recording ? L10n.text("Esc cancels") : L10n.text("Click to change")))
                 .font(.system(size: 11))
                 .foregroundStyle(problem == nil ? AnyShapeStyle(.tertiary) : AnyShapeStyle(Color.red))
                 .multilineTextAlignment(.center)
@@ -234,7 +235,7 @@ struct ShortcutRecorder: View {
                                                                                                .numericPad])
         if event.keyCode == 53, flags.isEmpty { return setRecording(false) }   // Esc
         guard let combo = KeyCombo(keyCode: event.keyCode, flags: flags) else {
-            problem = "Use ⌘, ⌥ or ⌃ with a key"
+            problem = L10n.text("Use ⌘, ⌥ or ⌃ with a key")
             return
         }
         if let why = apply(combo) {
