@@ -1,15 +1,15 @@
 {
-  "version": "0.7.0-beta.1",
-  "notes": "The first beta of DigUp for Windows and Linux.",
-  "pub_date": "2026-10-14T17:23:50Z",
+  "version": "0.7.0-beta.2",
+  "notes": "Fixes for Windows (a 2–4 GB file stopped indexing) and Linux (the AppImage's panel, the model download, a helper that never exited, the login entry of an extracted AppImage), the preview's marked words, a processor-only setting, and three security fixes.",
+  "pub_date": "2026-10-18T05:27:22Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNjNXOS9wdUxYRld2cGo3enBuS3VLR0lobkhiallaWExjUVhxVUc0MW95SmYyVndSSmloYjZDL3RGNnQxM21ZY2RicVFoN25iUTQ3TlJOVGx1c3hCNyt4Umw3Qk5jSFFVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxOTk0MDUyCWZpbGU6RGlnVXBfMC43LjAtYmV0YS4xX3g2NC1zZXR1cC5leGUJdmVyc2lvbjowLjcuMC1iZXRhLjEKRGE3b3lFQzNIUW5ld3pKbm40MmRBTitlV2x5aFpyS0dPQXZVK0s2UHFTYWdZUzRtMVkwbjBqRzFwSzNobEpMMWdUM1B1WERQbGVLS2RhWjdPRmJ4Q0E9PQo=",
-      "url": "https://github.com/ARahim3/DigUp/releases/download/v0.7.0-beta.1/DigUp_0.7.0-beta.1_x64-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNjNXOS9wdUxYRlgzYkVmN3phQWc1UU5Fbkgzb3ZrYVZPQk00YTBtcmlDNC96ZnljZW01NkFIL3BGdnhuUjJDSWhFdW9rYkhueXhOWkQ1ZUN0TXhUU2h5amlqY0IxV1FNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyMjgyOTA5CWZpbGU6RGlnVXBfMC43LjAtYmV0YS4yX3g2NC1zZXR1cC5leGUJdmVyc2lvbjowLjcuMC1iZXRhLjIKS0JRR3BIMTdIdEIzZ2lONlF3TkhPclZCSUd6ZzVzTDN5MFJEQ1Y1SXRaVmYvSFdiYUtYNG1SclREaXR4MDFOSnowOEl2Qk9HWG9hU3ZBNjhsNFc3Q3c9PQo=",
+      "url": "https://github.com/ARahim3/DigUp/releases/download/v0.7.0-beta.2/DigUp_0.7.0-beta.2_x64-setup.exe"
     },
     "linux-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNjNXOS9wdUxYRmJYM1NqTjU1bDBPTnpMa1BvaXpKaUVNc0NGcWh3aDE2VDlIZTFHQTY3Rlh6cXNoMzBlV3FtMUYwelB2K1JwMXprVVFuYlBwOXlNUXJiRFFVT21vTlFNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxOTkzMjQ4CWZpbGU6RGlnVXBfMC43LjAtYmV0YS4xX2FtZDY0LkFwcEltYWdlCXZlcnNpb246MC43LjAtYmV0YS4xClVWOWRBQTdSMklpOGZsNjlSOVF6SS9lT0o2UzVkdnNxTjI0WWRsUWs2Q1BGNmhIMTJ4WTV3bUVkOEo2bGpHV0ZJNEttenFlSUZMcG1sSGVqNmEzNkFnPT0K",
-      "url": "https://github.com/ARahim3/DigUp/releases/download/v0.7.0-beta.1/DigUp_0.7.0-beta.1_amd64.AppImage"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNjNXOS9wdUxYRld5QWVwbXJkU3d3amYwVHpjSW5Cbm1Bdk9mSjVpZFVud3hQbnByV2FMa0ZpbVRES2xtcm5XM1dmTVhBV3RvaG42a0M3c3BzSTN5TDFSSjUvZmkxclF3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyMjgyMzc0CWZpbGU6RGlnVXBfMC43LjAtYmV0YS4yX2FtZDY0LkFwcEltYWdlCXZlcnNpb246MC43LjAtYmV0YS4yCm93cEFOQ2FLeHFURk9XWjh2WC9NVVk4NFRHeFRHWC81cTNNUUF0ZTNEU3ZqTHBHaEhCVkV6K0R3OXE5Vyt2ZmxlS2hZOG1uV2pUam5iWDR3dUxYd0JBPT0K",
+      "url": "https://github.com/ARahim3/DigUp/releases/download/v0.7.0-beta.2/DigUp_0.7.0-beta.2_amd64.AppImage"
     }
   }
 }
