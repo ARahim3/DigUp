@@ -7,6 +7,7 @@ enum ImageSizing {
     /// transformers' Gemma 4 image processor: scale to fill `budget` soft tokens (each 3 × 3 patches of 16 px) keeping
     /// the aspect ratio, each side rounded down to a multiple of 48 px.
     static func targetSize(height: Int, width: Int, budget: Int) -> (height: Int, width: Int)? {
+        guard height > 0, width > 0 else { return nil }   // a broken file's zero sides would divide by zero below
         let patch = 16, pooling = 3
         let maxPatches = budget * pooling * pooling
         let factor = (Double(maxPatches * patch * patch) / Double(height * width)).squareRoot()
