@@ -133,11 +133,10 @@ struct Arguments {
         return FileManager.default.fileExists(atPath: url.path, isDirectory: &isFolder) && isFolder.boolValue
     }
 
-    /// The folder can be listed. One that macOS won't let us read (Files and Folders privacy) looks empty to a crawl,
-    /// which must never be mistaken for "everything in it was deleted". (The first look may bring up macOS's prompt.)
-    static func isReadable(_ url: URL) -> Bool {
-        (try? FileManager.default.contentsOfDirectory(atPath: url.path)) != nil
-    }
+    /// The folder can be opened for listing. One that macOS won't let us read (Files and Folders privacy) looks empty
+    /// to a crawl, which must never be mistaken for "everything in it was deleted". (The first look may bring up
+    /// macOS's prompt.) Opening, not listing: a cloud folder's top level can take a while to list, at every sync.
+    static func isReadable(_ url: URL) -> Bool { Crawler.canList(url) }
 
     /// Dev knobs for A/B runs in evals/.
     var zGate: Double { values["--zgate"].flatMap(Double.init) ?? 2.0 }

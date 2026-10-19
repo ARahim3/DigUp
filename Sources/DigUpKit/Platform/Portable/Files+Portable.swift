@@ -124,6 +124,24 @@ enum FileSystem {
     static func walk(_ root: URL) -> DirectoryWalk? { DirectoryWalk(root) }
     #endif
 
+    /// The folder opens for listing. Cheaper than listing it: a cloud folder's top level can hold thousands of entries.
+    static func canList(_ path: String) -> Bool {
+        #if os(Windows)
+        let pattern = path.replacingOccurrences(of: "/", with: "\\") + "\\*"
+        var found = WIN32_FIND_DATAW()
+        let search = pattern.withCString(encodedAs: UTF16.self) {
+            FindFirstFileExW($0, FindExInfoBasic, &found, FindExSearchNameMatch, nil, 0)
+        }
+        guard let search, search != INVALID_HANDLE_VALUE else { return false }
+        FindClose(search)
+        return true
+        #else
+        guard let dir = opendir(path) else { return false }
+        closedir(dir)
+        return true
+        #endif
+    }
+
     /// git on PATH; none → everything in a folder counts, as on a Mac without it.
     static let git: String? = executable("git")
 

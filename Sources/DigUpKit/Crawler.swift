@@ -23,6 +23,10 @@ public struct CrawlReport: Sendable {
 /// For the code index (`IndexOptions.code`) it walks the code folders instead: code files only (`Rules.classifyCode`),
 /// in a git repo only those git keeps (`GitFiles`), and none in vendored or built folders.
 public enum Crawler {
+    /// The folder can be opened for listing, as a walk of it would (a folder macOS won't let us read, or one that's
+    /// gone, says no). Opening is enough: listing a cloud folder's top level could take a while.
+    public static func canList(_ url: URL) -> Bool { FileSystem.canList(url.path) }
+
     public static func crawl(_ roots: [URL], options: IndexOptions) -> CrawlReport {
         let fm = FileManager.default
         let home = fm.homeDirectoryForCurrentUser.path

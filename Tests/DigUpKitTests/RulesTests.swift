@@ -28,6 +28,14 @@ import Testing
         #expect(Rules.classify(file, values: nil, options: IndexOptions()) == .index(.doc))
     }
 
+    @Test func foldersOpenForListingAndFilesDoNot() throws {
+        #expect(Crawler.canList(folder))
+        let file = folder.appendingPathComponent("note.txt")
+        try "hi".write(to: file, atomically: false, encoding: .utf8)
+        #expect(!Crawler.canList(file))
+        #expect(!Crawler.canList(folder.appendingPathComponent("missing")))
+    }
+
     @Test func codeCanBeIncluded() {
         var options = IndexOptions()
         options.includeCode = true

@@ -67,6 +67,14 @@ enum FileSystem {
                         dataless: info.st_flags & 0x4000_0000 != 0)   // SF_DATALESS
     }
 
+    /// The folder opens for listing (macOS's Files and Folders privacy says no here, and may ask first). Cheaper than
+    /// listing it: a cloud folder's top level can hold thousands of entries the provider answers for one by one.
+    static func canList(_ path: String) -> Bool {
+        guard let dir = opendir(path) else { return false }
+        closedir(dir)
+        return true
+    }
+
     /// A git that's really installed (Xcode's, the command line tools', Homebrew's). /usr/bin/git on a Mac without the
     /// developer tools only asks to install them.
     static let git: String? = {
