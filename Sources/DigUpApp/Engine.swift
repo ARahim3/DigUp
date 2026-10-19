@@ -103,6 +103,9 @@ nonisolated final class Engine: @unchecked Sendable {
     private var helperOutput = Data()
     /// The folders changed while a helper ran: start a new one with them when it's gone.
     private var restartHelper = false
+    /// A start asked while a helper was still on its way out (Resume right after Pause, the hours beginning): the
+    /// next one starts once it's gone, whatever its exit status.
+    private var startWanted = false
     /// When the helper's watchdog ended it lately (`stoppedOnFile`).
     private var watchdogStops: [Date] = []
     /// The helper's exit status when its watchdog ended it on a file (`digup`'s Watchdog: EX_TEMPFAIL).
@@ -488,8 +491,11 @@ nonisolated final class Engine: @unchecked Sendable {
         guard helper == nil, !paused else {
             // Paused, or outside the set hours: the next start syncs. Launched outside them, it never started.
             if helper == nil { update { if case .starting = $0.activity { $0.activity = .idle } } }
+            // One still stopping (Resume right after Pause): a new one once it's gone, whatever its exit says.
+            else if !paused { startWanted = true }
             return
         }
+        startWanted = false
         guard !roots.isEmpty || !codeRoots.isEmpty || pruneWanted else {
             update { $0.activity = .idle }
             return
@@ -722,9 +728,10 @@ nonisolated final class Engine: @unchecked Sendable {
         refreshCodeSearcher(force: true)
         returnFreedMemory()
         removeCodeIndexIfAsked()
-        if restartHelper {
-            // The folders changed: a new helper with the new ones.
+        if restartHelper || startWanted {
+            // The folders changed (a new helper with the new ones), or a start was asked while this one was stopping.
             restartHelper = false
+            startWanted = false
             startHelper()
         } else if status == Self.stoppedOnFile {
             // Its watchdog ended it on a file whose reading ran away: the next one skips that file and goes on. Not
