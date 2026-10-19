@@ -21,7 +21,9 @@ public enum Rules {
     ]
     static let projectBundleExtensions: Set<String> = ["xcodeproj", "xcworkspace"]
 
-    static let docExtensions: Set<String> = ["txt", "text", "md", "markdown", "rtf", "docx", "doc", "odt", "html", "htm"]
+    static let docExtensions: Set<String> = [
+        "txt", "text", "md", "markdown", "typ", "rtf", "docx", "doc", "odt", "html", "htm",
+    ]
 
     /// Source code and data files: off by default (your editor and ripgrep search them better, and they flood an index).
     static let codeExtensions: Set<String> = [
@@ -47,7 +49,9 @@ public enum Rules {
         "metal", "glsl", "hlsl", "wgsl", "cu", "cuh", "ino", "v", "sv", "tex",
     ]
     /// What goes with code: a repo's docs and its settings.
-    static let codeTextExtensions: Set<String> = ["md", "markdown", "rst", "adoc", "org", "txt", "yaml", "yml", "toml"]
+    static let codeTextExtensions: Set<String> = [
+        "md", "markdown", "rst", "adoc", "org", "typ", "txt", "yaml", "yml", "toml",
+    ]
     /// Code known by its name alone.
     static let codeFileNames: Set<String> = [
         "Makefile", "makefile", "GNUmakefile", "Dockerfile", "Containerfile", "Justfile", "justfile", "Rakefile",

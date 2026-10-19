@@ -107,7 +107,7 @@ Only the folders you choose:
   too
 - PDFs, page by page, scans included. A long one gets its first 30 pages right away and the rest once everything
   else is in (up to 5,000 pages a file)
-- documents: txt, md, rtf, docx, odt, html, and on a Mac doc, long ones the same way. Text that's mostly numbers,
+- documents: txt, md, typ, rtf, docx, odt, html, and on a Mac doc, long ones the same way. Text that's mostly numbers,
   like a data export, is matched by its exact text only
 - audio of any length: the model listens to 30 seconds at a time, so DigUp takes overlapping 30-second windows and a
   match points to its moment

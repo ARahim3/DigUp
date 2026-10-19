@@ -330,7 +330,7 @@ private struct FolderSettings: View {
             } header: {
                 Text("Skip these file types")
             } footer: {
-                Text("DigUp only reads pictures, PDFs, documents (txt, md, rtf, docx, odt, html), audio and video here; "
+                Text("DigUp only reads pictures, PDFs, documents (txt, md, typ, rtf, docx, odt, html), audio and video here; "
                      + "code is read only in the code folders (the Code tab). Keys, certificates and password files are "
                      + "never read, nor are hidden folders like ~/.ssh.")
                     .font(.system(size: 11))

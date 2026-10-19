@@ -23,6 +23,11 @@ import Testing
         #expect(Rules.classify(file, values: nil, options: IndexOptions()) == .index(.video))
     }
 
+    @Test func typstIsADocument() {
+        let file = folder.appendingPathComponent("paper.typ")
+        #expect(Rules.classify(file, values: nil, options: IndexOptions()) == .index(.doc))
+    }
+
     @Test func codeCanBeIncluded() {
         var options = IndexOptions()
         options.includeCode = true
