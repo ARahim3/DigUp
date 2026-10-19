@@ -61,6 +61,8 @@ final class SearchPanelController {
     @ObservationIgnored private var shownAt = Date.distantPast
     /// Fading out: still on screen, but gone as far as everything else is concerned.
     @ObservationIgnored private var fading = false
+    /// The panel took the Dock icon away from an open window (see `show()`); it comes back once the panel is gone.
+    @ObservationIgnored private var withoutDockIcon = false
     @ObservationIgnored private var activity: NSObjectProtocol?
     /// True once ↑/↓ moved the selection since the last edit: then Space previews instead of typing a space.
     @ObservationIgnored private var navigated = false
@@ -102,6 +104,13 @@ final class SearchPanelController {
         let window = self.window ?? makeWindow()
         placeWindow(window)
         if AppController.offscreen { return }
+        // With a window open the app is regular (it has the Dock icon), and a regular app's windows don't join another
+        // app's fullscreen Space: the panel would stay on the desktop it was last shown on, and macOS would switch
+        // there. So unless you're in one of the app's windows already, the Dock icon steps away while the panel is up.
+        if NSApp.activationPolicy() == .regular, !NSApp.isActive {
+            NSApp.setActivationPolicy(.accessory)
+            withoutDockIcon = true
+        }
         // Activate for real: a background app's main thread drops to efficiency cores (App Nap), which can make
         // search 5× slower.
         bringAppToFront()
@@ -152,6 +161,15 @@ final class SearchPanelController {
                 self.fading = false
                 window.orderOut(nil)
                 window.canHide = true
+                if self.withoutDockIcon {
+                    self.withoutDockIcon = false
+                    // Back, unless the window it stepped away for closed meanwhile.
+                    if NSApp.windows.contains(where: {
+                        $0 !== window && $0.level == .normal && ($0.isVisible || $0.isMiniaturized)
+                    }) {
+                        NSApp.setActivationPolicy(.regular)
+                    }
+                }
             }
         }
     }
@@ -403,10 +421,14 @@ final class SearchPanelController {
 
     /// Esc: hide, and give the keyboard back to the app you came from (at once: the fade doesn't hold it).
     private func dismiss() {
-        // Hiding the app gives the keyboard back at once; the panel is left out of it so that it can still fade.
+        // Hiding the app gives the keyboard back at once; the panel is left out of it so that it can still fade. So are
+        // the app's windows: brought back by the panel's next activation, they'd take macOS to their Space.
         window?.canHide = false
+        let windows = NSApp.windows.filter { $0 !== window && $0.canHide && $0.isVisible }
+        windows.forEach { $0.canHide = false }
         hide()
         NSApp.hide(nil)
+        windows.forEach { $0.canHide = true }
     }
 
     private func flash(_ text: String) {
