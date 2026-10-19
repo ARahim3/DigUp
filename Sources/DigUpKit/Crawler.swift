@@ -35,15 +35,18 @@ public enum Crawler {
         var projectRoots = Set<String>()
         var repos = GitRepos()
         var found: [Candidate] = []
-        var foundPaths = Set<String>()   // a folder inside another root would be walked twice
+        var foundRoot: [String: String] = [:]   // path → the chosen folder it was found under (a folder inside
+                                                // another root would be walked twice)
+        func leftOut(_ reason: String, under root: String) {
+            report.skipped[reason, default: 0] += 1
+            report.leftOut[root, default: [:]][reason, default: 0] += 1
+        }
         let rootPaths = Set(roots.map { $0.standardizedFileURL.path })
 
         for root in roots.map({ $0.standardizedFileURL }) {
-            if options.code {
-                repos.enterRoot(root.path)
-            } else if Rules.isProjectRoot(root.path) {
-                projectRoots.insert(root.path)
-            }
+            // A folder chosen on purpose is read whole, whatever markers it holds (a home folder with its dotfiles in
+            // git, a repo of notes and pictures); the code-project rule applies to project folders found inside it.
+            if options.code { repos.enterRoot(root.path) }
             // A skip applies inside the chosen folders that contain it: a folder chosen inside a skipped one is
             // walked whole (`FolderSelection`). The walk reports real paths (/private/var, where the root says /var).
             let real = FolderSelection.realPath(root.path)
