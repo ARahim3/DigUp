@@ -47,6 +47,9 @@ final class IndexService: @unchecked Sendable {
     private var unavailable: [Bool: (missing: [String], unreadable: [String])] = [:]
     private let modelReady: () -> Bool
     private let newFilesLimit: Int
+    /// A pass's progress by index (code or not): files done and the total so far, across the runs a pass takes (a sync
+    /// between runs adds files and must not start the apps' bar over). Cleared when the index goes idle.
+    private var pass: [Bool: (done: Int, total: Int)] = [:]
     private let linger: Double
 
     private let lock = NSLock()
@@ -151,6 +154,7 @@ final class IndexService: @unchecked Sendable {
                 if lock.withLock({ syncRequested || codeSyncRequested }) { continue }
             }
             if code != nil, lock.withLock({ codeSyncRequested }) { continue }
+            pass = [:]   // the pass is over: the next one counts from zero
             emitCounts("idle")
             // Nothing warm to keep around: leave now. Else wait a little for more work.
             guard model.isRunning, waitForWork() else { break }
@@ -236,6 +240,11 @@ final class IndexService: @unchecked Sendable {
     private func run(_ part: Part, only ids: Set<Int64>?) -> Bool {
         let started = Date()
         let isNew = ids != nil
+        // Cumulative over the pass: what earlier runs did, plus everything pending now (what a sync just added too).
+        var soFar = pass[part.code] ?? (done: 0, total: 0)
+        soFar.total = max(soFar.total, soFar.done + ((try? part.store.pendingCount()) ?? 0))
+        var doneThisRun = 0
+        defer { pass[part.code] = (done: soFar.done + doneThisRun, total: soFar.total) }
         do {
             let states = try part.indexer.run(only: ids, shouldStop: { [self] in
                 lock.withLock {
@@ -243,8 +252,10 @@ final class IndexService: @unchecked Sendable {
                         || Date() >= yieldAt && (syncRequested || part.code && codeSyncRequested)
                 }
             }, onEvent: { event in
-                emit(["event": "file", "new": isNew, "done": event.done, "total": event.total, "path": event.path,
-                      "kind": event.kind.rawValue, "state": event.state, "seconds": event.seconds,
+                doneThisRun = event.done
+                soFar.total = max(soFar.total, soFar.done + event.total)
+                emit(["event": "file", "new": isNew, "done": soFar.done + event.done, "total": soFar.total,
+                      "path": event.path, "kind": event.kind.rawValue, "state": event.state, "seconds": event.seconds,
                       "note": event.note ?? "", "code": part.code])
             })
             if !states.isEmpty {
