@@ -649,6 +649,47 @@ private struct CodeSettings: View {
                     Spacer()
                 }
             }
+            if state.model.hasCode {
+                Section {
+                    ForEach(state.model.settings.codeExcluded, id: \.path) { folder in
+                        HStack {
+                            Image(nsImage: NSWorkspace.shared.icon(forFile: folder.path))
+                                .resizable()
+                                .frame(width: 18, height: 18)
+                            Text(tildePath(folder.path)).lineLimit(1).truncationMode(.middle)
+                            Spacer()
+                            Button {
+                                state.app.applyCodeFolders(state.model.settings.codeRoots,
+                                                           excluded: state.model.settings.codeExcluded.filter { $0 != folder })
+                            } label: {
+                                Image(systemName: "minus.circle.fill").foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Search this folder's code again")
+                        }
+                    }
+                    if state.model.settings.codeExcluded.isEmpty {
+                        Text("None. What git ignores, vendored and generated code are skipped anyway.")
+                            .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text("Skip these folders")
+                } footer: {
+                    HStack {
+                        Button {
+                            state.app.pickFolders(for: NSApp.keyWindow, prompt: "Skip") { folders in
+                                guard !folders.isEmpty else { return }
+                                let excluded = state.model.settings.codeExcluded
+                                state.app.applyCodeFolders(state.model.settings.codeRoots,
+                                                           excluded: excluded + folders.filter { !excluded.contains($0) })
+                            }
+                        } label: {
+                            Label("Skip a Folder…", systemImage: "plus")
+                        }
+                        Spacer()
+                    }
+                }
+            }
             Section {
                 Picker("Open code in", selection: Binding(get: { CodeEditor.current.id },
                                                           set: { state.app.setCodeEditor($0) })) {
