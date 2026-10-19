@@ -28,6 +28,8 @@ extension Rules {
         if options.excludedExtensions.contains(ext) { return .skip("excluded type") }
         // .ts / .mts are usually TypeScript. Only a real transport stream is video.
         if ext == "ts" || ext == "mts" || ext == "m2ts" {
+            // The look inside would download a cloud placeholder; the crawl leaves placeholders alone anyway.
+            if FileSystem.info(of: url.path)?.dataless == true { return .skip("in the cloud, not downloaded") }
             if isMPEGTransportStream(url) { return .index(.video) }
             return options.includeCode ? .index(.doc) : .skip("code or data file")
         }
