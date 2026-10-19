@@ -464,6 +464,7 @@ private struct IndexProgress: View {
 private struct FolderStatusRow: View {
     let summary: Engine.RootSummary
     let remove: () -> Void
+    @State private var showingReasons = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -502,7 +503,28 @@ private struct FolderStatusRow: View {
                      : "\(summary.indexed.formatted()) of \(summary.files.formatted()) indexed")
                     .font(.system(size: 12, weight: .medium).monospacedDigit())
                 if !states.isEmpty {
-                    Text(states).font(.system(size: 11)).foregroundStyle(.secondary)
+                    if reasons.isEmpty {
+                        Text(states).font(.system(size: 11)).foregroundStyle(.secondary)
+                    } else {
+                        Button { showingReasons.toggle() } label: {
+                            HStack(spacing: 3) {
+                                Text(states)
+                                Image(systemName: "info.circle")
+                            }
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Why some files aren't searchable")
+                        .popover(isPresented: $showingReasons, arrowEdge: .bottom) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                ForEach(reasons, id: \.self) { Text($0) }
+                            }
+                            .font(.system(size: 12))
+                            .padding(12)
+                            .frame(maxWidth: 360, alignment: .leading)
+                        }
+                    }
                 }
             }
             Button(action: remove) {
@@ -520,8 +542,30 @@ private struct FolderStatusRow: View {
          summary.unfinished > 0
             ? "\(summary.unfinished.formatted()) long \(summary.unfinished == 1 ? "file" : "files") to finish" : nil,
          summary.skipped > 0 ? "\(summary.skipped.formatted()) skipped" : nil,
-         summary.failed > 0 ? "\(summary.failed.formatted()) couldn't be read" : nil].compactMap { $0 }
+         summary.failed > 0 ? "\(summary.failed.formatted()) couldn't be read" : nil,
+         summary.leftOutCount > 0 ? "\(summary.leftOutCount.formatted()) not read" : nil].compactMap { $0 }
             .joined(separator: " · ")
+    }
+
+    /// One line per reason: what the crawl never queued from this folder, then what was skipped once read.
+    private var reasons: [String] {
+        let crawl: [String: String] = [
+            "other type": "of types DigUp doesn't read",
+            "app or bundle": "inside apps or bundles",
+            "Photos library": "in a Photos library (its photos aren't read yet)",
+            "link or special file": "links or special files",
+            "in the cloud, not downloaded": "only in the cloud, not downloaded",
+            "inside a code project": "inside code projects, where only screenshots count",
+            "dataset": "in folders that look like datasets",
+            "code or data file": "code or data files",
+            "excluded type": "of the file types you skip",
+        ]
+        let leftOut = summary.leftOut.sorted { $0.value > $1.value }.map { reason, count in
+            reason.hasPrefix("folders ") ? "\(count.formatted()) \(reason) weren't opened"
+                : "\(count.formatted()) \(crawl[reason] ?? reason)"
+        }
+        let skipped = summary.skippedReasons.sorted { $0.value > $1.value }.map { "\($1.formatted()) skipped: \($0)" }
+        return leftOut + skipped
     }
 }
 

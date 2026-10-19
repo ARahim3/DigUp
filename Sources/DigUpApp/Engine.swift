@@ -39,6 +39,9 @@ nonisolated struct EngineStatus: Sendable, Equatable {
     var missingRoots: [String] = []
     /// Chosen folders macOS doesn't let DigUp read (Privacy & Security → Files and Folders): skipped, files kept.
     var unreadableRoots: [String] = []
+    /// What the last sync left out under each chosen folder, by reason (files inside code projects, other types, cloud
+    /// placeholders…), for the Folders tab.
+    var leftOut: [String: [String: Int]] = [:]
     /// The code index, when code search is on.
     var code = Code()
 
@@ -586,6 +589,7 @@ nonisolated final class Engine: @unchecked Sendable {
                 syncWantedAt = nil
             }
             applyCounts(event)
+            if let leftOut = event["left_out"] as? [String: [String: Int]] { update { $0.leftOut = leftOut } }
             if int("new") > 0 { update { $0.activity = .indexing(done: 0, total: int("new")) } }
             log("sync: \(int("added")) new · \(int("changed")) changed · \(int("moved")) moved · "
                 + "\(int("removed")) removed · \(int("unchanged")) unchanged in \(int("ms")) ms")
@@ -874,6 +878,11 @@ nonisolated final class Engine: @unchecked Sendable {
         var files = 0, indexed = 0, pending = 0, failed = 0, skipped = 0
         var unfinished = 0   // long files searchable but still being read (counted in `indexed` too)
         var kinds: [FileKind: Int] = [:]
+        /// Why the skipped files were skipped once read ("no text", "silent or shorter than 2 s"), by reason.
+        var skippedReasons: [String: Int] = [:]
+        /// What the last sync never queued from this folder, by reason (the crawl's `leftOut`).
+        var leftOut: [String: Int] = [:]
+        var leftOutCount: Int { leftOut.values.reduce(0, +) }
         var id: String { path }
     }
 
@@ -881,11 +890,14 @@ nonisolated final class Engine: @unchecked Sendable {
     func rootSummaries(code: Bool = false) async -> [RootSummary] {
         await withCheckedContinuation { continuation in
             searchQueue.async { [self] in
-                let unreadable = Set(lock.withLock { code ? status.code.unreadableRoots : status.unreadableRoots })
+                let (unreadable, leftOut) = lock.withLock {
+                    (Set(code ? status.code.unreadableRoots : status.unreadableRoots), code ? [:] : status.leftOut)
+                }
                 let store = code ? codeStore : searchStore
                 let summaries = lock.withLock { code ? codeRoots : roots }.map { root -> RootSummary in
                     var summary = RootSummary(path: root.path, missing: !AppSettings.isFolder(root),
                                               unreadable: unreadable.contains(root.path))
+                    summary.leftOut = leftOut[root.path] ?? leftOut[FolderSelection.realPath(root.path)] ?? [:]
                     for file in (try? store?.files(under: [root.path])) ?? [] {
                         summary.files += 1
                         summary.kinds[file.kind, default: 0] += 1
@@ -896,7 +908,9 @@ nonisolated final class Engine: @unchecked Sendable {
                             summary.unfinished += 1
                         case "pending": summary.pending += 1
                         case "failed": summary.failed += 1
-                        default: summary.skipped += 1
+                        default:
+                            summary.skipped += 1
+                            summary.skippedReasons[file.detail ?? "not read", default: 0] += 1
                         }
                     }
                     return summary

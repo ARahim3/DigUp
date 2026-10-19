@@ -261,7 +261,7 @@ func estimate(_ args: Arguments) throws {
                        "long_files": $0.value.longFiles, "later_seconds": $0.value.laterSeconds,
                        "bytes": $0.value.bytes] as [String: Any]
                   },
-                  "skipped": crawl.skipped.values.reduce(0, +), "datasets": crawl.datasets.count,
+                  "skipped": crawl.skipped.values.reduce(0, +), "left_out": crawl.skipped, "datasets": crawl.datasets.count,
                   "ms": Int(Date().timeIntervalSince(started) * 1000)])
             continue
         }

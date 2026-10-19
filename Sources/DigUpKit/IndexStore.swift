@@ -10,6 +10,8 @@ public struct FileRecord: Sendable {
     public let inode: UInt64
     public let device: UInt64
     public let state: String
+    /// Why it was skipped or failed, or how far a long file has been read.
+    public let detail: String?
 }
 
 /// The on-disk index: one SQLite file with files, their segments (with fp16 vectors), and an FTS5 table.
@@ -222,12 +224,12 @@ public final class IndexStore {
 
     // MARK: Files
 
-    static let fileColumns = "id, path, kind, size, mtime, inode, device, state"
+    static let fileColumns = "id, path, kind, size, mtime, inode, device, state, detail"
 
     static func record(_ row: Statement) -> FileRecord {
         FileRecord(id: row.int(0), path: row.text(1) ?? "", kind: FileKind(rawValue: row.text(2) ?? "") ?? .doc,
                    size: row.int(3), mtime: row.double(4), inode: UInt64(bitPattern: row.int(5)),
-                   device: UInt64(bitPattern: row.int(6)), state: row.text(7) ?? "pending")
+                   device: UInt64(bitPattern: row.int(6)), state: row.text(7) ?? "pending", detail: row.text(8))
     }
 
     /// Every file under one of `roots`.

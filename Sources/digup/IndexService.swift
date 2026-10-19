@@ -224,6 +224,7 @@ final class IndexService: @unchecked Sendable {
                 "removed": summary.removed, "unchanged": summary.unchanged,
                 "ms": Int(Date().timeIntervalSince(started) * 1000),
                 "started": started.timeIntervalSince1970,   // the app checks its sync request came before this
+                "left_out": summary.crawl.leftOut,          // chosen folder → reason → files, for the Folders tab
             ])
         } catch {
             emit(["event": "error", "message": "sync failed: \(error)", "code": part.code])
