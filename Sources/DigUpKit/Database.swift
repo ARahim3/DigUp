@@ -58,15 +58,27 @@ public final class Database {
 
     public func run(_ sql: String, _ values: [SQLValue] = []) throws { try query(sql, values) }
 
+    /// Inside another transaction, a savepoint: its failure undoes only its own writes, and the outer one goes on.
+    private var transactionDepth = 0
+
     @discardableResult
     public func transaction<T>(_ body: () throws -> T) throws -> T {
-        try execute("BEGIN IMMEDIATE")
+        let depth = transactionDepth
+        transactionDepth += 1
+        defer { transactionDepth -= 1 }
+        let savepoint = "digup\(depth)"
+        try execute(depth == 0 ? "BEGIN IMMEDIATE" : "SAVEPOINT \(savepoint)")
         do {
             let result = try body()
-            try execute("COMMIT")
+            try execute(depth == 0 ? "COMMIT" : "RELEASE \(savepoint)")
             return result
         } catch {
-            try? execute("ROLLBACK")
+            if depth == 0 {
+                try? execute("ROLLBACK")
+            } else {
+                try? execute("ROLLBACK TO \(savepoint)")
+                try? execute("RELEASE \(savepoint)")
+            }
             throw error
         }
     }
