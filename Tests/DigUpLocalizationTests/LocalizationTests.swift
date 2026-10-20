@@ -3,6 +3,18 @@ import Testing
 @testable import DigUpLocalization
 
 struct LocalizationTests {
+    @Test func taiwanLanguageSelectsTraditionalChineseAndUnsupportedLanguagesFallBack() throws {
+        let available = ["en", "zh-Hant"]
+        for preference in ["zh-TW", "zh-Hant", "zh-Hant-TW"] {
+            let selected = try #require(Bundle.preferredLocalizations(from: available, forPreferences: [preference]).first)
+            #expect(selected == "zh-Hant", "preference: \(preference)")
+            #expect(try localizedBundle(selected).localizedString(forKey: "Settings…", value: nil, table: nil) == "設定…")
+        }
+        let fallback = try #require(Bundle.preferredLocalizations(from: available, forPreferences: ["fr"]).first)
+        #expect(fallback == "en")
+        #expect(try localizedBundle(fallback).localizedString(forKey: "Settings…", value: nil, table: nil) == "Settings…")
+    }
+
     private func localizedBundle(_ language: String) throws -> Bundle {
         let path = try #require(L10n.bundle.path(forResource: language, ofType: "lproj"))
         return try #require(Bundle(path: path))

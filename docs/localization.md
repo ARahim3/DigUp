@@ -50,3 +50,13 @@ Validation on macOS: 97 tests passed (86 DigUpKit, 6 LlamaRuntime including refe
 General/Folders/Code/Storage settings and search in English and `zh-TW`, plus `zh-Hant` scheduling and unsupported
 French fallback. Permission descriptions were verified as packaged resources; live macOS permission dialogs were
 not triggered. Helper/system error messages use their existing source language when they have no UI translation.
+
+## Independent regression coverage (2026-10-20)
+
+The localization tests also check that `zh-TW`, `zh-Hant`, and `zh-Hant-TW` select the Traditional Chinese resources,
+and that an unsupported French preference selects the English resources and wording. These are resource-selection
+tests, not a new packaged-app UI run.
+
+PR #112 already proposes the repeated Traditional Chinese result-count correction, receipt example localization,
+and localization checker scripts. Those changes remain in #112 rather than being copied into this PR update.
+Han filename and body search changes remain outside this localization PR.
