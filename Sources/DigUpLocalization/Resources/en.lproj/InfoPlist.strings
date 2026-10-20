@@ -1,0 +1,5 @@
+"NSAppleEventsUsageDescription" = "DigUp asks QuickTime Player to open a recording at the moment that matched your search.";
+"NSDesktopFolderUsageDescription" = "DigUp indexes the folders you choose so you can search them by describing what's inside. Everything stays on this Mac.";
+"NSDocumentsFolderUsageDescription" = "DigUp indexes the folders you choose so you can search them by describing what's inside. Everything stays on this Mac.";
+"NSDownloadsFolderUsageDescription" = "DigUp indexes the folders you choose so you can search them by describing what's inside. Everything stays on this Mac.";
+"NSRemovableVolumesUsageDescription" = "DigUp indexes the folders you choose so you can search them by describing what's inside. Everything stays on this Mac.";

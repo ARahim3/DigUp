@@ -1,3 +1,4 @@
+import DigUpLocalization
 import Foundation
 import IOKit.ps
 
@@ -53,12 +54,12 @@ final class PowerPolicy {
 
     nonisolated static func backfillBlocker(indexOnBattery: Bool) -> String? {
         let info = ProcessInfo.processInfo
-        if info.isLowPowerModeEnabled { return "Low Power Mode" }
+        if info.isLowPowerModeEnabled { return L10n.text("Low Power Mode") }
         switch info.thermalState {
-        case .serious, .critical: return "Mac is warm"
+        case .serious, .critical: return L10n.text("Mac is warm")
         default: break
         }
-        if !indexOnBattery, !onACPower() { return "on battery" }
+        if !indexOnBattery, !onACPower() { return L10n.text("on battery") }
         return nil
     }
 

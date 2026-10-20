@@ -1,3 +1,4 @@
+import DigUpLocalization
 import DigUpKit
 import Foundation
 
@@ -136,15 +137,15 @@ nonisolated final class LineBuffer: @unchecked Sendable {
 
 /// "≈ 8 s", "≈ 2 min", or "< 1 s" for a few short files.
 nonisolated func approximately(_ seconds: Double) -> String {
-    seconds < 0.5 ? "< 1 s" : "≈ \(roughDuration(seconds))"
+    seconds < 0.5 ? L10n.text("< 1 s") : "≈ \(roughDuration(seconds))"
 }
 
 /// "8 s", "2 min", "1.5 h": the precision an estimate deserves.
 nonisolated func roughDuration(_ seconds: Double) -> String {
     switch seconds {
-    case ..<90: "\(Int(seconds.rounded())) s"
-    case ..<5400: "\(Int((seconds / 60).rounded())) min"
-    default: String(format: "%.1f h", seconds / 3600)
+    case ..<90: L10n.format("%1$@ s", String(describing: Int(seconds.rounded())))
+    case ..<5400: L10n.format("%1$@ min", String(describing: Int((seconds / 60).rounded())))
+    default: String(format: L10n.text("%.1f h"), seconds / 3600)
     }
 }
 
