@@ -3,6 +3,28 @@ import Testing
 @testable import DigUpKit
 
 struct HanFilenameTests {
+    @Test func traditionalFilenameRankingAndDeduplicationHoldWhileTypingAndAfterSubmission() throws {
+        try withStore { store in
+            for name in ["學生情緒輔導紀錄.txt", "其他文件.txt", "輔導.txt"] {
+                let id = try add(name, to: store, kind: .doc)
+                // A standalone keyword is already supported by FTS on v0.6.1.
+                // Deliberately avoid depending on Han body tokenization from #111.
+                try store.addSegment(file: id, kind: .chunk, modality: .text, loc: 1, text: "輔導")
+            }
+            let searcher = try Searcher(store: store, loadVectors: false)
+            for typing in [false, true] {
+                let hits = try searcher.search("輔導", queryVector: nil, prefixLast: typing)
+                #expect(hits.map { URL(fileURLWithPath: $0.path).lastPathComponent }
+                        == ["輔導.txt", "學生情緒輔導紀錄.txt", "其他文件.txt"], "typing: \(typing)")
+                try #require(hits.count == 3)
+                #expect(hits[0].segment == .name)
+                #expect(hits[1].segment == .name)
+                #expect(hits[2].segment == .chunk)
+                #expect(Set(hits.map(\.path)).count == hits.count)
+            }
+        }
+    }
+
     func withStore(file: String = IndexStore.mainFile, _ body: (IndexStore) throws -> Void) throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("HanFilenameTests-\(UUID())")
         defer { try? FileManager.default.removeItem(at: folder) }

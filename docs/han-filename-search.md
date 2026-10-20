@@ -61,3 +61,11 @@ and returning up to 20 results. The extra basename verification costs time only 
 | 輔導 | 15.18 / 19.48 | 59.02 / 63.12 |
 | 情緒輔導 | 14.70 / 16.39 | 57.25 / 60.80 |
 | annual | 39.91 / 59.33 | 39.24 / 41.91 |
+
+## Independent regression coverage (2026-10-20)
+
+An additional test checks exact Traditional Chinese filenames before partial filenames before content-only matches,
+with no duplicate files, both while typing and after submission. It uses the public segment insertion API with a
+standalone body keyword that v0.6.1 already supports, and disables vectors. It does not require the Han body
+tokenization or index migration proposed in #111. Those changes and their body-search tests remain separate.
+Interface localization remains in #34.
