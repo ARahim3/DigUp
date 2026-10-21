@@ -179,6 +179,8 @@ import Testing
         #endif
     }
 
+    // The folder watcher's filter is the Mac app's (FolderWatcher); the shell's watcher has its own rules.
+    #if canImport(UniformTypeIdentifiers)
     @Test func changesCountOnlyForWhatCouldBeIndexed() throws {
         func matters(_ path: String, folder: Bool = false, skipping types: Set<String> = []) -> Bool {
             Rules.changeMayMatter(path, isFolder: folder, excludedExtensions: types)
@@ -200,6 +202,7 @@ import Testing
         #expect(!matters(library.path + "/database", folder: true))
         #expect(!matters("/Users/me/Desktop/trip.pdf", skipping: ["pdf"]))
     }
+    #endif
 
     @Test func changesCountOnlyWhereTheCrawlGoes() {
         let home = "/Users/me"
