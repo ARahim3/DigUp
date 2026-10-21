@@ -47,6 +47,10 @@ public enum Crawler {
         let rootPaths = Set(roots.map { $0.standardizedFileURL.path })
 
         for root in roots.map({ $0.standardizedFileURL }) {
+            if Rules.isCacheDirectory(root) {
+                report.skippedFolders["cache folder", default: 0] += 1
+                continue
+            }
             // A folder chosen on purpose is read whole, whatever markers it holds (a home folder with its dotfiles in
             // git, a repo of notes and pictures); the code-project rule applies to project folders found inside it.
             if options.code { repos.enterRoot(root.path) }

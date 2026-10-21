@@ -135,6 +135,7 @@ public enum Rules {
     /// live under ~/Library, and the log line about a change is a change again.
     public static func isWalked(_ path: String, root: String, home: String, excluded: [String]) -> Bool {
         guard path == root || FolderSelection.isInside(path, root) else { return false }
+        if isCacheDirectory(URL(fileURLWithPath: root)) { return false }
         var folder = root
         for part in path.dropFirst(root.count).split(separator: "/") {
             folder += "/" + part
@@ -150,9 +151,20 @@ public enum Rules {
         let name = url.lastPathComponent
         if skippedFolderNames.contains(name) { return "developer folder" }
         if name.hasSuffix(".noindex") { return ".noindex folder" }
+        if isCacheDirectory(url) { return "cache folder" }
         if url.path == home + "/Library" { return "~/Library" }
         if excluded.contains(where: { url.path == $0 || url.path.hasPrefix($0 + "/") }) { return "excluded folder" }
         return nil
+    }
+
+    /// The Cache Directory Tagging specification requires this exact 43-byte header, not just the filename.
+    static func isCacheDirectory(_ url: URL) -> Bool {
+        let tag = url.appendingPathComponent("CACHEDIR.TAG")
+        guard let info = FileSystem.info(of: tag.path), info.isRegular, !info.dataless,
+              let handle = try? FileHandle(forReadingFrom: tag) else { return false }
+        defer { try? handle.close() }
+        let signature = Data("Signature: 8a477f597d28d172789f06886806bc55".utf8)
+        return (try? handle.read(upToCount: signature.count)) == signature
     }
 
     static func isProjectRoot(_ folder: String) -> Bool {
