@@ -735,7 +735,7 @@ private struct CodeSettings: View {
                 }
             }
             Section {
-                Picker("Open code in", selection: Binding(get: { CodeEditor.current.id },
+                Picker("Open code in", selection: Binding(get: { CodeEditor.chosen(state.model.settings.codeEditor).id },
                                                           set: { state.app.setCodeEditor($0) })) {
                     ForEach(CodeEditor.installed) { editor in Text(editor.name).tag(editor.id) }
                     Text(CodeEditor.defaultApp.name).tag(CodeEditor.defaultApp.id)
