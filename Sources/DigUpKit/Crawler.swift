@@ -110,7 +110,7 @@ public enum Crawler {
                         return
                     }
                     // Reading a dataless placeholder (iCloud "Optimize Mac Storage", File Providers) downloads it.
-                    if info.dataless || FileSystem.isInCloud(values) {
+                    if info.dataless {
                         leftOut("in the cloud, not downloaded", under: root.path)
                         return
                     }

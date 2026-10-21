@@ -64,9 +64,6 @@ enum FileSystem {
         url.hasDirectoryPath && packageExtensions.contains(url.pathExtension.lowercased())
     }
 
-    /// No iCloud here. (OneDrive's Files On-Demand placeholders are a file attribute: `info`, on Windows.)
-    static func isInCloud(_ values: URLResourceValues?) -> Bool { false }
-
     #if os(Windows)
     /// The file's own facts, without following a link. OneDrive's Files On-Demand placeholders are `dataless` (their
     /// attributes say the contents would be downloaded on read, or on open), and they're never opened here.
