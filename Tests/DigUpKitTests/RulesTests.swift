@@ -23,6 +23,12 @@ import Testing
         #expect(Rules.classify(file, values: nil, options: IndexOptions()) == .index(.video))
     }
 
+    @Test func aPictureInAScreenshotsFolderIsAScreenshot() {
+        #expect(Rules.isScreenshot(folder.appendingPathComponent("Screenshots/2026-02-10_10-10.png")))
+        #expect(Rules.isScreenshot(folder.appendingPathComponent("screenshots/Screenshot_20260210_101010.png")))
+        #expect(!Rules.isScreenshot(folder.appendingPathComponent("Pictures/2026-02-10_10-10.png")))
+    }
+
     @Test func typstIsADocument() {
         let file = folder.appendingPathComponent("paper.typ")
         #expect(Rules.classify(file, values: nil, options: IndexOptions()) == .index(.doc))

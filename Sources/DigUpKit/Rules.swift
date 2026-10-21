@@ -123,7 +123,10 @@ public enum Rules {
     public static func isScreenshot(_ url: URL) -> Bool {
         if hasScreenshotMarker(url) { return true }
         let name = url.lastPathComponent
-        return screenshotPrefixes.contains { name.hasPrefix($0) }
+        if screenshotPrefixes.contains(where: { name.hasPrefix($0) }) { return true }
+        // GNOME, KDE's Spectacle and Windows save into a "Screenshots" folder, and so do most tools whose names say
+        // nothing ("2026-02-10_10-10.png"); a picture there is a screenshot whatever it's called.
+        return url.deletingLastPathComponent().lastPathComponent.caseInsensitiveCompare("Screenshots") == .orderedSame
     }
 
     /// Whether a change the folder watcher reports at `path` is where the crawl of `root` goes: not inside a folder it
