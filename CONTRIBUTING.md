@@ -30,6 +30,14 @@ app is `shell/` (Tauri: Rust, with plain HTML and JavaScript for its windows), w
 program. `scripts/` builds llama.cpp, ffmpeg and the packages, and `.github/workflows/packages.yml` shows every step of
 the Windows and Linux builds. "Build from source" in the README gets you started.
 
+## Updating portable engine dependencies
+
+`scripts/fetch-vendor.sh` verifies SQLite, miniz, PDFium (each supported platform), and stb downloads against the
+reviewed SHA-256 pins in `scripts/vendor-checksums.json` before extraction or installation. When changing a version,
+review its upstream release and update the corresponding hashes in the same commit. Never obtain an expected hash
+from the same untrusted download at build time. Changing the pins invalidates the vendor cache, including caches
+created before verification was added.
+
 ## What to expect
 
 DigUp is maintained alongside a day job and other projects, and most of the time it gets goes into the plan for where
