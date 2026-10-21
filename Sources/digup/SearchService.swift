@@ -156,7 +156,7 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             } else {
                 hits = try searcher.search(text, queryVector: vector, kinds: kinds, limit: limit, prefixLast: prefixLast)
                     .filter {
-                        (roots.isEmpty || FolderSelection.isSearched($0.path, folders: roots, skipped: skipped))
+                        FolderSelection.isSearched($0.path, folders: roots, skipped: skipped)
                             && !types.contains(($0.path as NSString).pathExtension.lowercased())
                             && FileManager.default.fileExists(atPath: $0.path)
                     }
