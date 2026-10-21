@@ -55,7 +55,9 @@ def main():
     notes = ""
     if args.notes:
         with open(args.notes) as f:
-            notes = f"\n      <description><![CDATA[{f.read().strip()}]]></description>"
+            # "]]>" inside the notes would end the CDATA section early; split it the standard way.
+            html = f.read().strip().replace("]]>", "]]]]><![CDATA[>")
+            notes = f"\n      <description><![CDATA[{html}]]></description>"
     item = f"""    <item>
       <title>{version}</title>
       <pubDate>{email.utils.formatdate(usegmt=True)}</pubDate>
