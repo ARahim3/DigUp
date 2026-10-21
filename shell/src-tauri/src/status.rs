@@ -8,6 +8,8 @@ pub enum Activity {
     /// The index helper hasn't reported yet.
     #[default]
     Starting,
+    /// The helper is walking the chosen folders (the `scanning` events, every 250 ms); a sync ends it.
+    Scanning,
     Idle,
     /// A pass over new or changed files: `done` of `total`.
     Indexing { done: u64, total: u64 },
@@ -54,10 +56,14 @@ impl Status {
             self.unfinished = count("unfinished");
         }
         match event["event"].as_str().unwrap_or_default() {
+            "scanning" if !matches!(self.activity, Activity::Failed(_)) => self.activity = Activity::Scanning,
             "sync" if count("new") > 0 => self.activity = Activity::Indexing { done: 0, total: count("new") },
-            "sync" if event["left_out"].is_object() => self.left_out = event["left_out"].clone(),
-            // A sync after a failure: the helper works again.
-            "sync" if matches!(self.activity, Activity::Failed(_)) => self.activity = Activity::Idle,
+            "sync" if event["left_out"].is_object() => {
+                self.left_out = event["left_out"].clone();
+                if matches!(self.activity, Activity::Scanning) { self.activity = Activity::Idle; }
+            }
+            // A sync after a failure, or after a scan: the helper works again, or has found nothing new.
+            "sync" if matches!(self.activity, Activity::Failed(_) | Activity::Scanning) => self.activity = Activity::Idle,
             "file" => {
                 self.activity = Activity::Indexing { done: count("done"), total: count("total") };
                 // The counts come with a sync; each file read since leaves "waiting".
@@ -80,7 +86,7 @@ impl Status {
             "error" if event["fatal"] == true => self.activity = Activity::Failed("Indexing stopped".into()),
             // The helper is gone: whatever it was doing is over.
             "exit" | "ended" => {
-                if matches!(self.activity, Activity::Starting | Activity::Indexing { .. } | Activity::Finishing { .. }) {
+                if matches!(self.activity, Activity::Starting | Activity::Scanning | Activity::Indexing { .. } | Activity::Finishing { .. }) {
                     self.activity = Activity::Idle;
                 }
             }
@@ -106,6 +112,7 @@ impl Status {
         match self.activity {
             // Held or paused, no index helper runs to say it has started: what's indexed stands.
             Activity::Starting if !self.paused && self.held_until.is_none() => "Starting…".into(),
+            Activity::Scanning => "Checking folders…".into(),
             Activity::Indexing { done, total } => format!("Indexing {}% · {} of {}", percent(done, total), number(done), number(total)),
             Activity::Finishing { done, total, files } => {
                 let which = if files > 0 { format!("{} long {}", number(files), plural(files, "file", "files")) } else { "long files".into() };
@@ -205,6 +212,7 @@ impl Status {
             "busy": self.busy(model),
             "activity": match self.activity {
                 Activity::Starting => "starting",
+                Activity::Scanning => "syncing",
                 Activity::Idle => "idle",
                 Activity::Indexing { .. } => "indexing",
                 Activity::Finishing { .. } => "finishing",
