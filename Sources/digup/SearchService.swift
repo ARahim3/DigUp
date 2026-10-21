@@ -238,6 +238,7 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
         var fields: [String: Any] = ["path": root, "missing": missing, "unreadable": !missing && !Arguments.isReadable(folder)]
         var states = ["indexed": 0, "pending": 0, "failed": 0, "skipped": 0, "unfinished": 0]
         var kinds: [String: Int] = [:]
+        var skippedReasons: [String: Int] = [:]   // why files were skipped once read ("no text", "silent or shorter than 2 s")
         let files = (try? store?.files(under: [root])) ?? []
         for file in files {
             kinds[file.kind.rawValue, default: 0] += 1
@@ -248,12 +249,15 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
                 states["unfinished", default: 0] += 1
             case "pending": states["pending", default: 0] += 1
             case "failed": states["failed", default: 0] += 1
-            default: states["skipped", default: 0] += 1
+            default:
+                states["skipped", default: 0] += 1
+                skippedReasons[file.detail ?? "not read", default: 0] += 1
             }
         }
         fields.merge(states) { $1 }
         fields["files"] = files.count
         fields["kinds"] = kinds
+        fields["skipped_reasons"] = skippedReasons
         return fields
     }
 
