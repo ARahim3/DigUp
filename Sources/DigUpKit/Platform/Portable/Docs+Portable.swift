@@ -35,43 +35,60 @@ extension DocExtractor {
     }
 }
 
-/// One entry of a zip file, through miniz (reading through `FileReader`, so any file name opens).
+/// One entry of a zip file, as text.
 enum Zip {
-    /// The most an entry may declare. The indexer keeps at most 5,000 chunks of a document (about 9 M characters), so
-    /// 64 MB of XML is already far more than it can use.
-    static let maxEntryBytes: UInt64 = 64 << 20
+    /// The most an entry may declare (`ZipArchive.maxEntrySize`). The indexer keeps at most 5,000 chunks of a document
+    /// (about 9 M characters), so 64 MB of XML is already far more than it can use.
+    static let maxEntryBytes = UInt64(ZipArchive.maxEntrySize)
 
     static func entry(_ name: String, in url: URL) throws -> String {
-        let reader = try FileReader(url)
-        var zip = mz_zip_archive()
-        zip.m_pIO_opaque = reader.opaque
-        zip.m_pRead = { opaque, offset, buffer, count in
+        String(decoding: try ZipArchive(url).required(name), as: UTF8.self)
+    }
+}
+
+/// A zip file's entries, through miniz (reading through `FileReader`, so any file name opens). Platform/Apple has the
+/// same name.
+final class ZipArchive {
+    private let reader: FileReader
+    private let zip = UnsafeMutablePointer<mz_zip_archive>.allocate(capacity: 1)
+    private var open = false
+
+    init(_ url: URL) throws {
+        reader = try FileReader(url)
+        zip.initialize(to: mz_zip_archive())
+        zip.pointee.m_pIO_opaque = reader.opaque
+        zip.pointee.m_pRead = { opaque, offset, buffer, count in
             guard let buffer else { return 0 }
             return FileReader.from(opaque).read(at: offset, into: buffer, count: count)
         }
-        return try withExtendedLifetime(reader) {   // miniz reads through it until the end
-            guard mz_zip_reader_init(&zip, reader.size, 0) != 0 else {
-                throw ExtractError.unreadable("not a zip file")
-            }
-            defer { mz_zip_reader_end(&zip) }
-            // The entry's declared size first, before anything is allocated for it: a zip of a few KB can declare
-            // gigabytes, and extracting allocates the declared size whole.
-            let index = mz_zip_reader_locate_file(&zip, name, nil, 0)
-            guard index >= 0 else { throw ExtractError.unreadable("no \(name) inside") }
-            var stat = mz_zip_archive_file_stat()
-            guard mz_zip_reader_file_stat(&zip, UInt32(index), &stat) != 0 else {
-                throw ExtractError.unreadable("can't read \(name)")
-            }
-            guard stat.m_uncomp_size <= maxEntryBytes else {
-                throw ExtractError.unreadable("\(name) is \(stat.m_uncomp_size >> 20) MB, more than is read")
-            }
-            var size = 0
-            guard let bytes = mz_zip_reader_extract_to_heap(&zip, UInt32(index), &size, 0) else {
-                throw ExtractError.unreadable("can't read \(name)")
-            }
-            defer { mz_free(bytes) }
-            return String(decoding: UnsafeRawBufferPointer(start: bytes, count: size), as: UTF8.self)
+        guard mz_zip_reader_init(zip, reader.size, 0) != 0 else { throw ExtractError.unreadable("not a zip file") }
+        open = true
+    }
+
+    deinit {
+        if open { mz_zip_reader_end(zip) }   // miniz reads through `reader` until here
+        zip.deinitialize(count: 1)
+        zip.deallocate()
+    }
+
+    /// The entry's bytes, or nil when the zip has no such entry. Its declared size is checked first, before anything is
+    /// allocated for it: a zip of a few KB can declare gigabytes, and extracting allocates the declared size whole.
+    func data(_ name: String) throws -> [UInt8]? {
+        let index = mz_zip_reader_locate_file(zip, name, nil, 0)
+        guard index >= 0 else { return nil }
+        var stat = mz_zip_archive_file_stat()
+        guard mz_zip_reader_file_stat(zip, mz_uint(index), &stat) != 0 else {
+            throw ExtractError.unreadable("can't read \(name)")
         }
+        guard stat.m_uncomp_size <= UInt64(Self.maxEntrySize) else {
+            throw ExtractError.unreadable("\(name) is \(stat.m_uncomp_size >> 20) MB, more than is read")
+        }
+        var size = 0
+        guard let bytes = mz_zip_reader_extract_to_heap(zip, mz_uint(index), &size, 0) else {
+            throw ExtractError.unreadable("can't read \(name)")
+        }
+        defer { mz_free(bytes) }
+        return Array(UnsafeRawBufferPointer(start: bytes, count: size).bindMemory(to: UInt8.self))
     }
 }
 

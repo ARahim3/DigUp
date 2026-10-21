@@ -1,6 +1,6 @@
 #!/bin/bash
 # Linux and Windows: the C libraries the engine needs where Apple's frameworks aren't there, at pinned versions, laid out
-# in Vendor/ (out of git) as Package.swift expects: SQLite with FTS5 (storage), stb (images), miniz (docx/odt), PDFium
+# in Vendor/ (out of git) as Package.swift expects: SQLite with FTS5 (storage), stb (images), miniz (docx/odt, xlsx/pptx/ods/odp), PDFium
 # (PDF text and page renders; prebuilt by bblanchon/pdfium-binaries). macOS needs none of this. Does nothing when the
 # pinned set is already there. Needs curl, tar and python3 (to unzip); on Windows, Git for Windows' bash.
 set -euo pipefail

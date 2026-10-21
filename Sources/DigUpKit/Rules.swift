@@ -22,7 +22,7 @@ public enum Rules {
     static let projectBundleExtensions: Set<String> = ["xcodeproj", "xcworkspace"]
 
     static let docExtensions: Set<String> = [
-        "txt", "text", "md", "markdown", "typ", "rtf", "docx", "doc", "odt", "html", "htm",
+        "txt", "text", "md", "markdown", "typ", "rtf", "docx", "doc", "odt", "html", "htm", "xlsx", "pptx", "ods", "odp",
     ]
 
     /// FairPlay-protected music (Apple Music downloads, iTunes Store songs bought before 2009): only the Music app can
