@@ -30,7 +30,8 @@ import Foundation
 ///                                               "searchable":n,"pending":n,"unfinished":n,…}
 ///   {"op":"quit"}                             → {"ok":true}, then exit
 /// The encoder exits after `--encoder-idle` seconds without a query and the vectors are released (as in the app);
-/// keyword search keeps working and the next query brings both back.
+/// keyword search keeps working and the next query brings both back. After twice that time the process itself exits
+/// (its memory back to the system; a shell starts it again on the next request).
 final class SearchService: @unchecked Sendable {   // its state is guarded by `lock`
     private let directory: URL
     private var store: IndexStore
@@ -321,13 +322,21 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
         if encoderState != "unavailable" { encoderState = "stopped" }
     }
 
-    /// After `idleSeconds` without a query the model and the vectors go (their memory back to the system).
+    /// After `idleSeconds` without a query the model and the vectors go (their memory back to the system); after twice
+    /// that, the process goes too: what a Swift process keeps after freeing its big buffers is still tens of MB, and a
+    /// shell restarts it on the next request (the first search then pays the start).
     private func idleWatch() {
         while true {
             Thread.sleep(forTimeInterval: 1)
             lock.withLock {
-                guard encoder != nil || searcher.vectorsLoaded, Date().timeIntervalSince(lastQuery) > idleSeconds
-                else { return }
+                let idle = Date().timeIntervalSince(lastQuery)
+                if idle > 2 * idleSeconds {
+                    write(["event": "exit", "reason": "idle"])
+                    // Not exit(): on Linux it waits for stdin's lock, which the main thread holds in readLine, for ever.
+                    // Events go straight to the file descriptor, so there's nothing to flush.
+                    _exit(0)
+                }
+                guard encoder != nil || searcher.vectorsLoaded, idle > idleSeconds else { return }
                 stopEncoder()
                 searcher.releaseVectors()
                 codeSearcher?.releaseVectors()
