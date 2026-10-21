@@ -36,6 +36,30 @@ extension Rules {
         classify(url, type: values?.contentType, options: options)
     }
 
+    /// Whether a change the folder watcher reports at `path` can change what's indexed: a folder (created, moved or
+    /// removed with what's in it), or a file of a type the crawl indexes that isn't inside a bundle (which the crawl
+    /// skips whole). A database rewritten every few seconds asked for a full sync each time, which found nothing new
+    /// and took minutes on a big folder: MongoDB's diagnostic.data on the Desktop kept the helper busy all day.
+    public static func changeMayMatter(_ path: String, isFolder: Bool, excludedExtensions: Set<String>) -> Bool {
+        let url = URL(fileURLWithPath: path)
+        // Only folders with an extension can be bundles, so most changes ask the file system nothing.
+        var folder = isFolder ? url : url.deletingLastPathComponent()
+        while folder.path != "/" {
+            if !folder.pathExtension.isEmpty,
+               (try? folder.resourceValues(forKeys: [.isPackageKey]))?.isPackage == true {
+                return false
+            }
+            folder.deleteLastPathComponent()
+        }
+        if isFolder { return true }
+        var options = IndexOptions()
+        options.excludedExtensions = excludedExtensions
+        if case .index = classify(url, type: UTType(filenameExtension: url.pathExtension), options: options) {
+            return true
+        }
+        return false
+    }
+
     /// macOS's screenshot marker, an extended attribute that survives moves and copies.
     static func hasScreenshotMarker(_ url: URL) -> Bool {
         getxattr(url.path, "com.apple.metadata:kMDItemIsScreenCapture", nil, 0, 0, 0) > 0
