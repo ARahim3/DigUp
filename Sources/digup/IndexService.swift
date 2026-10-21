@@ -12,7 +12,7 @@ import WinSDK
 ///
 /// Protocol: one command per line on stdin, one JSON event per line on stdout.
 ///   stdin:  sync | sync code | stop | backfill on | backfill off      (EOF = stop)
-///   stdout: {"event": "missing" | "pruned" | "sync" | "file" | "rest" | "summary" | "waiting" | "idle" | "error" |
+///   stdout: {"event": "missing" | "pruned" | "scanning" | "sync" | "file" | "rest" | "summary" | "waiting" | "idle" | "error" |
 ///            "exit", ...}; events about the code index say "code": true
 ///
 /// The loop: sync, index what the sync just queued (if it's a few files: new files go first, on any power source),
@@ -219,7 +219,13 @@ final class IndexService: @unchecked Sendable {
             lock.withLock { yieldAt = Date() + max(took, 2) }
         }
         do {
-            let summary = try part.indexer.sync(availableRoots(part))
+            let roots = availableRoots(part)
+            emit(["event": "scanning", "checked": 0, "code": part.code])
+            let summary = try part.indexer.sync(roots) { progress in
+                var event: [String: Any] = ["event": "scanning", "checked": progress.checked, "code": part.code]
+                if let root = progress.root { event["root"] = root }
+                emit(event)
+            }
             if summary.queued.count <= newFilesLimit { newFiles.formUnion(summary.queued) }
             emitCounts("sync", [
                 "code": part.code,

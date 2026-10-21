@@ -592,6 +592,11 @@ nonisolated final class Engine: @unchecked Sendable {
         func int(_ key: String) -> Int { event[key] as? Int ?? 0 }
         if event["code"] as? Bool == true { return handleCode(event) }
         switch event["event"] as? String {
+        case "scanning":
+            update {
+                if case .failed = $0.activity { return }
+                $0.activity = .syncing
+            }
         case "sync":
             if let started = event["started"] as? Double, let wanted = syncWantedAt,
                started >= wanted.timeIntervalSince1970 {
@@ -599,6 +604,7 @@ nonisolated final class Engine: @unchecked Sendable {
             }
             applyCounts(event)
             if let leftOut = event["left_out"] as? [String: [String: Int]] { update { $0.leftOut = leftOut } }
+            update { if case .syncing = $0.activity { $0.activity = .idle } }
             if int("new") > 0 { update { $0.activity = .indexing(done: 0, total: int("new")) } }
             log("sync: \(int("added")) new · \(int("changed")) changed · \(int("moved")) moved · "
                 + "\(int("removed")) removed · \(int("unchanged")) unchanged in \(int("ms")) ms")
@@ -649,7 +655,10 @@ nonisolated final class Engine: @unchecked Sendable {
             log("indexer: the model or settings changed, indexing everything again (was: \(event["from"] as? String ?? "?"))")
         case "error":
             log("indexer: \(event["message"] as? String ?? "error")")
-            if event["fatal"] as? Bool == true { update { $0.activity = .failed("Indexing stopped") } }
+            update {
+                if event["fatal"] as? Bool == true { $0.activity = .failed("Indexing stopped") }
+                else if case .syncing = $0.activity { $0.activity = .idle }
+            }
         default:
             break
         }
@@ -725,6 +734,7 @@ nonisolated final class Engine: @unchecked Sendable {
             if case .indexing = $0.activity { $0.activity = .idle }
             if case .finishing = $0.activity { $0.activity = .idle }
             if case .starting = $0.activity { $0.activity = .idle }
+            if case .syncing = $0.activity { $0.activity = .idle }
             $0.code.indexing = nil
         }
         refreshSearcher(force: true)

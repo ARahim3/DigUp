@@ -20,6 +20,18 @@ public struct CrawlReport: Sendable {
     public var leftOut: [String: [String: Int]] = [:]
 }
 
+/// Entries checked during a folder walk, including files that may later be skipped.
+/// The count is cumulative across roots and is not an indexing total.
+public struct CrawlProgress: Sendable, Equatable {
+    public let checked: Int
+    public let root: String?
+
+    public init(checked: Int, root: String?) {
+        self.checked = checked
+        self.root = root
+    }
+}
+
 /// Walks the chosen folders and applies `Rules`. Reads metadata only, never file contents (except the 600-byte
 /// sniff that tells a real MPEG-TS video from a TypeScript file).
 ///
@@ -30,7 +42,8 @@ public enum Crawler {
     /// gone, says no). Opening is enough: listing a cloud folder's top level could take a while.
     public static func canList(_ url: URL) -> Bool { FileSystem.canList(url.path) }
 
-    public static func crawl(_ roots: [URL], options: IndexOptions) -> CrawlReport {
+    public static func crawl(_ roots: [URL], options: IndexOptions,
+                             progress: ((CrawlProgress) -> Void)? = nil) -> CrawlReport {
         let fm = FileManager.default
         let home = fm.homeDirectoryForCurrentUser.path
         let keys = FileSystem.crawlKeys
@@ -45,8 +58,13 @@ public enum Crawler {
             report.leftOut[root, default: [:]][reason, default: 0] += 1
         }
         let rootPaths = Set(roots.map { $0.standardizedFileURL.path })
+        var checked = 0
+        let clock = ContinuousClock()
+        var lastUpdate = clock.now
 
         for root in roots.map({ $0.standardizedFileURL }) {
+            progress?(CrawlProgress(checked: checked, root: root.path))
+            lastUpdate = clock.now
             if Rules.isCacheDirectory(root) {
                 report.skippedFolders["cache folder", default: 0] += 1
                 continue
@@ -137,6 +155,14 @@ public enum Crawler {
             // URL resource values are autoreleased; draining per file keeps a big walk from piling them up (the app
             // crawls on a background queue whose pool only drains when the whole sync is done).
             while let url = autoreleasepool(invoking: { walker.nextObject() as? URL }) {
+                if let progress {
+                    checked += 1
+                    let now = clock.now
+                    if now - lastUpdate >= .milliseconds(250) {
+                        progress(CrawlProgress(checked: checked, root: root.path))
+                        lastUpdate = now
+                    }
+                }
                 autoreleasepool {
                     visit(url)
                 }
@@ -177,6 +203,7 @@ public enum Crawler {
             }
         }
         report.candidates = kept
+        progress?(CrawlProgress(checked: checked, root: nil))
         return report
     }
 }

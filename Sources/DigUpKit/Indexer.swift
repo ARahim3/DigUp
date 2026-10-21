@@ -87,8 +87,8 @@ public final class Indexer {
 
     /// Crawls `roots` and reconciles the index: new files are queued, changed ones re-queued, moved ones re-pathed
     /// (no re-embedding), and files that are gone or newly excluded are removed.
-    public func sync(_ roots: [URL]) throws -> SyncSummary {
-        let crawl = Crawler.crawl(roots, options: options)
+    public func sync(_ roots: [URL], progress: ((CrawlProgress) -> Void)? = nil) throws -> SyncSummary {
+        let crawl = Crawler.crawl(roots, options: options, progress: progress)
         let existing = try store.files(under: roots.map { $0.standardizedFileURL.path })
         var byPath: [String: FileRecord] = [:]
         var byInode: [String: FileRecord] = [:]
