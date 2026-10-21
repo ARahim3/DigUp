@@ -25,6 +25,10 @@ public enum Rules {
         "txt", "text", "md", "markdown", "typ", "rtf", "docx", "doc", "odt", "html", "htm",
     ]
 
+    /// FairPlay-protected music (Apple Music downloads, iTunes Store songs bought before 2009): only the Music app can
+    /// play it. Reading it fails ("Cannot Decode", "may be damaged"), so it's skipped rather than counted as failed.
+    static let protectedExtensions: Set<String> = ["m4p"]
+
     /// Source code and data files: off by default (your editor and ripgrep search them better, and they flood an index).
     static let codeExtensions: Set<String> = [
         "py", "ipynb", "c", "h", "cc", "cpp", "cxx", "hpp", "hh", "m", "mm", "swift", "tsx", "cts", "js", "jsx", "mjs",

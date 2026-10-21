@@ -26,6 +26,7 @@ extension Rules {
     static func classify(_ url: URL, values: URLResourceValues?, options: IndexOptions) -> Classification {
         let ext = url.pathExtension.lowercased()
         if options.excludedExtensions.contains(ext) { return .skip("excluded type") }
+        if protectedExtensions.contains(ext) { return .skip("copy-protected") }
         // .ts / .mts are usually TypeScript. Only a real transport stream is video.
         if ext == "ts" || ext == "mts" || ext == "m2ts" {
             // The look inside would download a cloud placeholder; the crawl leaves placeholders alone anyway.

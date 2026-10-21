@@ -158,6 +158,17 @@ import Testing
         #expect(report.candidates.map { ($0.path as NSString).lastPathComponent } == ["trip.txt"])
     }
 
+    /// Apple Music downloads and old iTunes Store songs are FairPlay-protected: they'd only ever fail to read.
+    @Test func copyProtectedMusicIsSkipped() throws {
+        for name in ["Bought in 2007.m4p", "Ripped from a CD.m4a"] {
+            try Data(count: 1024).write(to: folder.appendingPathComponent(name))
+        }
+        let report = Crawler.crawl([folder], options: IndexOptions())
+        #expect(report.candidates.map { ($0.path as NSString).lastPathComponent } == ["Ripped from a CD.m4a"])
+        #expect(report.candidates.first?.kind == .audio)
+        #expect(report.skipped["copy-protected"] == 1)
+    }
+
     @Test func changesCountOnlyWhereTheCrawlGoes() {
         let home = "/Users/me"
         func walked(_ path: String, root: String = home, skipping excluded: [String] = []) -> Bool {
