@@ -2,8 +2,9 @@
 # Checks an installed DigUp for Linux the way someone first meets it, without a desktop: the shell and its helper find
 # every library they need, and a hidden first launch under a virtual screen (Xvfb) with a session bus goes through setup
 # by itself (the model from MODELS, downloaded there when it isn't), indexes a picture, a screenshot, a recording and a
-# note with the model, and finds the note from the search panel. The packages workflow runs it on each distribution
-# after installing the .deb, and on the AppImage.
+# note with the model, and finds the note from the search panel; launched again, the panel shows the recording, whose
+# preview starts WebKit's media player. The packages workflow runs it on each distribution on the AppImage, then on the
+# .deb once installed.
 #   MODELS=<folder> scripts/check-linux-package.sh [/usr/bin/digup-shell | <DigUp.AppImage>]
 # Needs xvfb-run (xvfb, xauth) and dbus-run-session (dbus).
 set -euo pipefail
@@ -46,21 +47,28 @@ Cream the butter and sugar, beat in three eggs, then fold in the flour, the zest
 Bake for forty minutes at 180 degrees and pour the lemon syrup over it while it is still warm.
 TEXT
 
+# Launches the app hidden with these arguments until the panel reports what it showed ($report), for at most $2 s.
+launch() {
+  local name=$1 seconds=$2 started status=0
+  shift 2
+  started=$(date +%s)
+  timeout "$seconds" xvfb-run -a -s "-screen 0 1280x800x24" dbus-run-session -- "$app" --index "$work/index" \
+    --models "$models" --settings "$work/settings.json" "$@" --debug-quit > "$work/$name.out" 2> "$work/$name.err" ||
+    status=$?
+  echo "exit $status after $(( $(date +%s) - started )) s"
+  report=$(grep '^{' "$work/$name.out" | tail -1 || true)
+  if [[ $status != 0 || -z $report ]]; then
+    echo "--- stdout"; tail -20 "$work/$name.out"
+    echo "--- stderr"; tail -40 "$work/$name.err"
+    echo "no report from the panel"
+    exit 1
+  fi
+  echo "panel: $report"
+}
+
 echo "first launch: $app"
-started=$(date +%s)
-status=0
-timeout 1800 xvfb-run -a -s "-screen 0 1280x800x24" dbus-run-session -- "$app" --index "$work/index" --models "$models" \
-  --settings "$work/settings.json" --offer "$work/files" --hotkey "Ctrl+Alt+Shift+D" --debug-setup \
-  --debug-query "how long to bake the cake" --debug-quit > "$work/out.txt" 2> "$work/err.txt" || status=$?
-echo "exit $status after $(( $(date +%s) - started )) s"
-report=$(grep '^{' "$work/out.txt" | tail -1 || true)
-if [[ $status != 0 || -z $report ]]; then
-  echo "--- stdout"; tail -20 "$work/out.txt"
-  echo "--- stderr"; tail -40 "$work/err.txt"
-  echo "no report from the panel"
-  exit 1
-fi
-echo "panel: $report"
+launch first 1800 --offer "$work/files" --hotkey "Ctrl+Alt+Shift+D" --debug-setup \
+  --debug-query "how long to bake the cake"
 if [[ $report != *'"recipe.txt"'* ]]; then
   echo "the panel didn't find recipe.txt"
   exit 1
@@ -69,5 +77,19 @@ if [[ -n $helper ]]; then
   "$helper" status --index "$work/index" | tee "$work/status.txt"
   # Every file has its vector: the pictures (with the logo), the recording and the note.
   grep -Eq '^vectors: 5 in 5 segments' "$work/status.txt" || { echo "not every file has a vector"; exit 1; }
+fi
+
+# The recording's preview starts WebKit's media player, on GStreamer (the AppImage's own, the system's for the .deb):
+# without the plugins it asks for, WebKit's page dies and the panel stops answering. (The preview itself doesn't load:
+# WebKit's player turns down the files' asset:// addresses.)
+echo "second launch: the recording's preview"
+launch second 300 --debug-query "speech"
+if [[ $report != *'"selected":"speech.wav"'* || $report != *'"tag":"audio"'* ]]; then
+  echo "the panel didn't show the recording"
+  exit 1
+fi
+if grep -h "GStreamer element .* not found\|Failed to load plugin" "$work/second.out" "$work/second.err"; then
+  echo "GStreamer is missing a plugin or a library"
+  exit 1
 fi
 echo "ok"

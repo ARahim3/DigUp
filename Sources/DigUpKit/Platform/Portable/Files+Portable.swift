@@ -26,8 +26,11 @@ extension Rules {
     static func classify(_ url: URL, values: URLResourceValues?, options: IndexOptions) -> Classification {
         let ext = url.pathExtension.lowercased()
         if options.excludedExtensions.contains(ext) { return .skip("excluded type") }
+        if protectedExtensions.contains(ext) { return .skip("copy-protected") }
         // .ts / .mts are usually TypeScript. Only a real transport stream is video.
         if ext == "ts" || ext == "mts" || ext == "m2ts" {
+            // The look inside would download a cloud placeholder; the crawl leaves placeholders alone anyway.
+            if FileSystem.info(of: url.path)?.dataless == true { return .skip("in the cloud, not downloaded") }
             if isMPEGTransportStream(url) { return .index(.video) }
             return options.includeCode ? .index(.doc) : .skip("code or data file")
         }
@@ -60,9 +63,6 @@ enum FileSystem {
     static func isPackage(_ url: URL, _ values: URLResourceValues?) -> Bool {
         url.hasDirectoryPath && packageExtensions.contains(url.pathExtension.lowercased())
     }
-
-    /// No iCloud here. (OneDrive's Files On-Demand placeholders are a file attribute: `info`, on Windows.)
-    static func isInCloud(_ values: URLResourceValues?) -> Bool { false }
 
     #if os(Windows)
     /// The file's own facts, without following a link. OneDrive's Files On-Demand placeholders are `dataless` (their
@@ -119,8 +119,26 @@ enum FileSystem {
     /// The crawl's walk of a folder. Foundation's enumerator on Windows skips the wrong folder's contents after
     /// `skipDescendants()` (2026-10-11, Swift 6.4: skipping one folder emptied a sibling that came before it), so the walk
     /// is `DirectoryWalk` here.
-    static func walk(_ root: URL, keys: [URLResourceKey]) -> DirectoryWalk? { DirectoryWalk(root, keys: keys) }
+    static func walk(_ root: URL) -> DirectoryWalk? { DirectoryWalk(root) }
     #endif
+
+    /// The folder opens for listing. Cheaper than listing it: a cloud folder's top level can hold thousands of entries.
+    static func canList(_ path: String) -> Bool {
+        #if os(Windows)
+        let pattern = path.replacingOccurrences(of: "/", with: "\\") + "\\*"
+        var found = WIN32_FIND_DATAW()
+        let search = pattern.withCString(encodedAs: UTF16.self) {
+            FindFirstFileExW($0, FindExInfoBasic, &found, FindExSearchNameMatch, nil, 0)
+        }
+        guard let search, search != INVALID_HANDLE_VALUE else { return false }
+        FindClose(search)
+        return true
+        #else
+        guard let dir = opendir(path) else { return false }
+        closedir(dir)
+        return true
+        #endif
+    }
 
     /// git on PATH; none → everything in a folder counts, as on a Mac without it.
     static let git: String? = executable("git")
@@ -157,12 +175,10 @@ enum FileSystem {
 /// exactly the folder just returned. Hidden files (the attribute, or a name starting with a dot, as on a Mac) are left
 /// out, and folders that can't be read are passed over.
 final class DirectoryWalk {
-    private let keys: [URLResourceKey]
     private var pending: [URL]   // what's next, last first
     private var opened: URL?     // the folder just returned: its contents come next, unless skipped
 
-    init(_ root: URL, keys: [URLResourceKey]) {
-        self.keys = keys
+    init(_ root: URL) {
         pending = []
         pending = contents(of: root).reversed()
     }
@@ -173,16 +189,39 @@ final class DirectoryWalk {
             opened = nil
         }
         guard let next = pending.popLast() else { return nil }
-        if (try? next.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true { opened = next }
+        if next.hasDirectoryPath { opened = next }
         return next
     }
 
     func skipDescendants() { opened = nil }
 
     private func contents(of folder: URL) -> [URL] {
-        let found = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: keys,
-                                                                  options: [.skipsHiddenFiles])) ?? []
-        return found.filter { !$0.lastPathComponent.hasPrefix(".") }
+        // Even asking Foundation only for directory/hidden flags reads the file size internally and can
+        // trap when its low DWORD does not fit Int32 (swift-foundation#2096). Keep the whole walk native.
+        let pattern = folder.path.replacingOccurrences(of: "/", with: "\\") + "\\*"
+        var found = WIN32_FIND_DATAW()
+        let search = pattern.withCString(encodedAs: UTF16.self) {
+            FindFirstFileExW($0, FindExInfoBasic, &found, FindExSearchNameMatch, nil, 0)
+        }
+        guard let search, search != INVALID_HANDLE_VALUE else { return [] }
+        defer { FindClose(search) }
+        var entries: [URL] = []
+        repeat {
+            let name = withUnsafePointer(to: &found.cFileName) {
+                $0.withMemoryRebound(to: WCHAR.self, capacity: Int(MAX_PATH)) {
+                    String(decodingCString: $0, as: UTF16.self)
+                }
+            }
+            let attributes = found.dwFileAttributes
+            if name.hasPrefix(".") || attributes & DWORD(FILE_ATTRIBUTE_HIDDEN) != 0 { continue }
+            // Do not walk directory symlinks or junctions, which can lead outside a root or back into it.
+            let link = attributes & DWORD(FILE_ATTRIBUTE_REPARSE_POINT) != 0
+                && (found.dwReserved0 == 0xA000_000C || found.dwReserved0 == 0xA000_0003)
+            let directory = attributes & DWORD(FILE_ATTRIBUTE_DIRECTORY) != 0
+            if directory && link { continue }
+            entries.append(folder.appendingPathComponent(name, isDirectory: directory))
+        } while FindNextFileW(search, &found)
+        return entries
     }
 }
 #endif

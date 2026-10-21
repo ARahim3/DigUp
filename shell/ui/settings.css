@@ -41,6 +41,8 @@ main.settings h3:first-child { margin-top: 14px; }
 .row .side { flex: none; text-align: right; }
 .row .indexed { font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; }
 .row .states { font-size: 11px; color: var(--secondary); }
+.row .why { font: inherit; font-size: 11px; color: var(--accent, #4a8); background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; }
+.row .reasons { font-size: 11px; color: var(--secondary); margin-top: 3px; white-space: normal; }
 .row .flag { font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 99px; background: rgba(242, 162, 42, 0.22); }
 .remove {
   flex: none; width: 22px; height: 22px; border: 0; border-radius: 50%; padding: 0; background: var(--line);

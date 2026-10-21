@@ -15,10 +15,13 @@ public struct CrawlReport: Sendable {
     public var skipped: [String: Int] = [:]          // reason → files
     public var skippedFolders: [String: Int] = [:]   // reason → folders not walked into
     public var datasets: [String: Int] = [:]         // folder → files skipped as a dataset
+    /// What each chosen folder left out, by reason (the same counts as `skipped`, split by folder), so the apps can
+    /// say why a folder shows fewer files than it holds.
+    public var leftOut: [String: [String: Int]] = [:]
 }
 
-/// Entries the folder walk has checked so far, including files DigUp may later skip. The count is cumulative across
-/// roots and is not an estimate of how many files will enter the index. `root` is nil for the final update.
+/// Entries checked during a folder walk, including files that may later be skipped.
+/// The count is cumulative across roots and is not an indexing total.
 public struct CrawlProgress: Sendable, Equatable {
     public let checked: Int
     public let root: String?
@@ -35,6 +38,10 @@ public struct CrawlProgress: Sendable, Equatable {
 /// For the code index (`IndexOptions.code`) it walks the code folders instead: code files only (`Rules.classifyCode`),
 /// in a git repo only those git keeps (`GitFiles`), and none in vendored or built folders.
 public enum Crawler {
+    /// The folder can be opened for listing, as a walk of it would (a folder macOS won't let us read, or one that's
+    /// gone, says no). Opening is enough: listing a cloud folder's top level could take a while.
+    public static func canList(_ url: URL) -> Bool { FileSystem.canList(url.path) }
+
     public static func crawl(_ roots: [URL], options: IndexOptions,
                              progress: ((CrawlProgress) -> Void)? = nil) -> CrawlReport {
         let fm = FileManager.default
@@ -44,7 +51,12 @@ public enum Crawler {
         var projectRoots = Set<String>()
         var repos = GitRepos()
         var found: [Candidate] = []
-        var foundPaths = Set<String>()   // a folder inside another root would be walked twice
+        var foundRoot: [String: String] = [:]   // path → the chosen folder it was found under (a folder inside
+                                                // another root would be walked twice)
+        func leftOut(_ reason: String, under root: String) {
+            report.skipped[reason, default: 0] += 1
+            report.leftOut[root, default: [:]][reason, default: 0] += 1
+        }
         let rootPaths = Set(roots.map { $0.standardizedFileURL.path })
         var checked = 0
         let clock = ContinuousClock()
@@ -53,11 +65,13 @@ public enum Crawler {
         for root in roots.map({ $0.standardizedFileURL }) {
             progress?(CrawlProgress(checked: checked, root: root.path))
             lastUpdate = clock.now
-            if options.code {
-                repos.enterRoot(root.path)
-            } else if Rules.isProjectRoot(root.path) {
-                projectRoots.insert(root.path)
+            if Rules.isCacheDirectory(root) {
+                report.skippedFolders["cache folder", default: 0] += 1
+                continue
             }
+            // A folder chosen on purpose is read whole, whatever markers it holds (a home folder with its dotfiles in
+            // git, a repo of notes and pictures); the code-project rule applies to project folders found inside it.
+            if options.code { repos.enterRoot(root.path) }
             // A skip applies inside the chosen folders that contain it: a folder chosen inside a skipped one is
             // walked whole (`FolderSelection`). The walk reports real paths (/private/var, where the root says /var).
             let real = FolderSelection.realPath(root.path)
@@ -65,20 +79,29 @@ public enum Crawler {
                 FolderSelection.isInside($0, root.path) || FolderSelection.isInside($0, real)
             }.flatMap { [$0, FolderSelection.realPath($0)] }
             #if os(Windows)
-            guard let walker = FileSystem.walk(root, keys: keys) else { continue }
+            guard let walker = FileSystem.walk(root) else { continue }
             #else
             guard let walker = fm.enumerator(at: root, includingPropertiesForKeys: keys,
                                              options: [.skipsHiddenFiles, .skipsPackageDescendants],
                                              errorHandler: { _, _ in true }) else { continue }
             #endif
             func visit(_ url: URL) {
+                #if os(Windows)
+                // Foundation's resource values can trap on 2–4 GiB files, even for isDirectory alone.
+                // DirectoryWalk supplies this bit from WIN32_FIND_DATAW without asking Foundation.
+                let values: URLResourceValues? = nil
+                let isDirectory = url.hasDirectoryPath
+                #else
                 let values = try? url.resourceValues(forKeys: Set(keys))
+                let isDirectory = values?.isDirectory == true
+                #endif
                 let isPackage = FileSystem.isPackage(url, values)
-                if values?.isDirectory == true, !isPackage {
+                if isDirectory, !isPackage {
                     if let reason = Rules.skipReason(forFolder: url, home: home, excluded: skips)
                         ?? (options.code ? Rules.codeSkipReason(forFolder: url) : nil) {
                         walker.skipDescendants()
                         report.skippedFolders[reason, default: 0] += 1
+                        report.leftOut[root.path, default: [:]]["folders " + reason, default: 0] += 1
                     } else if options.code {
                         repos.enter(url.path)
                     } else if Rules.isProjectRoot(url.path) {
@@ -88,24 +111,25 @@ public enum Crawler {
                 }
                 if isPackage {
                     walker.skipDescendants()   // macOS's enumerator never enters one; elsewhere it would
-                    report.skipped["app or bundle", default: 0] += 1
+                    let library = ["photoslibrary", "photolibrary"].contains(url.pathExtension.lowercased())
+                    leftOut(library ? "Photos library" : "app or bundle", under: root.path)
                     return
                 }
                 let classification = options.code ? Rules.classifyCode(url, options: options)
                     : Rules.classify(url, values: values, options: options)
                 switch classification {
                 case .ignore:
-                    report.skipped["other type", default: 0] += 1
+                    leftOut("other type", under: root.path)
                 case .skip(let reason):
-                    report.skipped[reason, default: 0] += 1
+                    leftOut(reason, under: root.path)
                 case .index(let kind):
                     guard let info = FileSystem.info(of: url.path), info.isRegular else {
-                        report.skipped["link or special file", default: 0] += 1
+                        leftOut("link or special file", under: root.path)
                         return
                     }
                     // Reading a dataless placeholder (iCloud "Optimize Mac Storage", File Providers) downloads it.
-                    if info.dataless || FileSystem.isInCloud(values) {
-                        report.skipped["in the cloud, not downloaded", default: 0] += 1
+                    if info.dataless {
+                        leftOut("in the cloud, not downloaded", under: root.path)
                         return
                     }
                     if options.code {
@@ -113,15 +137,16 @@ public enum Crawler {
                         let limit = url.pathExtension.lowercased() == "ipynb" ? options.maxNotebookBytes
                             : options.maxCodeBytes
                         if info.size > limit {
-                            report.skipped["too big to be written by hand", default: 0] += 1
+                            leftOut("too big to be written by hand", under: root.path)
                             return
                         }
                         if repos.ignores(url.path) {
-                            report.skipped["ignored by git", default: 0] += 1
+                            leftOut("ignored by git", under: root.path)
                             return
                         }
                     }
-                    guard foundPaths.insert(url.path).inserted else { return }
+                    guard foundRoot[url.path] == nil else { return }
+                    foundRoot[url.path] = root.path
                     found.append(Candidate(path: url.path, kind: kind, size: info.size, mtime: info.mtime,
                                            inode: info.inode, device: info.device))
                 }
@@ -156,7 +181,7 @@ public enum Crawler {
         var kept: [Candidate] = []
         for file in found {
             if !options.code, file.kind != .screenshot, isInProject((file.path as NSString).deletingLastPathComponent) {
-                report.skipped["inside a code project", default: 0] += 1
+                leftOut("inside a code project", under: foundRoot[file.path] ?? "")
             } else {
                 kept.append(file)
             }
@@ -172,7 +197,7 @@ public enum Crawler {
                 kept.removeAll { file in
                     let skip = datasets[(file.path as NSString).deletingLastPathComponent] != nil
                         && [.image, .audio, .video].contains(file.kind)
-                    if skip { report.skipped["dataset", default: 0] += 1 }
+                    if skip { leftOut("dataset", under: foundRoot[file.path] ?? "") }
                     return skip
                 }
             }
@@ -242,9 +267,19 @@ enum GitFiles {
         guard let git = FileSystem.git else { return nil }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: git)
-        process.arguments = ["-C", repo, "ls-files", "-z", "--cached", "--others", "--exclude-standard"]
+        // A repo that arrived unzipped or copied keeps its own .git/config, which can name a program (core.fsmonitor
+        // runs for ls-files; hooks could for anything else): those settings are overridden, and the system's and
+        // the user's config files are left out, so no config git reads here can run anything.
+        #if os(Windows)
+        let nullDevice = "NUL"
+        #else
+        let nullDevice = "/dev/null"
+        #endif
+        process.arguments = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=\(nullDevice)", "-C", repo,
+                             "ls-files", "-z", "--cached", "--others", "--exclude-standard"]
         // Reading only: never wait for, or take, the repo's lock (an editor's git may be busy in it).
-        process.environment = ["GIT_OPTIONAL_LOCKS": "0", "PATH": "/usr/bin:/bin", "HOME": NSHomeDirectory()]
+        process.environment = ["GIT_OPTIONAL_LOCKS": "0", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": nullDevice,
+                               "PATH": "/usr/bin:/bin", "HOME": NSHomeDirectory()]
         let output = Pipe()
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice

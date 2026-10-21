@@ -3,6 +3,16 @@ import Testing
 @testable import DigUpKit
 
 @Suite struct SearchTextTests {
+    @Test func stubsHaveWordsButNoProse() {
+        for stub in ["DEBUG=true", "root = true", "#separator:pipe", "id,name,value", "User-agent: *", "# Ignore logs\n*.log"] {
+            #expect(SearchText.hasWords(stub), "\(stub)")
+            #expect(!SearchText.hasProse(stub), "\(stub)")
+        }
+        #expect(SearchText.hasProse("Buy milk, eggs and bread tomorrow"))
+        #expect(!SearchText.hasProse("Meeting at 3"))
+        #expect(!SearchText.hasProse("12 34 56 78 90"))
+    }
+
     let folder: URL = {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("DigUpTests-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)

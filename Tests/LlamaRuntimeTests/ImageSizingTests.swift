@@ -3,6 +3,11 @@ import Testing
 
 /// llama.cpp has to see the pixels the reference sees: transformers' resize target, then PIL's bicubic.
 @Suite struct ImageSizingTests {
+    @Test func aZeroSidedImageHasNoTargetSize() {
+        #expect(ImageSizing.targetSize(height: 0, width: 1440, budget: 140) == nil)
+        #expect(ImageSizing.targetSize(height: 900, width: 0, budget: 140) == nil)
+    }
+
     @Test func targetSizeFillsTheBudget() {
         // A 1440×900 screenshot and a 768×768 photo, at the budgets the indexer uses.
         #expect(ImageSizing.targetSize(height: 900, width: 1440, budget: 280)! == (624, 1008))

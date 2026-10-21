@@ -47,6 +47,7 @@ function renderGeneral() {
   for (const choice of document.querySelectorAll('input[name="tray-click"]')) choice.checked = choice.value === info.trayClick;
   $("center-option").hidden = !info.canCenter;
   $("center").checked = info.centered;
+  $("processor").checked = info.processorOnly;
   $("keys").replaceChildren(...info.hotkey.split("+").filter(Boolean).map((key) => element("span", "key", key)));
   const note = notes[info.shortcut.method];
   $("shortcut-note").hidden = !note;
@@ -103,6 +104,7 @@ function wire(box, command) {
 
 wire($("login"), "set_open_at_login");
 wire($("center"), "set_center_panel");
+wire($("processor"), "set_processor_only");
 wire($("update-checks"), "set_update_checks");
 for (const choice of document.querySelectorAll('input[name="tray-click"]')) {
   choice.addEventListener("change", () => {
@@ -191,6 +193,26 @@ function renderFields() {
 
 /// A folder searched (with `code`, a code folder): its name, where it is, what's in it, how much of it is indexed, and
 /// Remove.
+/// One line per reason: what the crawl never queued from the folder, then what was skipped once read.
+function reasonLines(leftOut, skippedReasons) {
+  const crawl = {
+    "other type": "of types DigUp doesn't read",
+    "app or bundle": "inside apps or bundles",
+    "Photos library": "in a Photos library",
+    "link or special file": "links or special files",
+    "in the cloud, not downloaded": "only in the cloud, not downloaded",
+    "inside a code project": "inside code projects, where only screenshots count",
+    "dataset": "in folders that look like datasets",
+    "code or data file": "code or data files",
+    "excluded type": "of the file types you skip",
+  };
+  const byCount = (a, b) => b[1] - a[1];
+  const left = Object.entries(leftOut).sort(byCount).map(([reason, count]) =>
+    reason.startsWith("folders ") ? `${count.toLocaleString()} ${reason} weren't opened` : `${count.toLocaleString()} ${crawl[reason] || reason}`);
+  const skipped = Object.entries(skippedReasons).sort(byCount).map(([reason, count]) => `${count.toLocaleString()} skipped: ${reason}`);
+  return left.concat(skipped);
+}
+
 function folderRow(folder, summary, code = false) {
   const row = element("div", "row");
   const text = element("div", "text");
@@ -202,13 +224,32 @@ function folderRow(folder, summary, code = false) {
   if (summary) {
     side.append(element("div", "indexed", summary.missing || summary.unreadable ? "Kept for when it's back"
       : `${summary.indexed.toLocaleString()} of ${summary.files.toLocaleString()} indexed`));
+    // What the last sync never queued from this folder, by reason (the helper's left_out, through the status).
+    const leftOutKey = Object.keys((info.state || {}).leftOut || {}).find((path) => samePath(path, folder));
+    const leftOut = code || !leftOutKey ? {} : info.state.leftOut[leftOutKey];
+    const notRead = Object.values(leftOut).reduce((sum, count) => sum + count, 0);
     const states = [
       summary.pending ? `${summary.pending.toLocaleString()} waiting` : null,
       summary.unfinished ? `${summary.unfinished.toLocaleString()} long ${summary.unfinished === 1 ? "file" : "files"} to finish` : null,
       summary.skipped ? `${summary.skipped.toLocaleString()} skipped` : null,
       summary.failed ? `${summary.failed.toLocaleString()} couldn't be read` : null,
+      notRead ? `${notRead.toLocaleString()} not read` : null,
     ].filter(Boolean).join(" · ");
-    if (states) side.append(element("div", "states", states));
+    if (states) {
+      const line = element("div", "states", states);
+      const reasons = reasonLines(leftOut, summary.skipped_reasons || {});
+      if (reasons.length) {
+        const why = element("button", "why", "why");
+        why.title = "Why some files aren't searchable";
+        const list = element("div", "reasons");
+        list.hidden = true;
+        for (const reason of reasons) list.append(element("div", null, reason));
+        why.onclick = () => { list.hidden = !list.hidden; };
+        line.append(" ", why);
+        text.append(list);
+      }
+      side.append(line);
+    }
   }
   row.append(text, side, removeButton(code ? "Stop searching the code in this folder" : "Stop searching this folder", () => {
     if (code) {

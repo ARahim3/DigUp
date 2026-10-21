@@ -38,6 +38,7 @@ extension AudioExtractor {
         while let sampleBuffer = output.copyNextSampleBuffer() {
             guard let block = CMSampleBufferGetDataBuffer(sampleBuffer) else { continue }
             let length = CMBlockBufferGetDataLength(block)
+            guard length >= 2 else { continue }   // an empty buffer has no base address to copy into
             var chunk = [Int16](repeating: 0, count: length / 2)
             _ = chunk.withUnsafeMutableBytes { CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: length,
                                                                           destination: $0.baseAddress!) }

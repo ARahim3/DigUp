@@ -23,8 +23,6 @@ nonisolated struct EngineStatus: Sendable, Equatable {
     }
 
     var activity = Activity.starting
-    /// Transient discovery counts, separate from committed index totals.
-    var scan: CrawlProgress?
     var encoder = Encoder.stopped
     var files = 0        // in the index, any state
     var searchable = 0   // done or partial
@@ -41,11 +39,13 @@ nonisolated struct EngineStatus: Sendable, Equatable {
     var missingRoots: [String] = []
     /// Chosen folders macOS doesn't let DigUp read (Privacy & Security → Files and Folders): skipped, files kept.
     var unreadableRoots: [String] = []
+    /// What the last sync left out under each chosen folder, by reason (files inside code projects, other types, cloud
+    /// placeholders…), for the Folders tab.
+    var leftOut: [String: [String: Int]] = [:]
     /// The code index, when code search is on.
     var code = Code()
 
     struct Code: Sendable, Equatable {
-        var scan: CrawlProgress?
         var files = 0
         var searchable = 0
         var pending = 0
@@ -103,6 +103,9 @@ nonisolated final class Engine: @unchecked Sendable {
     private var helperOutput = Data()
     /// The folders changed while a helper ran: start a new one with them when it's gone.
     private var restartHelper = false
+    /// A start asked while a helper was still on its way out (Resume right after Pause, the hours beginning): the
+    /// next one starts once it's gone, whatever its exit status.
+    private var startWanted = false
     /// When the helper's watchdog ended it lately (`stoppedOnFile`).
     private var watchdogStops: [Date] = []
     /// The helper's exit status when its watchdog ended it on a file (`digup`'s Watchdog: EX_TEMPFAIL).
@@ -402,8 +405,8 @@ nonisolated final class Engine: @unchecked Sendable {
         watchedRoots = spellings(present)
         watchedSkips = spellings(excluded)
         guard !present.isEmpty else { return }
-        watcher = FolderWatcher(paths: present.map(\.path), latency: 0.25, queue: watchQueue) { [weak self] paths in
-            self?.foldersChanged(paths)
+        watcher = FolderWatcher(paths: present.map(\.path), latency: 0.25, queue: watchQueue) { [weak self] changes in
+            self?.foldersChanged(changes)
         }
         log(watcher == nil ? "watch: can't watch the folders" : "watch: \(present.count) folders")
     }
@@ -415,8 +418,8 @@ nonisolated final class Engine: @unchecked Sendable {
         codeChangedSince = nil
         let present = lock.withLock { codeRoots }.filter(AppSettings.isFolder)
         guard !present.isEmpty else { return }
-        codeWatcher = FolderWatcher(paths: present.map(\.path), latency: 2, queue: watchQueue) { [weak self] paths in
-            self?.codeChanged(paths)
+        codeWatcher = FolderWatcher(paths: present.map(\.path), latency: 2, queue: watchQueue) { [weak self] changes in
+            self?.codeChanged(changes.map(\.path))
         }
         log(codeWatcher == nil ? "watch: can't watch the code folders" : "watch: \(present.count) code folders")
     }
@@ -456,12 +459,15 @@ nonisolated final class Engine: @unchecked Sendable {
     }
 
     /// FSEvents, on watchQueue. Waits for things to settle (a copy in progress, a burst of screenshots), then asks
-    /// the helper to sync; a running batch yields to that at its next boundary.
-    private func foldersChanged(_ paths: [String]) {
+    /// the helper to sync; a running batch yields to that at its next boundary. Changes to files the crawl never
+    /// indexes (databases, logs, temp files) don't count: each sync rereads every folder.
+    private func foldersChanged(_ changes: [FolderWatcher.Change]) {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let paths = paths.filter { path in
-            watchedRoots.contains { Rules.isWalked(path, root: $0, home: home, excluded: watchedSkips) }
-        }
+        let types = Set(lock.withLock { excludedTypes })
+        let paths = changes.filter { change in
+            watchedRoots.contains { Rules.isWalked(change.path, root: $0, home: home, excluded: watchedSkips) }
+                && Rules.changeMayMatter(change.path, isFolder: change.isFolder, excludedExtensions: types)
+        }.map(\.path)
         guard !paths.isEmpty else { return }
         log("watch: \(paths.count) changed (\((paths.first as NSString?)?.lastPathComponent ?? ""))")
         syncDebounce?.cancel()
@@ -488,8 +494,11 @@ nonisolated final class Engine: @unchecked Sendable {
         guard helper == nil, !paused else {
             // Paused, or outside the set hours: the next start syncs. Launched outside them, it never started.
             if helper == nil { update { if case .starting = $0.activity { $0.activity = .idle } } }
+            // One still stopping (Resume right after Pause): a new one once it's gone, whatever its exit says.
+            else if !paused { startWanted = true }
             return
         }
+        startWanted = false
         guard !roots.isEmpty || !codeRoots.isEmpty || pruneWanted else {
             update { $0.activity = .idle }
             return
@@ -539,10 +548,6 @@ nonisolated final class Engine: @unchecked Sendable {
         helperOutput = Data()
         pruneWanted = false
         update {   // the helper says first if any are still missing or unreadable
-            $0.waitingForModel = false
-            if !roots.isEmpty { $0.activity = .syncing }
-            $0.scan = nil
-            $0.code.scan = nil
             $0.missingRoots = []
             $0.unreadableRoots = []
             $0.code.missingRoots = []
@@ -589,20 +594,18 @@ nonisolated final class Engine: @unchecked Sendable {
         switch event["event"] as? String {
         case "scanning":
             update {
+                if case .failed = $0.activity { return }
                 $0.activity = .syncing
-                $0.scan = CrawlProgress(checked: int("checked"), root: event["root"] as? String)
             }
         case "sync":
-            update {
-                $0.scan = nil
-                if case .syncing = $0.activity { $0.activity = .idle }
-            }
             if let started = event["started"] as? Double, let wanted = syncWantedAt,
                started >= wanted.timeIntervalSince1970 {
                 syncWantedAt = nil
             }
             applyCounts(event)
-            if int("pending") > 0 { update { $0.activity = .indexing(done: 0, total: int("pending")) } }
+            if let leftOut = event["left_out"] as? [String: [String: Int]] { update { $0.leftOut = leftOut } }
+            update { if case .syncing = $0.activity { $0.activity = .idle } }
+            if int("new") > 0 { update { $0.activity = .indexing(done: 0, total: int("new")) } }
             log("sync: \(int("added")) new · \(int("changed")) changed · \(int("moved")) moved · "
                 + "\(int("removed")) removed · \(int("unchanged")) unchanged in \(int("ms")) ms")
         case "file":
@@ -624,18 +627,12 @@ nonisolated final class Engine: @unchecked Sendable {
             log("index: \(what): \(states) in \(int("ms")) ms")
         case "idle":
             applyCounts(event)
-            update {
-                $0.scan = nil
-                $0.code.scan = nil
-                $0.activity = .idle
-            }
+            update { $0.activity = .idle }
             refreshSearcher(force: true)
         case "waiting":
             applyCounts(event)
             update {
                 $0.activity = .idle
-                $0.scan = nil
-                $0.code.scan = nil
                 $0.waitingForModel = true
             }
             log("indexer: waiting for the model to download")
@@ -657,12 +654,11 @@ nonisolated final class Engine: @unchecked Sendable {
         case "reindex":
             log("indexer: the model or settings changed, indexing everything again (was: \(event["from"] as? String ?? "?"))")
         case "error":
-            update {
-                $0.scan = nil
-                if case .syncing = $0.activity { $0.activity = .idle }
-            }
             log("indexer: \(event["message"] as? String ?? "error")")
-            if event["fatal"] as? Bool == true { update { $0.activity = .failed("Indexing stopped") } }
+            update {
+                if event["fatal"] as? Bool == true { $0.activity = .failed("Indexing stopped") }
+                else if case .syncing = $0.activity { $0.activity = .idle }
+            }
         default:
             break
         }
@@ -672,10 +668,7 @@ nonisolated final class Engine: @unchecked Sendable {
     private func handleCode(_ event: [String: Any]) {
         func int(_ key: String) -> Int { event[key] as? Int ?? 0 }
         switch event["event"] as? String {
-        case "scanning":
-            update { $0.code.scan = CrawlProgress(checked: int("checked"), root: event["root"] as? String) }
         case "sync":
-            update { $0.code.scan = nil }
             applyCounts(event)
             // New code is read right away only when the main index has nothing waiting; else it waits its turn.
             if int("new") > 0, int("pending") == 0 { update { $0.code.indexing = .init(done: 0, total: int("new")) } }
@@ -706,7 +699,6 @@ nonisolated final class Engine: @unchecked Sendable {
         case "reindex":
             log("indexer: the model changed, the code index starts over")
         case "error":
-            update { $0.code.scan = nil }
             log("indexer: code: \(event["message"] as? String ?? "error")")
             if event["fatal"] as? Bool == true { update { $0.activity = .failed("Indexing stopped") } }
         default:
@@ -743,17 +735,16 @@ nonisolated final class Engine: @unchecked Sendable {
             if case .finishing = $0.activity { $0.activity = .idle }
             if case .starting = $0.activity { $0.activity = .idle }
             if case .syncing = $0.activity { $0.activity = .idle }
-            $0.scan = nil
-            $0.code.scan = nil
             $0.code.indexing = nil
         }
         refreshSearcher(force: true)
         refreshCodeSearcher(force: true)
         returnFreedMemory()
         removeCodeIndexIfAsked()
-        if restartHelper {
-            // The folders changed: a new helper with the new ones.
+        if restartHelper || startWanted {
+            // The folders changed (a new helper with the new ones), or a start was asked while this one was stopping.
             restartHelper = false
+            startWanted = false
             startHelper()
         } else if status == Self.stoppedOnFile {
             // Its watchdog ended it on a file whose reading ran away: the next one skips that file and goes on. Not
@@ -907,6 +898,11 @@ nonisolated final class Engine: @unchecked Sendable {
         var files = 0, indexed = 0, pending = 0, failed = 0, skipped = 0
         var unfinished = 0   // long files searchable but still being read (counted in `indexed` too)
         var kinds: [FileKind: Int] = [:]
+        /// Why the skipped files were skipped once read ("no text", "silent or shorter than 2 s"), by reason.
+        var skippedReasons: [String: Int] = [:]
+        /// What the last sync never queued from this folder, by reason (the crawl's `leftOut`).
+        var leftOut: [String: Int] = [:]
+        var leftOutCount: Int { leftOut.values.reduce(0, +) }
         var id: String { path }
     }
 
@@ -914,11 +910,14 @@ nonisolated final class Engine: @unchecked Sendable {
     func rootSummaries(code: Bool = false) async -> [RootSummary] {
         await withCheckedContinuation { continuation in
             searchQueue.async { [self] in
-                let unreadable = Set(lock.withLock { code ? status.code.unreadableRoots : status.unreadableRoots })
+                let (unreadable, leftOut) = lock.withLock {
+                    (Set(code ? status.code.unreadableRoots : status.unreadableRoots), code ? [:] : status.leftOut)
+                }
                 let store = code ? codeStore : searchStore
                 let summaries = lock.withLock { code ? codeRoots : roots }.map { root -> RootSummary in
                     var summary = RootSummary(path: root.path, missing: !AppSettings.isFolder(root),
                                               unreadable: unreadable.contains(root.path))
+                    summary.leftOut = leftOut[root.path] ?? leftOut[FolderSelection.realPath(root.path)] ?? [:]
                     for file in (try? store?.files(under: [root.path])) ?? [] {
                         summary.files += 1
                         summary.kinds[file.kind, default: 0] += 1
@@ -929,7 +928,9 @@ nonisolated final class Engine: @unchecked Sendable {
                             summary.unfinished += 1
                         case "pending": summary.pending += 1
                         case "failed": summary.failed += 1
-                        default: summary.skipped += 1
+                        default:
+                            summary.skipped += 1
+                            summary.skippedReasons[file.detail ?? "not read", default: 0] += 1
                         }
                     }
                     return summary

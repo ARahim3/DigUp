@@ -10,6 +10,8 @@ public struct FileRecord: Sendable {
     public let inode: UInt64
     public let device: UInt64
     public let state: String
+    /// Why it was skipped or failed, or how far a long file has been read.
+    public let detail: String?
 }
 
 /// The on-disk index: one SQLite file with files, their segments (with fp16 vectors), and an FTS5 table.
@@ -222,12 +224,12 @@ public final class IndexStore {
 
     // MARK: Files
 
-    static let fileColumns = "id, path, kind, size, mtime, inode, device, state"
+    static let fileColumns = "id, path, kind, size, mtime, inode, device, state, detail"
 
     static func record(_ row: Statement) -> FileRecord {
         FileRecord(id: row.int(0), path: row.text(1) ?? "", kind: FileKind(rawValue: row.text(2) ?? "") ?? .doc,
                    size: row.int(3), mtime: row.double(4), inode: UInt64(bitPattern: row.int(5)),
-                   device: UInt64(bitPattern: row.int(6)), state: row.text(7) ?? "pending")
+                   device: UInt64(bitPattern: row.int(6)), state: row.text(7) ?? "pending", detail: row.text(8))
     }
 
     /// Every file under one of `roots`.
@@ -250,39 +252,47 @@ public final class IndexStore {
     /// Adds a file (pending) and returns its id.
     @discardableResult
     public func insert(_ file: Candidate) throws -> Int64 {
-        try db.run("INSERT INTO files(path, kind, size, mtime, inode, device) VALUES(?, ?, ?, ?, ?, ?)",
-                   [.text(file.path), .text(file.kind.rawValue), .int(file.size), .double(file.mtime),
-                    .int(Int64(bitPattern: file.inode)), .int(Int64(bitPattern: file.device))])
-        let id = db.lastInsertID
-        try addNameRow(file: id, path: file.path)
-        return id
+        try db.transaction {   // the row and its name entry together
+            try db.run("INSERT INTO files(path, kind, size, mtime, inode, device) VALUES(?, ?, ?, ?, ?, ?)",
+                       [.text(file.path), .text(file.kind.rawValue), .int(file.size), .double(file.mtime),
+                        .int(Int64(bitPattern: file.inode)), .int(Int64(bitPattern: file.device))])
+            let id = db.lastInsertID
+            try addNameRow(file: id, path: file.path)
+            return id
+        }
     }
 
     /// The file changed on disk: drop what was extracted from it and queue it again.
     public func requeue(_ id: Int64, as file: Candidate) throws {
-        try deleteSegments(of: id, keepingName: true)
-        try db.run("""
-            UPDATE files SET kind = ?, size = ?, mtime = ?, inode = ?, device = ?, state = 'pending', detail = NULL,
-                info = NULL, indexed_at = NULL WHERE id = ?
-            """, [.text(file.kind.rawValue), .int(file.size), .double(file.mtime), .int(Int64(bitPattern: file.inode)),
-                  .int(Int64(bitPattern: file.device)), .int(id)])
+        try db.transaction {
+            try deleteSegments(of: id, keepingName: true)
+            try db.run("""
+                UPDATE files SET kind = ?, size = ?, mtime = ?, inode = ?, device = ?, state = 'pending', detail = NULL,
+                    info = NULL, indexed_at = NULL WHERE id = ?
+                """, [.text(file.kind.rawValue), .int(file.size), .double(file.mtime),
+                      .int(Int64(bitPattern: file.inode)), .int(Int64(bitPattern: file.device)), .int(id)])
+        }
     }
 
     /// Extract and embed the file again, as it is (after a better way to read it arrived).
     func requeue(_ id: Int64) throws {
-        try deleteSegments(of: id, keepingName: true)
-        try db.run("UPDATE files SET state = 'pending', detail = NULL, info = NULL, indexed_at = NULL WHERE id = ?",
-                   [.int(id)])
+        try db.transaction {
+            try deleteSegments(of: id, keepingName: true)
+            try db.run("UPDATE files SET state = 'pending', detail = NULL, info = NULL, indexed_at = NULL WHERE id = ?",
+                       [.int(id)])
+        }
     }
 
     /// Same inode, size and date at a new path: a move or rename. Only the path changes; nothing is re-embedded.
     /// (Screenshot tools move screenshots into project folders all the time.)
     public func move(_ id: Int64, to path: String) throws {
-        try db.run("UPDATE files SET path = ? WHERE id = ?", [.text(path), .int(id)])
-        try db.run("""
-            UPDATE fts SET name = ?, body = ? WHERE rowid IN (SELECT id FROM segments WHERE file = ? AND kind = 'name')
-            """, [.text(SearchText.normalized(Self.nameText(path))), .text(SearchText.normalized(Self.folderText(path))),
-                  .int(id)])
+        try db.transaction {   // the path and its name entry together
+            try db.run("UPDATE files SET path = ? WHERE id = ?", [.text(path), .int(id)])
+            try db.run("""
+                UPDATE fts SET name = ?, body = ? WHERE rowid IN (SELECT id FROM segments WHERE file = ? AND kind = 'name')
+                """, [.text(SearchText.normalized(Self.nameText(path))), .text(SearchText.normalized(Self.folderText(path))),
+                      .int(id)])
+        }
     }
 
     public func delete(_ id: Int64) throws {
@@ -427,13 +437,15 @@ public final class IndexStore {
     /// Adds a segment; `text` goes into keyword search (normalized, see `SearchText`), `vector` into meaning search.
     public func addSegment(file: Int64, kind: SegmentKind, modality: Modality, loc: Double? = nil, locEnd: Double? = nil,
                            excerpt: String? = nil, text: String? = nil, vector: [Float]? = nil) throws {
-        try db.run("INSERT INTO segments(file, kind, modality, loc, loc_end, excerpt, vec) VALUES(?, ?, ?, ?, ?, ?, ?)",
-                   [.int(file), .text(kind.rawValue), .text(vector == nil ? Modality.none.rawValue : modality.rawValue),
-                    .optional(loc), .optional(locEnd), .optional(excerpt),
-                    vector.map { .blob(Vectors.half($0)) } ?? .null])
-        if let text, !text.isEmpty {
-            try db.run("INSERT INTO fts(rowid, name, body, original) VALUES(?, '', ?, ?)",
-                       [.int(db.lastInsertID)] + Self.keywordText(text))
+        try db.transaction {   // the segment and its keyword text together
+            try db.run("INSERT INTO segments(file, kind, modality, loc, loc_end, excerpt, vec) VALUES(?, ?, ?, ?, ?, ?, ?)",
+                       [.int(file), .text(kind.rawValue), .text(vector == nil ? Modality.none.rawValue : modality.rawValue),
+                        .optional(loc), .optional(locEnd), .optional(excerpt),
+                        vector.map { .blob(Vectors.half($0)) } ?? .null])
+            if let text, !text.isEmpty {
+                try db.run("INSERT INTO fts(rowid, name, body, original) VALUES(?, '', ?, ?)",
+                           [.int(db.lastInsertID)] + Self.keywordText(text))
+            }
         }
     }
 

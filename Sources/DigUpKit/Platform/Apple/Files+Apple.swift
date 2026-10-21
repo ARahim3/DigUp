@@ -10,8 +10,11 @@ extension Rules {
     public static func classify(_ url: URL, type: UTType?, options: IndexOptions) -> Classification {
         let ext = url.pathExtension.lowercased()
         if options.excludedExtensions.contains(ext) { return .skip("excluded type") }
+        if protectedExtensions.contains(ext) { return .skip("copy-protected") }
         // .ts / .mts are usually TypeScript, which Spotlight calls MPEG-2 video. Only a real transport stream is video.
         if ext == "ts" || ext == "mts" || ext == "m2ts" {
+            // The look inside would download a cloud placeholder; the crawl leaves placeholders alone anyway.
+            if FileSystem.info(of: url.path)?.dataless == true { return .skip("in the cloud, not downloaded") }
             if isMPEGTransportStream(url) { return .index(.video) }
             return options.includeCode ? .index(.doc) : .skip("code or data file")
         }
@@ -33,6 +36,30 @@ extension Rules {
         classify(url, type: values?.contentType, options: options)
     }
 
+    /// Whether a change the folder watcher reports at `path` can change what's indexed: a folder (created, moved or
+    /// removed with what's in it), or a file of a type the crawl indexes that isn't inside a bundle (which the crawl
+    /// skips whole). A database rewritten every few seconds asked for a full sync each time, which found nothing new
+    /// and took minutes on a big folder: MongoDB's diagnostic.data on the Desktop kept the helper busy all day.
+    public static func changeMayMatter(_ path: String, isFolder: Bool, excludedExtensions: Set<String>) -> Bool {
+        let url = URL(fileURLWithPath: path)
+        // Only folders with an extension can be bundles, so most changes ask the file system nothing.
+        var folder = isFolder ? url : url.deletingLastPathComponent()
+        while folder.path != "/" {
+            if !folder.pathExtension.isEmpty,
+               (try? folder.resourceValues(forKeys: [.isPackageKey]))?.isPackage == true {
+                return false
+            }
+            folder.deleteLastPathComponent()
+        }
+        if isFolder { return true }
+        var options = IndexOptions()
+        options.excludedExtensions = excludedExtensions
+        if case .index = classify(url, type: UTType(filenameExtension: url.pathExtension), options: options) {
+            return true
+        }
+        return false
+    }
+
     /// macOS's screenshot marker, an extended attribute that survives moves and copies.
     static func hasScreenshotMarker(_ url: URL) -> Bool {
         getxattr(url.path, "com.apple.metadata:kMDItemIsScreenCapture", nil, 0, 0, 0) > 0
@@ -40,18 +67,15 @@ extension Rules {
 }
 
 enum FileSystem {
-    /// What the crawl asks of each URL.
-    static let crawlKeys: [URLResourceKey] = [.isDirectoryKey, .isPackageKey, .contentTypeKey, .isUbiquitousItemKey,
-                                              .ubiquitousItemDownloadingStatusKey]
+    /// What the crawl asks of each URL. Not iCloud's download status: in a File Provider folder (iCloud Drive, Google
+    /// Drive, OneDrive…) that's a round trip to the provider for every entry, about 1.2 ms against 0.02 ms without, which
+    /// made a sync over a few hundred thousand entries take ten minutes. A file that isn't downloaded is `dataless`
+    /// (`info`) on every macOS DigUp runs on.
+    static let crawlKeys: [URLResourceKey] = [.isDirectoryKey, .isPackageKey, .contentTypeKey]
 
     /// An app, a framework, a library bundle: one thing to the Finder, skipped whole.
     static func isPackage(_ url: URL, _ values: URLResourceValues?) -> Bool {
         values?.isPackage == true
-    }
-
-    /// An iCloud file that isn't downloaded (reading it would download it).
-    static func isInCloud(_ values: URLResourceValues?) -> Bool {
-        values?.isUbiquitousItem == true && values?.ubiquitousItemDownloadingStatus != .current
     }
 
     /// The file's own facts, without following a link. `dataless`: a placeholder ("Optimize Mac Storage", File Providers)
@@ -63,6 +87,14 @@ enum FileSystem {
                         mtime: Double(info.st_mtimespec.tv_sec) + Double(info.st_mtimespec.tv_nsec) / 1e9,
                         inode: UInt64(info.st_ino), device: UInt64(bitPattern: Int64(info.st_dev)),
                         dataless: info.st_flags & 0x4000_0000 != 0)   // SF_DATALESS
+    }
+
+    /// The folder opens for listing (macOS's Files and Folders privacy says no here, and may ask first). Cheaper than
+    /// listing it: a cloud folder's top level can hold thousands of entries the provider answers for one by one.
+    static func canList(_ path: String) -> Bool {
+        guard let dir = opendir(path) else { return false }
+        closedir(dir)
+        return true
     }
 
     /// A git that's really installed (Xcode's, the command line tools', Homebrew's). /usr/bin/git on a Mac without the

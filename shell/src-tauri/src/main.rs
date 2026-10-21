@@ -80,6 +80,9 @@ struct Shell {
     updates: updates::Updates,
     /// What the tray icon shows now (tray_icon.rs): redrawn only when that changes.
     tray_look: Mutex<Option<tray_icon::Look>>,
+    /// Whether something draws the tray icon (Linux: a StatusNotifier host on the bus), and when that was last asked.
+    #[allow(dead_code)]
+    tray_host: Mutex<Option<(bool, std::time::Instant)>>,
     /// When the search service last reloaded the index (while indexing, at most every few seconds).
     reloaded: Mutex<Instant>,
     /// When the index helper's watchdog ended it lately (on a file whose reading ran away).
@@ -95,6 +98,8 @@ struct Shell {
     /// The speed check is running (`measure_then_index`): indexing waits for it, so that the two don't share the
     /// processor.
     measuring: AtomicBool,
+    /// The model download was run once more after it ended without a final word (model_event).
+    model_rerun: AtomicBool,
     /// Folder estimates running (setup's list): the speed check waits for them, for the same reason.
     estimating: AtomicUsize,
     /// A folder was taken out: the next index helper drops its files from the index (`--prune`).
@@ -148,11 +153,30 @@ impl Shell {
     }
 
     /// A background helper (indexing, the download), below the person's own programs for the processor.
+    /// `download-model`: fetches what's missing of the model, verifies what's there, says done.
+    fn download_launch(&self) -> Launch {
+        let mut download = vec!["download-model".to_string()];
+        if let Some(models) = &self.options.models {
+            download.extend(["--to".to_string(), models.display().to_string()]);
+        }
+        self.launch(download, "model.log")
+    }
+
+    /// What every helper gets: where the model is, and `DIGUP_DEVICE=cpu` when the person chose the processor.
+    fn helper_env(&self) -> Vec<(String, String)> {
+        let mut env: Vec<(String, String)> =
+            self.options.models.iter().map(|models| ("DIGUP_MODELS".to_string(), models.display().to_string())).collect();
+        if self.settings.lock().unwrap().processor_only {
+            env.push(("DIGUP_DEVICE".to_string(), "cpu".to_string()));
+        }
+        env
+    }
+
     fn launch(&self, args: Vec<String>, log: &str) -> Launch {
         Launch {
             program: self.options.helper.clone(),
             args,
-            env: self.options.models.iter().map(|models| ("DIGUP_MODELS".to_string(), models.display().to_string())).collect(),
+            env: self.helper_env(),
             log: Some(self.logs.join(log)),
             background: true,
         }
@@ -342,6 +366,8 @@ fn finish_setup(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Result<(), Stri
         if let Err(error) = app.autolaunch().enable() {
             eprintln!("digup-shell: can't open at login: {error}");
         }
+        #[cfg(target_os = "linux")]
+        repair_login_entry(&app);
     }
     // The first setup adds the shortcut to GNOME's settings; a later one (Choose Folders…) leaves it as the person has
     // it there.
@@ -623,7 +649,7 @@ fn main() {
         .setup(move |app| setup(app, options))
         .invoke_handler(tauri::generate_handler![
             ask, estimate, setup_info, pick_folders, apply_setup_folders, finish_setup, open_path, open_code, reveal, hide_panel, panel_height,
-            panel_area, settings_info, set_open_at_login, set_center_panel, debug_query, debug_report, window_info,
+            panel_area, settings_info, set_open_at_login, set_center_panel, set_processor_only, debug_query, debug_report, window_info,
             app_state, open_window, open_settings, choose_folders, index_now, quit_app, close_window, pause_indexing,
             remove_folder, set_skipped, set_skip_types, set_index_hours, code_setup_info, set_code_folders, choose_code_folders,
             remove_code_folder, turn_off_code, set_code_editor, window_resized, copy_file, drag_out, set_hotkey, hold_hotkey,
@@ -720,6 +746,7 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         update_item: Mutex::new(None),
         updates: updates::Updates::default(),
         tray_look: Mutex::new(None),
+        tray_host: Mutex::new(None),
         reloaded: Mutex::new(Instant::now()),
         watchdog_stops: Mutex::default(),
         window_inner: Mutex::new(None),
@@ -727,6 +754,7 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         debug_query_sent: AtomicBool::new(false),
         quitting: AtomicBool::new(false),
         measuring: AtomicBool::new(false),
+        model_rerun: AtomicBool::new(false),
         estimating: AtomicUsize::new(0),
         prune: AtomicBool::new(false),
         logs,
@@ -784,11 +812,7 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
             changed(&counted);
         }
     });
-    let mut download = vec!["download-model".to_string()];
-    if let Some(models) = &shell.options.models {
-        download.extend(["--to".to_string(), models.display().to_string()]);
-    }
-    if let Err(error) = shell.model.run(&shell.launch(download, "model.log")) {
+    if let Err(error) = shell.model.run(&shell.download_launch()) {
         model_event(&handle, json!({"event": "error", "message": error}));
     }
     if !shell.folders().is_empty() || !shell.code_folders().is_empty() {
@@ -818,6 +842,8 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         if let Err(error) = app.autolaunch().enable() {
             eprintln!("digup-shell: can't renew opening at login: {error}");
         }
+        #[cfg(target_os = "linux")]
+        repair_login_entry(app);
     }
     Ok(())
 }
@@ -864,7 +890,7 @@ fn watch_folders(app: &AppHandle) {
         FolderWatcher::start(&code_folders, code_skipped, index, Duration::from_secs(60), Duration::from_secs(600),
                              move || sync_code(&app))
     });
-    if !folders.is_empty() || !code_folders.is_empty() {
+    if !folders.is_empty() || !code_folders.is_empty() || shell.prune.load(Ordering::SeqCst) {
         run_index(app);
     }
 }
@@ -872,7 +898,9 @@ fn watch_folders(app: &AppHandle) {
 /// Indexing may run: there's a model and a folder (from setup's folders step on), the speed check isn't running, and
 /// indexing isn't paused or waiting for its hours.
 fn may_index(shell: &Shell) -> bool {
-    (!shell.folders().is_empty() || !shell.code_folders().is_empty()) && shell.model_ready()
+    // Removing the last folder still needs a helper to prune the index, even without a model.
+    (shell.prune.load(Ordering::SeqCst)
+        || ((!shell.folders().is_empty() || !shell.code_folders().is_empty()) && shell.model_ready()))
         && !shell.measuring.load(Ordering::SeqCst) && !shell.quitting.load(Ordering::SeqCst) && {
             let status = shell.status.lock().unwrap();
             !status.paused && status.held_until.is_none()
@@ -1191,6 +1219,7 @@ fn settings_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Value {
         "openAtLogin": shell.opens_at_login() && app.autolaunch().is_enabled().unwrap_or(false),
         "canOpenAtLogin": shell.opens_at_login(),
         "centered": shell.settings.lock().unwrap().center_panel,
+        "processorOnly": settings.processor_only,
         // Windows' tray reports clicks (Linux's open the menu, a Mac's too).
         "canChooseTrayClick": cfg!(windows),
         "trayClick": if settings.tray_click == "panel" { "panel" } else { "window" },
@@ -1486,7 +1515,63 @@ fn set_open_at_login(app: AppHandle, shell: State<'_, Arc<Shell>>, on: bool) -> 
         return Err("not in a dev run".into());
     }
     let autolaunch = app.autolaunch();
-    (if on { autolaunch.enable() } else { autolaunch.disable() }).map_err(|error| error.to_string())
+    (if on { autolaunch.enable() } else { autolaunch.disable() }).map_err(|error| error.to_string())?;
+    #[cfg(target_os = "linux")]
+    if on {
+        repair_login_entry(&app);
+    }
+    Ok(())
+}
+
+/// An AppImage unpacked with `--appimage-extract` and started through its AppRun has no $APPIMAGE, so the login entry
+/// the autostart plugin writes names the inner binary. Started that way at login, WebKit can't find its helper
+/// programs (their path is relative to the folder AppRun changes into) and DigUp dies before showing anything. The
+/// entry is made to run AppRun instead.
+#[cfg(target_os = "linux")]
+fn repair_login_entry<M: Manager<Wry>>(app: &M) {
+    if std::env::var_os("APPIMAGE").is_some() {
+        return;
+    }
+    let Some(appdir) = std::env::var_os("APPDIR") else { return };
+    let apprun = PathBuf::from(appdir).join("AppRun");
+    if !apprun.is_file() {
+        return;
+    }
+    let Ok(config) = app.path().config_dir() else { return };
+    let path = config.join("autostart").join(format!("{}.desktop", app.package_info().name));
+    let Ok(text) = std::fs::read_to_string(&path) else { return };
+    let fixed = with_exec(&text, &format!("\"{}\" --at-login", apprun.display()));
+    if fixed != text {
+        if let Err(error) = std::fs::write(&path, fixed) {
+            eprintln!("digup-shell: can't fix the login entry: {error}");
+        }
+    }
+}
+
+/// A desktop entry with its Exec line replaced.
+#[cfg(any(target_os = "linux", test))]
+fn with_exec(text: &str, exec: &str) -> String {
+    let mut lines: Vec<String> = text
+        .lines()
+        .map(|line| if line.starts_with("Exec=") { format!("Exec={exec}") } else { line.to_string() })
+        .collect();
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+/// The model on the processor from now on (the running search service and indexing helper are ended; they start
+/// again with the new environment when next needed).
+#[tauri::command]
+fn set_processor_only(app: AppHandle, shell: State<'_, Arc<Shell>>, on: bool) -> Result<(), String> {
+    {
+        let mut settings = shell.settings.lock().unwrap();
+        settings.processor_only = on;
+        settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
+    }
+    shell.search.stop();
+    shell.index.stop();
+    later(&app, run_index);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1672,7 +1757,7 @@ fn changed(app: &AppHandle) {
     let look = tray_icon::Look::new(snapshot["progress"].as_f64(), snapshot["paused"] == true)
         .with_update(!snapshot["update"].is_null());
     let mut shown = shell.tray_look.lock().unwrap();
-    if shown.is_some() && *shown != Some(look) {
+    if shown.is_some() && *shown != Some(look) && tray_host_present(&shell) {
         if let Some(tray) = app.tray_by_id("digup") {
             if tray.set_icon(Some(tray_icon::image(look))).is_ok() {
                 *shown = Some(look);
@@ -1681,6 +1766,37 @@ fn changed(app: &AppHandle) {
     }
     drop(shown);
     let _ = app.emit("state", snapshot);
+}
+
+/// Whether something will draw the tray icon. On Linux libappindicator needs a StatusNotifier host (a bar with a
+/// tray); without one (Hyprland without a bar's tray, a bare session) every redraw logs a Gtk-CRITICAL, so the icon is
+/// left as it is until a host shows up, asked again every 30 s. Elsewhere there's always one.
+fn tray_host_present(shell: &Shell) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let mut known = shell.tray_host.lock().unwrap();
+        if let Some((present, asked)) = *known {
+            if present || asked.elapsed() < std::time::Duration::from_secs(30) {
+                return present;
+            }
+        }
+        let present = (|| -> zbus::Result<bool> {
+            let connection = zbus::blocking::Connection::session()?;
+            let bus = zbus::blocking::fdo::DBusProxy::new(&connection)?;
+            Ok(bus.name_has_owner("org.kde.StatusNotifierWatcher".try_into()?)?)
+        })()
+        .unwrap_or(true);   // can't tell: draw as before
+        if known.map_or(true, |(was, _)| was != present) {
+            eprintln!("digup-shell: tray host {}", if present { "found" } else { "not found: the icon isn't redrawn" });
+        }
+        *known = Some((present, std::time::Instant::now()));
+        present
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = shell;
+        true
+    }
 }
 
 /// The waiting update's line in the tray menu, under the status line: added when one is found, its words following the
@@ -1790,8 +1906,20 @@ fn model_event(app: &AppHandle, event: Value) {
         "waiting" => json!({"state": "waiting"}),
         // Where it got to stays shown while it waits to try again.
         "retry" => json!({"state": "downloading", "bytes": before["bytes"], "total": before["total"], "problem": event["message"]}),
-        "done" => json!({"state": "ready"}),
+        "done" => {
+            shell.model_rerun.store(false, Ordering::SeqCst);
+            json!({"state": "ready"})
+        }
         "error" => json!({"state": "failed", "message": event["message"]}),
+        // The helper ended without saying done or why. The files may all be there (it died after the last one on
+        // some Linux systems before 0.7.0-beta.2): run it once more, which verifies them and says done, or goes on.
+        "stopped" => {
+            if !shell.model_rerun.swap(true, Ordering::SeqCst) && shell.model.run(&shell.download_launch()).is_ok() {
+                json!({"state": "checking"})
+            } else {
+                json!({"state": "failed", "message": "the download stopped"})
+            }
+        }
         _ => return,
     };
     let ready = state["state"] == "ready";
@@ -1886,4 +2014,14 @@ fn reload(app: &AppHandle, now: bool) {
             println!("search: reload {reply:?}");
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn login_entry_exec_is_replaced() {
+        let entry = "[Desktop Entry]\nType=Application\nExec=/home/me/.local/opt/digup/usr/bin/digup-shell --at-login\nName=DigUp\n";
+        let fixed = super::with_exec(entry, "\"/home/me/.local/opt/digup/AppRun\" --at-login");
+        assert_eq!(fixed, "[Desktop Entry]\nType=Application\nExec=\"/home/me/.local/opt/digup/AppRun\" --at-login\nName=DigUp\n");
+    }
 }

@@ -13,6 +13,15 @@ cd "$(dirname "$0")/.."
 VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" Resources/Info.plist)
 APP=build.noindex/DigUp.app
 OUT=build.noindex/release
+# With APPCAST set the DMG gets signed for Sparkle at the end: make sure the key is in the keychain before the minutes of
+# building and notarizing (sign_update -p prints the public key, or fails without one).
+if [[ -n "${APPCAST:-}" ]]; then
+  SIGN_UPDATE=.build/artifacts/sparkle/Sparkle/bin/sign_update
+  if [[ -x "$SIGN_UPDATE" ]] && ! "$SIGN_UPDATE" -p >/dev/null 2>&1; then
+    echo "APPCAST is set but sign_update finds no Sparkle key in the keychain: not building a DMG that can't be signed" >&2
+    exit 1
+  fi
+fi
 rm -rf "$OUT"
 mkdir -p "$OUT"
 

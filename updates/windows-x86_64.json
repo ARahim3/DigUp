@@ -1,0 +1,11 @@
+{
+  "version": "0.7.0-beta.2",
+  "notes": "Fixes for Windows (a 2–4 GB file stopped indexing) and Linux (the AppImage's panel, the model download, a helper that never exited, the login entry of an extracted AppImage), the preview's marked words, a processor-only setting, and three security fixes.",
+  "pub_date": "2026-10-18T05:27:22Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUNjNXOS9wdUxYRlgzYkVmN3phQWc1UU5Fbkgzb3ZrYVZPQk00YTBtcmlDNC96ZnljZW01NkFIL3BGdnhuUjJDSWhFdW9rYkhueXhOWkQ1ZUN0TXhUU2h5amlqY0IxV1FNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyMjgyOTA5CWZpbGU6RGlnVXBfMC43LjAtYmV0YS4yX3g2NC1zZXR1cC5leGUJdmVyc2lvbjowLjcuMC1iZXRhLjIKS0JRR3BIMTdIdEIzZ2lONlF3TkhPclZCSUd6ZzVzTDN5MFJEQ1Y1SXRaVmYvSFdiYUtYNG1SclREaXR4MDFOSnowOEl2Qk9HWG9hU3ZBNjhsNFc3Q3c9PQo=",
+      "url": "https://github.com/ARahim3/DigUp/releases/download/v0.7.0-beta.2/DigUp_0.7.0-beta.2_x64-setup.exe"
+    }
+  }
+}

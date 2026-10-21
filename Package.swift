@@ -11,6 +11,7 @@ let vendor = "\(Context.packageDirectory)/Vendor"
 let llamaModule = "Sources/CLlama"                        // static llama.cpp with Metal (scripts/build-llama.sh)
 let llamaLink: [LinkerSetting] = [.unsafeFlags(["-L\(vendor)/llama/lib"])]
 let engineDependencies: [Target.Dependency] = []
+let testDependencies: [Target.Dependency] = []
 let engineLink: [LinkerSetting] = []
 let portableTargets: [Target] = []
 #else
@@ -29,6 +30,7 @@ let llamaModule = "Sources/CLlamaShared"
 #endif
 let llamaLink: [LinkerSetting] = [.unsafeFlags(["-L\(vendor)/llama/lib"] + runpath)]
 let engineDependencies: [Target.Dependency] = ["CSQLite", "CStb", "CMiniz", "CPDFium"]
+let testDependencies: [Target.Dependency] = ["CMiniz"]   // the portable readers' tests write zips with it
 let engineLink: [LinkerSetting] = [.unsafeFlags(["-L\(vendor)/pdfium/lib"] + runpath)]
 let portableTargets: [Target] = [
     // SQLite with FTS5 (Windows has no system SQLite, Linux's may lack FTS5 or its headers).
@@ -42,7 +44,7 @@ let portableTargets: [Target] = [
         .define("STBI_WINDOWS_UTF8", .when(platforms: [.windows])),
         .define("STBIW_WINDOWS_UTF8", .when(platforms: [.windows])), .unsafeFlags(["-w"]),
     ]),
-    // Zip reading, for docx and odt.
+    // Zip reading, for docx and odt (spreadsheets and presentations too: OfficeText).
     .target(name: "CMiniz", path: "Vendor/miniz", cSettings: [.unsafeFlags(["-w"])]),
     // PDF text and page rendering (Chromium's PDFium, prebuilt).
     .systemLibrary(name: "CPDFium", path: "Sources/CPDFium"),
@@ -56,7 +58,6 @@ let appDependencies: [Package.Dependency] = [
     .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.0"),
 ]
 let appTargets: [Target] = [
-    .testTarget(name: "DigUpAppTests", dependencies: ["DigUpApp"]),
     // The menubar + hotkey app. build.sh wraps it into build.noindex/DigUp.app. (The product can't be called
     // "DigUp": on a case-insensitive disk it would collide with the `digup` CLI binary.)
     .executableTarget(
@@ -92,7 +93,7 @@ let package = Package(
         .executableTarget(name: "digup", dependencies: ["DigUpKit", "LlamaRuntime"]),
         // Pictures/ holds ImageTests' pictures (scripts/testbed/make_test_pictures.swift) and Videos/ VideoTests' video,
         // read by path.
-        .testTarget(name: "DigUpKitTests", dependencies: ["DigUpKit"], exclude: ["Pictures", "Videos"]),
+        .testTarget(name: "DigUpKitTests", dependencies: ["DigUpKit"] + testDependencies, exclude: ["Pictures", "Videos"]),
         // Reference/ holds the fixed inputs and vectors of ReferenceVectorTests, read by path.
         .testTarget(name: "LlamaRuntimeTests", dependencies: ["LlamaRuntime"], exclude: ["Reference"]),
     ] + appTargets

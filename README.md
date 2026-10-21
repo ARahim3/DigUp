@@ -7,8 +7,17 @@ Search the files on your computer by what's in them, with Google DeepMind's
 <a href="https://huggingface.co/google/embeddinggemma-2">EmbeddingGemma 2</a>.</p>
 
 <p align="center"><a href="https://github.com/ARahim3/DigUp/releases/latest"><b>Download for Mac</b></a> ·
-<a href="https://github.com/ARahim3/DigUp/releases/tag/v0.7.0-beta.1"><b>Windows and Linux (beta)</b></a><br>
+<a href="https://github.com/ARahim3/DigUp/releases/tag/v0.7.0-beta.2"><b>Windows (beta)</b></a> ·
+<a href="https://github.com/ARahim3/DigUp/releases/tag/v0.7.0-beta.2"><b>Linux (beta)</b></a><br>
 <sub>Free and open source. Everything runs on your computer.</sub></p>
+
+<p align="center">
+<a href="https://github.com/ARahim3/DigUp/stargazers"><img src="https://img.shields.io/github/stars/ARahim3/DigUp?style=flat-square" alt="GitHub stars"></a>
+<a href="https://github.com/ARahim3/DigUp/releases"><img src="https://img.shields.io/github/downloads/ARahim3/DigUp/total?style=flat-square" alt="Downloads"></a>
+<a href="https://github.com/ARahim3/DigUp/releases/latest"><img src="https://img.shields.io/github/v/release/ARahim3/DigUp?style=flat-square" alt="Latest release"></a>
+<a href="LICENSE"><img src="https://img.shields.io/github/license/ARahim3/DigUp?style=flat-square" alt="MIT license"></a><br>
+<a href="https://trendshift.io/repositories/295333?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-295333" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/295333/daily?language=Swift" alt="ARahim3/DigUp on Trendshift: #1 repository of the day for Swift" width="250" height="55"></a>
+</p>
 
 <p align="center"><img src="docs/demo.gif" width="800" alt="DigUp's search panel on a Mac, on Windows and on Linux: a zebra in a video, a podcast minute, a clause in a lease, a dog on the beach in English, Bengali and Arabic, and code that opens in Zed."></p>
 
@@ -46,7 +55,7 @@ Applications, or use Homebrew: `brew install --cask arahim3/tap/digup`. It needs
 later.
 
 **Windows.** Download `DigUp_x.y.z_x64-setup.exe` from the
-[beta release](https://github.com/ARahim3/DigUp/releases/tag/v0.7.0-beta.1) and run it. It installs for you only, with
+[beta release](https://github.com/ARahim3/DigUp/releases/tag/v0.7.0-beta.2) and run it. It installs for you only, with
 no admin rights. Windows may say it doesn't recognize the app, because the installer isn't signed yet: choose More
 info, then Run anyway. It needs 64-bit Windows 10 or 11.
 
@@ -106,8 +115,10 @@ Only the folders you choose:
   too
 - PDFs, page by page, scans included. A long one gets its first 30 pages right away and the rest once everything
   else is in (up to 5,000 pages a file)
-- documents: txt, md, rtf, docx, odt, html, and on a Mac doc, long ones the same way. Text that's mostly numbers,
+- documents: txt, md, typ, rtf, docx, odt, html, and on a Mac doc, long ones the same way. Text that's mostly numbers,
   like a data export, is matched by its exact text only
+- spreadsheets and presentations: xlsx, ods, pptx and odp, read for their text: each sheet's name and rows, each
+  slide's text and speaker notes
 - audio of any length: the model listens to 30 seconds at a time, so DigUp takes overlapping 30-second windows and a
   match points to its moment
 - video of any length: a frame every few seconds, one per shot, plus the soundtrack the same way as audio

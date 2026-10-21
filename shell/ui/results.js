@@ -180,9 +180,13 @@ function foundWords(excerpt) {
   return [...new Set([...(excerpt || "").matchAll(/«([^»]*)»/g)].map((found) => found[1]).filter(Boolean))];
 }
 
+/// Words search doesn't look for (the engine's Searcher.stopwords, the same list): without this, "in" or "at" got marked
+/// everywhere and the passage opened at the first "in" instead of the words that matched.
+const STOPWORDS = new Set(["a", "an", "the", "of", "in", "on", "at", "to", "for", "with", "and", "or", "my", "me", "that", "this", "these", "those", "from", "about", "where", "what", "which", "who", "when", "is", "was", "are", "were", "be", "it", "its", "some", "any", "find", "show", "file", "files", "photo", "photos", "picture", "image", "images", "screenshot", "screenshots", "video", "videos", "pdf", "document", "documents", "recording", "এবং", "ও", "এই", "সেই", "একটি", "আমার", "থেকে", "জন্য", "সাথে", "মধ্যে", "কোথায়", "কোন", "কী", "কি", "যে", "ছবি", "স্ক্রিনশট", "ভিডিও", "ফাইল", "পিডিএফ", "في", "من", "على", "الى", "عن", "مع", "هذا", "هذه", "ذلك", "التي", "الذي", "اين", "ما", "صورة", "صور", "لقطة", "شاشة", "فيديو", "ملف", "مستند"]);
+
 /// The query's words, as the preview marks them.
 function queryWords(query) {
-  return [...new Set(query.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter((word) => word.length > 1))];
+  return [...new Set(query.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter((word) => word.length > 1 && !STOPWORDS.has(word)))];
 }
 
 /// A passage with these words marked where they start a word.

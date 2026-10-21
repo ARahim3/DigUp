@@ -29,6 +29,8 @@ pub struct Status {
     pub unfinished: u64,
     /// Chosen folders that aren't there now (an unplugged drive), and ones DigUp can't read: skipped, files kept.
     pub missing: Vec<String>,
+    /// What the last sync left out under each chosen folder, by reason (the helper's `left_out`), for Settings.
+    pub left_out: Value,
     pub unreadable: Vec<String>,
     /// The speed check before the first index is running.
     pub measuring: bool,
@@ -53,6 +55,7 @@ impl Status {
         }
         match event["event"].as_str().unwrap_or_default() {
             "sync" if count("new") > 0 => self.activity = Activity::Indexing { done: 0, total: count("new") },
+            "sync" if event["left_out"].is_object() => self.left_out = event["left_out"].clone(),
             // A sync after a failure: the helper works again.
             "sync" if matches!(self.activity, Activity::Failed(_)) => self.activity = Activity::Idle,
             "file" => {
@@ -197,6 +200,7 @@ impl Status {
             "measuring": self.measuring,
             "paused": self.paused,
             "heldUntil": self.held_until,
+            "leftOut": self.left_out,
             "badge": self.badge(model),
             "busy": self.busy(model),
             "activity": match self.activity {

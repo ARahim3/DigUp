@@ -19,6 +19,23 @@ import WinSDK
         Candidate(path: path, kind: .image, size: 10, mtime: 1, inode: inode, device: 1)
     }
 
+    @Test func anInnerTransactionsFailureLeavesTheOuterOne() throws {
+        struct Oops: Error {}
+        let store = try IndexStore(directory: folder)
+        try store.db.transaction {
+            try store.insert(file(folder.appendingPathComponent("a.txt").path, inode: 1))
+            #expect(throws: Oops.self) {
+                try store.db.transaction {
+                    try store.insert(file(folder.appendingPathComponent("b.txt").path, inode: 2))
+                    throw Oops()
+                }
+            }
+            try store.insert(file(folder.appendingPathComponent("c.txt").path, inode: 3))
+        }
+        let names = try store.files(under: [folder.path]).map { ($0.path as NSString).lastPathComponent }.sorted()
+        #expect(names == ["a.txt", "c.txt"])
+    }
+
     @Test func pruneKeepsOnlyChosenFolders() throws {
         let store = try IndexStore(directory: folder)
         try store.insert(file("/a/x.png", inode: 1))

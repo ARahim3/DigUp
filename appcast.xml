@@ -3,6 +3,35 @@
   <channel>
     <title>DigUp</title>
     <item>
+      <title>0.6.2</title>
+      <pubDate>Wed, 21 Oct 2026 18:34:26 GMT</pubDate>
+      <sparkle:version>13</sparkle:version>
+      <sparkle:shortVersionString>0.6.2</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[<p>Fixes for the two weeks since 0.6.1, many of them from people who sent pull requests, and spreadsheets and presentations as a new kind of file.</p>
+<p><b>Fixed</b></p>
+<ul>
+<li>Battery drain after the first pass: a folder where something rewrites files all the time no longer makes DigUp re-scan everything, and iCloud Drive or Google Drive folders no longer make every scan take minutes.</li>
+<li>A folder you chose is read whole, whatever it holds; a home folder with its dotfiles in git used to count as a code project.</li>
+<li>Settings → Folders says why files aren't searchable: "N not read" next to each folder opens the reasons.</li>
+<li>The progress bar no longer starts over when new files arrive mid-pass, and Resume right after Pause starts indexing again.</li>
+<li>The search panel opens over a fullscreen app while a DigUp window is open, instead of switching Spaces.</li>
+<li>A PDF with broken metadata no longer crashes indexing; copy-protected songs are skipped instead of failing one by one.</li>
+<li>The "Open code in" picker follows what you choose.</li>
+<li>Keyword search is faster on big indexes.</li>
+<li>Tiny stub files no longer top generic searches like "config" or "test".</li>
+<li>Code search no longer runs a repository's own configured git programs (a security fix).</li>
+</ul>
+<p><b>New</b></p>
+<ul>
+<li>Spreadsheets and presentations: xlsx, pptx, ods and odp are read for their text.</li>
+<li>Typst files are indexed as documents.</li>
+<li>Skip a Folder… on the Code tab. Folders with a CACHEDIR.TAG stay out of both indexes.</li>
+<li>The Welcome screen says what the folders step does before it runs. The menu bar icon is the logo.</li>
+</ul>]]></description>
+      <enclosure url="https://github.com/ARahim3/DigUp/releases/download/v0.6.2/DigUp-0.6.2.dmg" sparkle:edSignature="R4QjivBOWs62kNJpKUrwaovoY4ZgCDXrO8fL892nczOnKX1gJNr8tB4lY96UpiFvbsVRqPXfn9FonXcfqzz6BQ==" length="8910941" type="application/octet-stream"/>
+    </item>
+    <item>
       <title>0.6.1</title>
       <pubDate>Mon, 12 Oct 2026 16:24:21 GMT</pubDate>
       <sparkle:version>12</sparkle:version>

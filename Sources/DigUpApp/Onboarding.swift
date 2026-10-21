@@ -274,7 +274,7 @@ struct OnboardingView: View {
     private var continueTitle: String {
         switch state.step {
         case .welcome: "Get Started"
-        case .folders: "Continue"
+        case .folders: state.folders.roots.isEmpty ? "Continue" : "Start Indexing"
         case .code: "Continue"
         case .shortcut: "Continue"
         case .ready: "Done"
@@ -376,7 +376,8 @@ private struct WelcomeStep: View {
                     .foregroundStyle(.secondary)
                     .frame(width: 30)
                 Text("Everything is indexed and searched on this Mac. DigUp downloads its AI model (865 MB) once; "
-                     + "after that it works offline, and nothing you index ever leaves your Mac.")
+                     + "after that it works offline, and nothing you index ever leaves your Mac. Next, DigUp looks "
+                     + "through your usual folders to say how long each would take; nothing is indexed until you choose.")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -541,7 +542,7 @@ private struct CodeStep: View {
                 .scrollBounceBehavior(.basedOnSize)
                 HStack {
                     Text("Open code in")
-                    Picker("Open code in", selection: Binding(get: { CodeEditor.current.id },
+                    Picker("Open code in", selection: Binding(get: { CodeEditor.chosen(state.model.settings.codeEditor).id },
                                                               set: { state.app.setCodeEditor($0) })) {
                         ForEach(CodeEditor.installed) { editor in Text(editor.name).tag(editor.id) }
                         Text(CodeEditor.defaultApp.name).tag(CodeEditor.defaultApp.id)

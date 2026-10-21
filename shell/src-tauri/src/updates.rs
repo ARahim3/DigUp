@@ -1,6 +1,7 @@
 //! In-app updates on Windows and Linux (the Mac app has Sparkle: Sources/DigUpApp/Updates.swift). Once a day, unless the
 //! person turned it off (Settings → General), DigUp reads its update feed (`plugins.updater.endpoints` in
-//! tauri.conf.json: updates/latest.json in DigUp's repository, which a release adds last). An update it finds waits
+//! tauri.conf.json: updates/<os>-<arch>.json in DigUp's repository, one file per platform so a release for one
+//! system alone moves only that system's feed; a release adds it last). An update it finds waits
 //! quietly, as on the Mac: "Update to DigUp X…" in the tray menu, a dot on the tray icon, a line in the window's status
 //! bar. Choosing it shows what's new; then DigUp downloads it, checks its signature against the public key in
 //! tauri.conf.json, installs it and starts again. The Windows installer and the AppImage update themselves; a .deb needs

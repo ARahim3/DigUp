@@ -23,6 +23,25 @@ import Testing
         #expect(Rules.classify(file, values: nil, options: IndexOptions()) == .index(.video))
     }
 
+    @Test func aPictureInAScreenshotsFolderIsAScreenshot() {
+        #expect(Rules.isScreenshot(folder.appendingPathComponent("Screenshots/2026-02-10_10-10.png")))
+        #expect(Rules.isScreenshot(folder.appendingPathComponent("screenshots/Screenshot_20260210_101010.png")))
+        #expect(!Rules.isScreenshot(folder.appendingPathComponent("Pictures/2026-02-10_10-10.png")))
+    }
+
+    @Test func typstIsADocument() {
+        let file = folder.appendingPathComponent("paper.typ")
+        #expect(Rules.classify(file, values: nil, options: IndexOptions()) == .index(.doc))
+    }
+
+    @Test func foldersOpenForListingAndFilesDoNot() throws {
+        #expect(Crawler.canList(folder))
+        let file = folder.appendingPathComponent("note.txt")
+        try "hi".write(to: file, atomically: false, encoding: .utf8)
+        #expect(!Crawler.canList(file))
+        #expect(!Crawler.canList(folder.appendingPathComponent("missing")))
+    }
+
     @Test func codeCanBeIncluded() {
         var options = IndexOptions()
         options.includeCode = true
@@ -138,6 +157,52 @@ import Testing
         let report = Crawler.crawl([folder, inner], options: IndexOptions())
         #expect(report.candidates.map { ($0.path as NSString).lastPathComponent } == ["trip.txt"])
     }
+
+    /// Apple Music downloads and old iTunes Store songs are FairPlay-protected: they'd only ever fail to read.
+    @Test func copyProtectedMusicIsSkipped() throws {
+        for name in ["Bought in 2007.m4p", "Ripped from a CD.m4a"] {
+            try Data(count: 1024).write(to: folder.appendingPathComponent(name))
+        }
+        let report = Crawler.crawl([folder], options: IndexOptions())
+        #expect(report.candidates.map { ($0.path as NSString).lastPathComponent } == ["Ripped from a CD.m4a"])
+        #expect(report.candidates.first?.kind == .audio)
+        #expect(report.skipped["copy-protected"] == 1)
+    }
+
+    /// A File Provider (iCloud Drive, Google Drive…) answers these with a round trip per entry: a sync over a few hundred
+    /// thousand of them took ten minutes. A file that isn't downloaded is `dataless` instead.
+    @Test func crawlDoesNotAskFileProvidersAboutEachEntry() {
+        #if os(macOS)
+        let keys = Set(FileSystem.crawlKeys)
+        #expect(!keys.contains(.isUbiquitousItemKey))
+        #expect(!keys.contains(.ubiquitousItemDownloadingStatusKey))
+        #endif
+    }
+
+    // The folder watcher's filter is the Mac app's (FolderWatcher); the shell's watcher has its own rules.
+    #if canImport(UniformTypeIdentifiers)
+    @Test func changesCountOnlyForWhatCouldBeIndexed() throws {
+        func matters(_ path: String, folder: Bool = false, skipping types: Set<String> = []) -> Bool {
+            Rules.changeMayMatter(path, isFolder: folder, excludedExtensions: types)
+        }
+        #expect(matters("/Users/me/Desktop/trip.pdf"))
+        #expect(matters("/Users/me/Pictures/beach.heic"))
+        #expect(matters("/Users/me/Documents/notes.md"))
+        #expect(matters("/Users/me/Desktop/New Folder", folder: true))
+        // A database on the Desktop rewrote these every 10 s, and each asked for a sync of every folder.
+        #expect(!matters("/Users/me/Desktop/LibreChat/data-node/WiredTiger.turtle.set"))
+        #expect(!matters("/Users/me/Desktop/LibreChat/data-node/diagnostic.data/metrics.interim.temp"))
+        #expect(!matters("/Users/me/Desktop/LibreChat/data-node/collection-0.wt"))
+        #expect(!matters("/Users/me/Downloads/app/server.log"))
+        // Inside a bundle the crawl skips whole (Photos' own library).
+        let library = folder.appendingPathComponent("Photos Library.photoslibrary")
+        try FileManager.default.createDirectory(at: library.appendingPathComponent("database"),
+                                                withIntermediateDirectories: true)
+        #expect(!matters(library.path + "/originals/A/IMG_1.heic"))
+        #expect(!matters(library.path + "/database", folder: true))
+        #expect(!matters("/Users/me/Desktop/trip.pdf", skipping: ["pdf"]))
+    }
+    #endif
 
     @Test func changesCountOnlyWhereTheCrawlGoes() {
         let home = "/Users/me"

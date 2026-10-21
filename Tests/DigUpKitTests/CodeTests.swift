@@ -199,6 +199,41 @@ import Testing
             .map { String($0.path.dropFirst(folder.path.count + 1)) }.sorted()
     }
 
+    #if !os(Windows)
+    @Test(.enabled(if: FileSystem.git != nil)) func gitListingNeverRunsRepositoryFsmonitor() throws {
+        try git("init")
+        try write("safe.py", "pass\n")
+        try git("add", "safe.py")   // create an index so git consults fsmonitor
+        let marker = folder.appendingPathComponent("executed")
+        let hook = try write("monitor.sh", "#!/bin/sh\ntouch '\(marker.path)'\nprintf '\\\\0'\n")
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hook.path)
+        try git("config", "core.fsmonitor", hook.path)
+        // Confirm the fixture would execute with a plain ls-files, then exercise the hardened listing.
+        try git("ls-files")
+        #expect(FileManager.default.fileExists(atPath: marker.path))
+        try FileManager.default.removeItem(at: marker)
+        let files = try #require(GitFiles.list(folder.path))
+        #expect(files.contains("safe.py"))
+        #expect(!FileManager.default.fileExists(atPath: marker.path))
+    }
+    #endif
+    @Test func cacheTagsExcludeSubtreesAndChosenRootsInBothModes() throws {
+        let signature = "Signature: 8a477f597d28d172789f06886806bc55\n# Cached data\n"
+        try write("cache/CACHEDIR.TAG", signature)
+        try write("cache/nested/notes.md", "cached")
+        try write("ordinary/CACHEDIR.TAG", "not a cache tag")
+        try write("ordinary/notes.md", "keep")
+        try write("short/CACHEDIR.TAG", "Signature: 8a477f597d28d172789f06886806bc5")
+        try write("short/notes.md", "keep")
+        for options in [IndexOptions(), codeOptions] {
+            #expect(crawlNames(options) == ["ordinary/notes.md", "short/notes.md"])
+            let root = folder.appendingPathComponent("cache")
+            #expect(Crawler.crawl([root], options: options).candidates.isEmpty)
+            #expect(!Rules.isWalked(root.path + "/nested/notes.md", root: folder.path, home: "", excluded: []))
+            #expect(!Rules.isWalked(root.path, root: root.path, home: "", excluded: []))
+        }
+    }
+
     @Test(.enabled(if: FileSystem.git != nil)) func codeCrawlKeepsWhatGitKeeps() throws {
         try write("app/main.py", "print(1)\n")
         try write("app/README.md", "# App\n")

@@ -256,7 +256,7 @@ public final class Indexer {
         case .doc(let chunks, _, _, _):
             // Chunks with a vector: a data dump's go to keyword search only and take next to nothing, which isn't
             // what a chunk of prose costs (the estimate can't tell them apart from a file's size).
-            let worded = chunks.filter(SearchText.hasWords).count
+            let worded = chunks.filter(SearchText.hasProse).count
             if worded > 0 { measured.add("docChunk", units: Double(worded), seconds: seconds) }
         case .audio(_, let duration): measured.add("audioSecond", units: duration, seconds: seconds)
         case .video(_, _, let duration): measured.add("videoSecond", units: duration, seconds: seconds)
@@ -580,7 +580,7 @@ public final class Indexer {
         let title = title ?? URL(fileURLWithPath: file.path).deletingPathExtension().lastPathComponent
         let textPages = pages.filter { $0.imagePath == nil }
         // A page that's mostly digits (a table, a data listing) gets keyword search only.
-        let wordPages = textPages.filter { SearchText.hasWords($0.text) }
+        let wordPages = textPages.filter { SearchText.hasProse($0.text) }
         let imagePages = pages.filter { $0.imagePath != nil }
         let garbledPages = pages.filter { $0.garbled != nil }   // rendered too: among `imagePages`
         var textVectors: [Int: [Float]] = [:]   // by page number
@@ -634,7 +634,7 @@ public final class Indexer {
         }
         let title = URL(fileURLWithPath: file.path).deletingPathExtension().lastPathComponent
         // Text that's mostly digits (a data dump saved as .txt) gets keyword search only.
-        let worded = chunks.indices.filter { SearchText.hasWords(chunks[$0]) }
+        let worded = chunks.indices.filter { SearchText.hasProse(chunks[$0]) }
         let vectors = worded.isEmpty ? [] : try fullWorker().embedTexts(worded.map {
             Prompts.document(title: title, text: chunks[$0])
         })

@@ -70,9 +70,9 @@ public final class Searcher {
             SELECT s.id, s.file, s.modality, s.vec, s.kind, s.loc, f.kind, CAST(json_extract(f.info, '$.pages') AS INTEGER)
             FROM segments s JOIN files f ON f.id = s.file WHERE s.vec IS NOT NULL ORDER BY s.id
             """) { row in
-            guard let blob = row.blob(3), blob.count == rowBytes, rowFile.count < rows else { return }
-            blob.copyBytes(to: UnsafeMutableRawBufferPointer(start: matrix.halves + rowFile.count * Vectors.dimension,
-                                                             count: rowBytes))
+            guard rowFile.count < rows,
+                  row.copyBlob(3, to: matrix.halves + rowFile.count * Vectors.dimension, bytes: rowBytes)
+            else { return }
             rowSegment.append(row.int(0))
             rowFile.append(row.int(1))
             rowModality.append(Modality(rawValue: row.text(2) ?? "") ?? .none)
@@ -366,6 +366,7 @@ public final class Searcher {
         return text
     }
 
+    /// (The Windows and Linux app's previews keep the same list in shell/ui/results.js.)
     static let stopwords: Set<String> = [
         "a", "an", "the", "of", "in", "on", "at", "to", "for", "with", "and", "or", "my", "me", "that", "this",
         "these", "those", "from", "about", "where", "what", "which", "who", "when", "is", "was", "are", "were", "be",
