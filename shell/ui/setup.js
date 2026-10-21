@@ -363,7 +363,8 @@ function render() {
   PAGES.forEach((name, index) => { $(name).hidden = index !== page; });
   $("back").hidden = firstTime ? page === 0 || page === PAGES.length - 1 : false;
   $("back").textContent = firstTime ? "Back" : "Cancel";
-  $("next").textContent = !firstTime ? "Save" : page === PAGES.length - 1 ? "Done" : "Continue";
+  $("next").textContent = !firstTime ? "Save" : page === PAGES.length - 1 ? "Done"
+    : PAGES[page] === "folders" && selection.chosen.length ? "Start indexing" : "Continue";
   $("next").disabled = page === 1 && !selection.folders().length;
   $("model").hidden = codeMode || page === 0 || page === PAGES.length - 1;
   renderFooter();
