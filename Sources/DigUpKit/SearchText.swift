@@ -42,6 +42,19 @@ public enum SearchText {
         return letters > 0 && letters * 4 >= others
     }
 
+    /// Enough prose for a vector: `hasWords`, and at least four words with a letter in them. A stub (`DEBUG=true`,
+    /// `root = true`, a two-line .gitignore) passes the letters test and then wins generic queries on meaning alone,
+    /// since text that short collapses toward the model's generic centre; its words are still found by keyword.
+    public static func hasProse(_ text: String) -> Bool {
+        guard hasWords(text) else { return false }
+        var words = 0
+        for word in text.split(whereSeparator: \.isWhitespace) where word.unicodeScalars.contains(where: CharacterSet.letters.contains) {
+            words += 1
+            if words >= 4 { return true }
+        }
+        return false
+    }
+
     /// Where `word` is in `text` as keyword search would find it (normalized, ignoring case and accents), as ranges of
     /// the text as it's written: whole words, and for a word of a language that attaches endings, the whole word it
     /// starts ("কুমির" marks all of "কুমিরের"). For marking matches on what's shown (it never splits a letter from its
