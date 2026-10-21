@@ -80,6 +80,9 @@ struct Shell {
     updates: updates::Updates,
     /// What the tray icon shows now (tray_icon.rs): redrawn only when that changes.
     tray_look: Mutex<Option<tray_icon::Look>>,
+    /// Whether something draws the tray icon (Linux: a StatusNotifier host on the bus), and when that was last asked.
+    #[allow(dead_code)]
+    tray_host: Mutex<Option<(bool, std::time::Instant)>>,
     /// When the search service last reloaded the index (while indexing, at most every few seconds).
     reloaded: Mutex<Instant>,
     /// When the index helper's watchdog ended it lately (on a file whose reading ran away).
@@ -743,6 +746,7 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         update_item: Mutex::new(None),
         updates: updates::Updates::default(),
         tray_look: Mutex::new(None),
+        tray_host: Mutex::new(None),
         reloaded: Mutex::new(Instant::now()),
         watchdog_stops: Mutex::default(),
         window_inner: Mutex::new(None),
@@ -1751,7 +1755,7 @@ fn changed(app: &AppHandle) {
     let look = tray_icon::Look::new(snapshot["progress"].as_f64(), snapshot["paused"] == true)
         .with_update(!snapshot["update"].is_null());
     let mut shown = shell.tray_look.lock().unwrap();
-    if shown.is_some() && *shown != Some(look) {
+    if shown.is_some() && *shown != Some(look) && tray_host_present(&shell) {
         if let Some(tray) = app.tray_by_id("digup") {
             if tray.set_icon(Some(tray_icon::image(look))).is_ok() {
                 *shown = Some(look);
@@ -1760,6 +1764,37 @@ fn changed(app: &AppHandle) {
     }
     drop(shown);
     let _ = app.emit("state", snapshot);
+}
+
+/// Whether something will draw the tray icon. On Linux libappindicator needs a StatusNotifier host (a bar with a
+/// tray); without one (Hyprland without a bar's tray, a bare session) every redraw logs a Gtk-CRITICAL, so the icon is
+/// left as it is until a host shows up, asked again every 30 s. Elsewhere there's always one.
+fn tray_host_present(shell: &Shell) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let mut known = shell.tray_host.lock().unwrap();
+        if let Some((present, asked)) = *known {
+            if present || asked.elapsed() < std::time::Duration::from_secs(30) {
+                return present;
+            }
+        }
+        let present = (|| -> zbus::Result<bool> {
+            let connection = zbus::blocking::Connection::session()?;
+            let bus = zbus::blocking::fdo::DBusProxy::new(&connection)?;
+            Ok(bus.name_has_owner("org.kde.StatusNotifierWatcher".try_into()?)?)
+        })()
+        .unwrap_or(true);   // can't tell: draw as before
+        if known.map_or(true, |(was, _)| was != present) {
+            eprintln!("digup-shell: tray host {}", if present { "found" } else { "not found: the icon isn't redrawn" });
+        }
+        *known = Some((present, std::time::Instant::now()));
+        present
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = shell;
+        true
+    }
 }
 
 /// The waiting update's line in the tray menu, under the status line: added when one is found, its words following the
