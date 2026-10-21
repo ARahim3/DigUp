@@ -4,11 +4,11 @@
     <title>DigUp</title>
     <item>
       <title>0.6.2</title>
-      <pubDate>Wed, 21 Oct 2026 18:34:26 GMT</pubDate>
+      <pubDate>Wed, 21 Oct 2026 20:39:03 GMT</pubDate>
       <sparkle:version>13</sparkle:version>
       <sparkle:shortVersionString>0.6.2</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-      <description><![CDATA[<p>Fixes for the two weeks since 0.6.1, many of them from people who sent pull requests, and spreadsheets and presentations as a new kind of file.</p>
+      <description><![CDATA[<p>Fixes for the ten days since 0.6.1, many of them from people who sent pull requests, and spreadsheets and presentations as a new kind of file.</p>
 <p><b>Fixed</b></p>
 <ul>
 <li>Battery drain after the first pass: a folder where something rewrites files all the time no longer makes DigUp re-scan everything, and iCloud Drive or Google Drive folders no longer make every scan take minutes.</li>
