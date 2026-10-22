@@ -208,7 +208,7 @@ function reasonLines(leftOut, skippedReasons) {
   };
   const byCount = (a, b) => b[1] - a[1];
   const left = Object.entries(leftOut).sort(byCount).map(([reason, count]) =>
-    reason.startsWith("folders ") ? `${count.toLocaleString()} ${reason} weren't opened` : `${count.toLocaleString()} ${crawl[reason] || reason}`);
+    reason.startsWith("folders ") ? `${count.toLocaleString()} folders weren't opened (${reason.slice(8)})` : `${count.toLocaleString()} ${crawl[reason] || reason}`);
   const skipped = Object.entries(skippedReasons).sort(byCount).map(([reason, count]) => `${count.toLocaleString()} skipped: ${reason}`);
   return left.concat(skipped);
 }

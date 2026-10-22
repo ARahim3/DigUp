@@ -561,7 +561,7 @@ private struct FolderStatusRow: View {
             "excluded type": "of the file types you skip",
         ]
         let leftOut = summary.leftOut.sorted { $0.value > $1.value }.map { reason, count in
-            reason.hasPrefix("folders ") ? "\(count.formatted()) \(reason) weren't opened"
+            reason.hasPrefix("folders ") ? "\(count.formatted()) folders weren't opened (\(reason.dropFirst(8)))"
                 : "\(count.formatted()) \(crawl[reason] ?? reason)"
         }
         let skipped = summary.skippedReasons.sorted { $0.value > $1.value }.map { "\($1.formatted()) skipped: \($0)" }
