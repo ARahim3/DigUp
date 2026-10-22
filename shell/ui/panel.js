@@ -25,6 +25,8 @@ const state = {
   generation: 0,
   finalGeneration: -1,   // the generation whose meaning results are showing: late keyword results don't replace them
   timer: null,
+  composing: false,
+  input: "",              // last submitted field value: the input after compositionend is redundant
   phase: "empty",        // empty | words | meaning | wordsOnly | codeHint
   hasCode: true,         // code search has folders (the state's hasCode)
   text: "",              // what was searched (without "code:")
@@ -45,7 +47,10 @@ let debugPending = false;
 
 // MARK: Searching
 
-function queryChanged() {
+function queryChanged(event) {
+  if (state.composing || event?.isComposing) return;
+  if (event?.type === "input" && $query.value === state.input) return;
+  state.input = $query.value;
   closeBig();
   const generation = ++state.generation;
   clearTimeout(state.timer);
@@ -64,7 +69,7 @@ function queryChanged() {
     .then((reply) => {
       if (generation === state.generation && state.finalGeneration !== generation) show(reply, text, "words");
     })
-    .catch(failed);
+    .catch((error) => { if (generation === state.generation) failed(error); });
   // The meaning is embedded now, so its vector is ready when typing pauses: the pause is the whole wait.
   ask({ op: "embed_ahead", q: text, code }).catch(() => {});
   state.timer = setTimeout(() => {
@@ -75,7 +80,7 @@ function queryChanged() {
         show(reply, text, reply.meaning ? "meaning" : "wordsOnly");
         if (debugPending) report();
       })
-      .catch(failed);
+      .catch((error) => { if (generation === state.generation) failed(error); });
   }, TYPING_PAUSE);
 }
 
@@ -431,9 +436,18 @@ function message(title, text) {
 // MARK: Keys and events
 
 $query.addEventListener("input", queryChanged);
+$query.addEventListener("compositionstart", () => {
+  state.composing = true;
+  clearTimeout(state.timer);
+  ++state.generation;   // replies for the previous query must not interrupt conversion
+});
+$query.addEventListener("compositionend", () => {
+  state.composing = false;
+  queryChanged();
+});
 
 document.addEventListener("keydown", (event) => {
-  if (event.isComposing) return; // an input method is composing: its keys
+  if (state.composing || event.isComposing) return; // an input method is composing: its keys
   const modifier = isMac ? event.metaKey : event.ctrlKey;
   switch (event.key) {
     case "Escape":
