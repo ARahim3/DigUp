@@ -7,8 +7,8 @@ Search the files on your computer by what's in them, with Google DeepMind's
 <a href="https://huggingface.co/google/embeddinggemma-2">EmbeddingGemma 2</a>.</p>
 
 <p align="center"><a href="https://github.com/ARahim3/DigUp/releases/latest"><b>Download for Mac</b></a> ·
-<a href="https://github.com/ARahim3/DigUp/releases/tag/v0.7.0-beta.2"><b>Windows (beta)</b></a> ·
-<a href="https://github.com/ARahim3/DigUp/releases/tag/v0.7.0-beta.2"><b>Linux (beta)</b></a><br>
+<a href="https://github.com/ARahim3/DigUp/releases/tag/v0.7.0-beta.3"><b>Windows (beta)</b></a> ·
+<a href="https://github.com/ARahim3/DigUp/releases/tag/v0.7.0-beta.3"><b>Linux (beta)</b></a><br>
 <sub>Free and open source. Everything runs on your computer.</sub></p>
 
 <p align="center">
@@ -55,7 +55,7 @@ Applications, or use Homebrew: `brew install --cask arahim3/tap/digup`. It needs
 later.
 
 **Windows.** Download `DigUp_x.y.z_x64-setup.exe` from the
-[beta release](https://github.com/ARahim3/DigUp/releases/tag/v0.7.0-beta.2) and run it. It installs for you only, with
+[beta release](https://github.com/ARahim3/DigUp/releases/tag/v0.7.0-beta.3) and run it. It installs for you only, with
 no admin rights. Windows may say it doesn't recognize the app, because the installer isn't signed yet: choose More
 info, then Run anyway. It needs 64-bit Windows 10 or 11.
 
