@@ -56,6 +56,10 @@ import Testing
         #expect(Rules.looksMachineNamed("000123"))
         #expect(!Rules.looksMachineNamed("IMG_1234"))
         #expect(!Rules.looksMachineNamed("PXL_20260101_123456789"))
+        #expect(!Rules.looksMachineNamed("20261021_143022"))
+        #expect(!Rules.looksMachineNamed("2026-10-21 14.30.22"))
+        #expect(!Rules.looksMachineNamed("20261021_143022(1)"))
+        #expect(Rules.looksMachineNamed("20269921_143022"))
         #expect(!Rules.looksMachineNamed("Screenshot 2026-10-01 at 9.41.07 PM"))
         #expect(!Rules.looksMachineNamed("Tokyo itinerary"))
     }
@@ -64,7 +68,8 @@ import Testing
         let clips = (0..<400).map { (folder: "/x/clips", stem: String(format: "clip_%06d", $0), kind: FileKind.audio) }
         let photos = (0..<400).map { (folder: "/x/camera", stem: "IMG_\(1000 + $0)", kind: FileKind.image) }
         let few = (0..<50).map { (folder: "/x/few", stem: "clip_\($0)", kind: FileKind.audio) }
-        let datasets = Rules.datasetFolders(clips + photos + few, roots: [])
+        let phone = (0..<400).map { (folder: "/x/phone", stem: "20261021_\(100000 + $0)", kind: FileKind.image) }
+        let datasets = Rules.datasetFolders(clips + photos + few + phone, roots: [])
         #expect(datasets == ["/x/clips": 400])
     }
 

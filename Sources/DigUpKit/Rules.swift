@@ -180,12 +180,19 @@ public enum Rules {
 
     static let cameraPrefixes = ["img", "dsc", "pxl", "mvimg", "vid", "gopr", "dji", "photo", "whatsapp", "screenshot"]
 
-    /// Machine-made names like "clip_000123", "frame-0042" or "3f9a1c0e-…", but not camera names like "IMG_1234".
+    /// Machine-made names like "clip_000123", "frame-0042" or "3f9a1c0e-…", but not camera names like "IMG_1234" or
+    /// the date and time phones write ("20261021_143022", "2026-10-21 14.30.22").
     public static func looksMachineNamed(_ stem: String) -> Bool {
         let name = stem.lowercased()
-        if cameraPrefixes.contains(where: { name.hasPrefix($0) }) { return false }
+        if cameraPrefixes.contains(where: { name.hasPrefix($0) }) || startsWithDate(name) { return false }
         if name.range(of: #"^[0-9a-f]{8,}([-_][0-9a-f]{4,})*$"#, options: .regularExpression) != nil { return true }
         return name.range(of: #"^[a-z]{0,16}[-_. ]?\d{3,}([-_.]\d+)*$"#, options: .regularExpression) != nil
+    }
+
+    /// A name that starts with a date (year, month and day, with or without separators), as phone cameras write them.
+    static func startsWithDate(_ name: String) -> Bool {
+        name.range(of: #"^(19|20)\d{2}[-_.]?(0[1-9]|1[0-2])[-_.]?(0[1-9]|[12]\d|3[01])([-_. (]|$)"#,
+                   options: .regularExpression) != nil
     }
 
     /// Folders with hundreds of same-kind, machine-named media files: training data, not your stuff.
