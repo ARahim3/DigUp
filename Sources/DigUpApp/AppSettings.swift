@@ -23,8 +23,11 @@ nonisolated struct AppSettings: Sendable {
     var modelsDirectory: URL
     var hotkey: String
     /// On (the default), the big first pass of a folder (the backfill) runs on battery too; off, it waits for a
-    /// charger. New files always index right away, and Low Power Mode or a hot Mac make the backfill wait either way.
+    /// charger. New files always index right away, and a hot Mac makes the backfill wait either way.
     var indexOnBattery: Bool
+    /// Off (the default): the backfill waits while Low Power Mode is on — MacBook Airs can get hot during that
+    /// pass. On: it keeps going in Low Power Mode. New files always index right away.
+    var indexInLowPowerMode: Bool
     /// "Index only at set hours": off by default. Outside the hours no helper runs (no crawl, no new files, no
     /// backfill); search works all day. The hours are kept while it's off.
     var indexHoursOn: Bool
@@ -52,6 +55,11 @@ nonisolated struct AppSettings: Sendable {
     static let batteryTitle = "Index on battery power"
     static let batteryDetail = "When it's off, a folder's first pass waits for a charger. New files always go in right away."
 
+    /// Low Power Mode switch: off keeps MacBook Airs cooler during the first pass.
+    static let lowPowerTitle = "Index in Low Power Mode"
+    static let lowPowerDetail = "Off by default — some MacBook Airs get hot during the first pass. When it's off, DigUp "
+        + "waits until Low Power Mode is turned off. New files still go in right away."
+
     /// Where settings are saved. Reads see launch arguments first either way. (UserDefaults is thread-safe.)
     nonisolated(unsafe) static let defaults: UserDefaults = {
         guard let suite = UserDefaults.standard.string(forKey: "defaultsSuite"), !suite.isEmpty,
@@ -71,6 +79,7 @@ nonisolated struct AppSettings: Sendable {
             modelsDirectory: defaults.string(forKey: "modelsDir").map(folderURL) ?? ModelFiles.installed,
             hotkey: defaults.string(forKey: "hotkey") ?? defaultHotkey,
             indexOnBattery: defaults.object(forKey: "indexOnBattery") == nil || defaults.bool(forKey: "indexOnBattery"),
+            indexInLowPowerMode: defaults.bool(forKey: "indexInLowPowerMode"),
             indexHoursOn: defaults.bool(forKey: "indexHoursOn"),
             indexHours: IndexHours(
                 start: defaults.object(forKey: "indexHoursFrom") == nil ? IndexHours.night.start
@@ -119,6 +128,10 @@ nonisolated struct AppSettings: Sendable {
 
     static func save(indexOnBattery: Bool) {
         defaults.set(indexOnBattery, forKey: "indexOnBattery")
+    }
+
+    static func save(indexInLowPowerMode: Bool) {
+        defaults.set(indexInLowPowerMode, forKey: "indexInLowPowerMode")
     }
 
     static func save(indexHoursOn: Bool, hours: IndexHours) {
