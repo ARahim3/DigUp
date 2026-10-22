@@ -238,7 +238,8 @@ private struct PanelRow: View {
     var body: some View {
         HStack(spacing: 10) {
             // Code's thumbnail would be a page of tiny text: its file type's icon says more.
-            ThumbnailView(url: row.url, side: 36, iconOnly: row.kind == .code)
+            // So is an app's: its icon.
+            ThumbnailView(url: row.iconURL, side: 36, iconOnly: row.kind == .code || row.isApp)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(row.title)
@@ -268,7 +269,7 @@ private struct PanelRow: View {
         .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
             .fill(selected ? Color.accentColor.opacity(0.24) : Color.clear))
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(row.kind.title), \(row.name), \(row.reason)")
+        .accessibilityLabel("\(row.kindTitle), \(row.name), \(row.reason)")
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }

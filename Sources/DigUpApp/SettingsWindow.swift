@@ -201,6 +201,7 @@ private struct SettingsPane: View {
 
 private struct GeneralSettings: View {
     @Bindable var state: SettingsState
+    @AppStorage(AppLauncher.settingKey, store: AppSettings.defaults) private var searchApps = true
 
     var body: some View {
         Form {
@@ -214,6 +215,17 @@ private struct GeneralSettings: View {
                         Text("Opens the search panel from any app.")
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            Section {
+                Toggle(isOn: $searchApps) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Find apps by name")
+                        Text("Apps whose names you type come first in the search panel, and Return opens the top one.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
