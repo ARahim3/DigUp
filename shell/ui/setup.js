@@ -19,6 +19,10 @@ const CHEVRON = '<svg viewBox="0 0 16 16"><path d="M6 3.5 L10.5 8 L6 12.5" fill=
 const $ = (id) => document.getElementById(id);
 let page = 0;
 let firstTime = true;
+// Each step's estimates start when its page shows, so a first launch looks at nothing before the Welcome page said
+// it would (Choose Folders… later opens on the folders page, and starts at once).
+let estimatesStarted = false;
+let codeEstimatesStarted = false;
 let info = { offered: [], chosen: [], skipped: [], hotkey: "", model: { state: "checking" }, state: {}, auto: false };
 const codeMode = new URLSearchParams(location.search).has("code");
 
@@ -370,6 +374,14 @@ function render() {
   renderFooter();
   if (PAGES[page] === "ready") renderProgress();
   if (PAGES[page] === "code") renderCode();
+  if (PAGES[page] === "folders" && !estimatesStarted) {
+    estimatesStarted = true;
+    estimate([...rows]);
+  }
+  if (PAGES[page] === "code" && !codeEstimatesStarted) {
+    codeEstimatesStarted = true;
+    estimateCode();
+  }
 }
 
 function renderFooter() {
@@ -606,7 +618,7 @@ function showModel(model) {
 
 // This computer was timed: the folders' times are its own now.
 tauri.event.listen("speed", () => {
-  if (rows.length) estimate([...rows]);
+  if (rows.length && estimatesStarted) estimate([...rows]);
 });
 
 // MARK: The shortcut
@@ -658,10 +670,7 @@ function element(tag, className, text) {
 async function start() {
   info = await invoke(codeMode ? "code_setup_info" : "setup_info");
   firstTime = !info.setUp;
-  if (firstTime && info.codeOffered?.length) {
-    PAGES = ["welcome", "folders", "code", "shortcut", "ready"];
-    estimateCode();
-  }
+  if (firstTime && info.codeOffered?.length) PAGES = ["welcome", "folders", "code", "shortcut", "ready"];
   if (codeMode) {
     $("folders").querySelector("h2").textContent = "Which code should DigUp search?";
     $("folders-subtitle").textContent = "Pick the folders with your code, and open one to leave out some of its "
@@ -683,7 +692,6 @@ async function start() {
   for (const row of rows) {
     if ([...selection.chosen, ...selection.skipped].some((path) => same(parentOf(path), row))) open.add(key(row));
   }
-  estimate([...rows]);
   if (!codeMode) {
     showModel(info.model);
     tauri.event.listen("model", ({ payload }) => showModel(payload));
