@@ -53,7 +53,12 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
     private let previews: URL
     private var rendered: [String: String] = [:]
     private let renderLock = NSLock()
-    private let renderSlots = DispatchSemaphore(value: 2)
+    private let renderQueue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.maxConcurrentOperationCount = 2
+        queue.qualityOfService = .userInitiated
+        return queue
+    }()
 
     init(index: URL, roots: [String], skipped: [String], types: Set<String>, codeRoots: [String],
          codeSkipped: [String], idleSeconds: Double) throws {
@@ -97,10 +102,8 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
                     return 0
                 }
                 if op == "render" {
-                    renderSlots.wait()
                     let request = UncheckedSendable(request)
-                    Thread.detachNewThread { [self] in
-                        defer { renderSlots.signal() }
+                    renderQueue.addOperation { [self] in
                         var reply: [String: Any]
                         do { reply = try render(request.value) } catch {
                             reply = ["ok": false, "error": String("\(error)".prefix(500))]
