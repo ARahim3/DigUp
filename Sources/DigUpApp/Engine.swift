@@ -918,20 +918,13 @@ nonisolated final class Engine: @unchecked Sendable {
                     var summary = RootSummary(path: root.path, missing: !AppSettings.isFolder(root),
                                               unreadable: unreadable.contains(root.path))
                     summary.leftOut = leftOut[root.path] ?? leftOut[FolderSelection.realPath(root.path)] ?? [:]
-                    for file in (try? store?.files(under: [root.path])) ?? [] {
-                        summary.files += 1
-                        summary.kinds[file.kind, default: 0] += 1
-                        switch file.state {
-                        case "done": summary.indexed += 1
-                        case "partial":
-                            summary.indexed += 1
-                            summary.unfinished += 1
-                        case "pending": summary.pending += 1
-                        case "failed": summary.failed += 1
-                        default:
-                            summary.skipped += 1
-                            summary.skippedReasons[file.detail ?? "not read", default: 0] += 1
-                        }
+                    if let counts = try? store?.fileSummary(under: root.path) {
+                        (summary.files, summary.indexed, summary.pending) =
+                            (counts.files, counts.indexed, counts.pending)
+                        (summary.failed, summary.skipped, summary.unfinished) =
+                            (counts.failed, counts.skipped, counts.unfinished)
+                        summary.kinds = counts.kinds
+                        summary.skippedReasons = counts.skippedReasons
                     }
                     return summary
                 }

@@ -49,11 +49,24 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
     private var warnedAboutSource = false
     private let lock = NSLock()
     private let output = NSLock()
+    private let typedLock = NSLock()
+    private var newestTyped: String?
+    private let requestQueue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.maxConcurrentOperationCount = 1
+        queue.qualityOfService = .userInitiated
+        return queue
+    }()
     /// Renders for previews: two at a time, beside the request loop, each made once per file version.
     private let previews: URL
     private var rendered: [String: String] = [:]
     private let renderLock = NSLock()
-    private let renderSlots = DispatchSemaphore(value: 2)
+    private let renderQueue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.maxConcurrentOperationCount = 2
+        queue.qualityOfService = .userInitiated
+        return queue
+    }()
 
     init(index: URL, roots: [String], skipped: [String], types: Set<String>, codeRoots: [String],
          codeSkipped: [String], idleSeconds: Double) throws {
@@ -92,15 +105,14 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             do {
                 guard let op = request["op"] as? String else { throw CLIError("no op") }
                 if op == "quit" {
+                    requestQueue.cancelAllOperations()
                     write(["id": id, "ok": true])
                     lock.withLock { stopEncoder() }
                     return 0
                 }
                 if op == "render" {
-                    renderSlots.wait()
                     let request = UncheckedSendable(request)
-                    Thread.detachNewThread { [self] in
-                        defer { renderSlots.signal() }
+                    renderQueue.addOperation { [self] in
                         var reply: [String: Any]
                         do { reply = try render(request.value) } catch {
                             reply = ["ok": false, "error": String("\(error)".prefix(500))]
@@ -110,13 +122,33 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
                     }
                     continue
                 }
-                reply = try lock.withLock { try handle(op, request) }
+                let request = UncheckedSendable(request)
+                let typed = op == "embed_ahead"
+                    ? Self.vectorKey(request.value["q"] as? String ?? "", code: request.value["code"] as? Bool ?? false)
+                    : nil
+                if let typed { typedLock.withLock { newestTyped = typed } }
+                requestQueue.addOperation { [self] in
+                    var reply: [String: Any]
+                    do {
+                        if let typed, typedLock.withLock({ newestTyped }) != typed {
+                            reply = ["ok": true]
+                        } else {
+                            reply = try lock.withLock { try handle(op, request.value) }
+                        }
+                    } catch {
+                        reply = ["ok": false, "error": String("\(error)".prefix(500))]
+                    }
+                    reply["id"] = request.value["id"] ?? NSNull()
+                    write(reply)
+                }
+                continue
             } catch {
                 reply = ["ok": false, "error": String("\(error)".prefix(500))]
             }
             reply["id"] = id
             write(reply)
         }
+        requestQueue.waitUntilAllOperationsAreFinished()
         lock.withLock { stopEncoder() }
         return 0
     }
@@ -176,10 +208,9 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             let code = request["code"] as? Bool ?? false
             return ["text": try (code ? codeSearcher : searcher)?.text(ofSegment: segment) ?? NSNull()]
         case "reload":
-            let hadVectors = searcher.vectorsLoaded
-            searcher = try Searcher(store: store, loadVectors: hadVectors)
-            if let codeStore {
-                codeSearcher = try Searcher(store: codeStore, loadVectors: codeSearcher?.vectorsLoaded ?? false)
+            if searcher.vectorsLoaded { try searcher.reload() } else { try searcher.reloadFiles() }
+            if let codeSearcher {
+                if codeSearcher.vectorsLoaded { try codeSearcher.reload() } else { try codeSearcher.reloadFiles() }
             } else {
                 try openCode()
             }
@@ -239,23 +270,16 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
         var states = ["indexed": 0, "pending": 0, "failed": 0, "skipped": 0, "unfinished": 0]
         var kinds: [String: Int] = [:]
         var skippedReasons: [String: Int] = [:]   // why files were skipped once read ("no text", "silent or shorter than 2 s")
-        let files = (try? store?.files(under: [root])) ?? []
-        for file in files {
-            kinds[file.kind.rawValue, default: 0] += 1
-            switch file.state {
-            case "done": states["indexed", default: 0] += 1
-            case "partial":
-                states["indexed", default: 0] += 1
-                states["unfinished", default: 0] += 1
-            case "pending": states["pending", default: 0] += 1
-            case "failed": states["failed", default: 0] += 1
-            default:
-                states["skipped", default: 0] += 1
-                skippedReasons[file.detail ?? "not read", default: 0] += 1
-            }
+        var files = 0
+        if let summary = try? store?.fileSummary(under: root) {
+            files = summary.files
+            states = ["indexed": summary.indexed, "pending": summary.pending, "failed": summary.failed,
+                      "skipped": summary.skipped, "unfinished": summary.unfinished]
+            kinds = Dictionary(uniqueKeysWithValues: summary.kinds.map { ($0.key.rawValue, $0.value) })
+            skippedReasons = summary.skippedReasons
         }
         fields.merge(states) { $1 }
-        fields["files"] = files.count
+        fields["files"] = files
         fields["kinds"] = kinds
         fields["skipped_reasons"] = skippedReasons
         return fields
@@ -283,9 +307,11 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
     // MARK: The query encoder
 
     /// The query's vector (cached), or nil when the encoder can't run: keyword results still work.
+    private static func vectorKey(_ text: String, code: Bool) -> String { (code ? "code\u{0}" : "") + text }
+
     private func vector(for text: String, code: Bool) -> [Float]? {
         lastQuery = Date()
-        let key = (code ? "code\u{0}" : "") + text
+        let key = Self.vectorKey(text, code: code)
         if let cached = vectorCache[key] { return cached }
         guard let encoder = runningEncoder() else { return nil }
         do {

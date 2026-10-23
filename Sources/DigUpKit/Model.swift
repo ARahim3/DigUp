@@ -46,6 +46,9 @@ public struct IndexOptions: Sendable {
     public var maxCodeBytes = 1 << 20
     /// A notebook's file holds its outputs too (pictures, tables): bigger than this, it isn't read.
     public var maxNotebookBytes = 20 << 20
+    /// Documents larger than this are left out before extraction. The document index retains at most about 9 MB of
+    /// text, and loading a larger HTML or rich-text file can need several full-size intermediate strings.
+    public var maxDocumentBytes: Int64 = 64 << 20
     public var includeCode = false
     public var includeDatasets = false
     public var minImageSide = 256
