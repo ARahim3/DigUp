@@ -132,6 +132,10 @@ public enum Crawler {
                         leftOut("in the cloud, not downloaded", under: root.path)
                         return
                     }
+                    if !options.code, kind == .doc, info.size > options.maxDocumentBytes {
+                        leftOut("document over \(options.maxDocumentBytes >> 20) MB", under: root.path)
+                        return
+                    }
                     if options.code {
                         // Too big to be written by hand; a notebook's file holds its outputs too.
                         let limit = url.pathExtension.lowercased() == "ipynb" ? options.maxNotebookBytes

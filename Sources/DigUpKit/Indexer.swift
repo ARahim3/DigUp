@@ -497,6 +497,10 @@ public final class Indexer {
                 prepared.payload = .pdf(pages: read.pages, read: wanted, total: read.total, title: read.title)
             case .doc:
                 // The chunks are cut the same way every time, so a later step goes on where the last one stopped.
+                let size = FileSystem.info(of: url.path)?.size ?? batch[0].size
+                guard size <= options.maxDocumentBytes else {
+                    throw ExtractError.leftOut("document over \(options.maxDocumentBytes >> 20) MB")
+                }
                 let document: DocumentPreparationCache.Value
                 if let documentCache {
                     document = try documentCache.read(batch[0], at: url, limit: options.maxChunks + 1)
