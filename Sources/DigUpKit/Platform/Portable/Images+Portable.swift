@@ -8,9 +8,8 @@ extension ImageExtractor {
     /// No SVG here yet: stb and ffmpeg don't draw vector pictures.
     static let drawsVectorPictures = false
 
-    /// Writes a downscaled copy for the model: decoded in full, turned the way the camera held it, scaled so the long
-    /// side is `maxPixel`. stb reads JPEG, PNG, BMP, GIF, PSD, TGA and PNM here; HEIC, WebP, TIFF and AVIF go through
-    /// ffmpeg (`decodeWithFFmpeg`). RAW isn't read yet, and says so.
+    /// Writes a downscaled copy for the model. stb reads JPEG, PNG, BMP, GIF, PSD, TGA and PNM here; large pictures and
+    /// other formats go through ffmpeg, which scales while decoding. RAW isn't read yet, and says so.
     static func prepare(_ url: URL, maxPixel: Int, minSide: Int, to folder: URL, png: Bool) throws -> Prepared {
         let exif = EXIF.read(url)
         var image: RGBImage
@@ -19,17 +18,24 @@ extension ImageExtractor {
         if stbi_info(url.path, &storedWidth, &storedHeight, &channels) != 0 {
             (width, height) = (Int(storedWidth), Int(storedHeight))
             guard max(width, height) >= minSide else { throw ExtractError.tooSmall(width, height) }
-            guard let decoded = RGBImage.load(url.path) else { throw ExtractError.unreadable("can't decode image") }
-            image = decoded.oriented(exif?.orientation ?? 1)
+            guard let pixels = RGBImage.checkedPixelCount(width: width, height: height) else {
+                throw ExtractError.unreadable("image dimensions are too large")
+            }
+            if pixels > RGBImage.directDecodePixels {
+                image = try decodeWithFFmpeg(url, maxPixel: maxPixel, sourceSize: (width, height))
+            } else {
+                guard let decoded = RGBImage.load(url.path) else { throw ExtractError.unreadable("can't decode image") }
+                image = decoded.oriented(exif?.orientation ?? 1)
+            }
         } else {
             if let note = notReadYet(url.pathExtension.lowercased()) { throw ExtractError.unreadable(note) }
             if exif?.tiled == true {
                 throw ExtractError.unreadable("tiled TIFF pictures aren't read on this system yet")
             }
-            image = try decodeWithFFmpeg(url)
-            // Its size as shown (ImageIO reports it as stored: the two differ for a picture turned 90°).
-            (width, height) = (image.width, image.height)
+            let source = try sourceSize(url)
+            (width, height) = source
             guard max(width, height) >= minSide else { throw ExtractError.tooSmall(width, height) }
+            image = try decodeWithFFmpeg(url, maxPixel: maxPixel, sourceSize: source)
         }
         let longest = max(image.width, image.height)
         if longest > maxPixel {
@@ -42,18 +48,26 @@ extension ImageExtractor {
         return Prepared(path: out.path, width: width, height: height, taken: exif?.dateTimeOriginal)
     }
 
-    /// The whole picture, through ffmpeg as 8-bit RGB (PPM down a pipe), turned the way the file says (irot/imir in
+    /// The picture, scaled through ffmpeg as 8-bit RGB (PPM down a pipe), turned the way the file says (irot/imir in
     /// HEIF, the EXIF orientation elsewhere) and, for a tiled HEIC, stitched whole. ffmpeg 8.1 and later do both
     /// (2026-10-11; 6.1 reads no HEIC and leaves WebP and TIFF unturned), so builds bring their own. A
     /// TIFF stored in tiles (ImageIO writes uncompressed ones that way) comes out black, so `prepare` doesn't ask.
-    static func decodeWithFFmpeg(_ url: URL) throws -> RGBImage {
+    static func decodeWithFFmpeg(_ url: URL, maxPixel: Int, sourceSize: (Int, Int)) throws -> RGBImage {
         guard FFmpeg.ffmpeg != nil else {
-            throw ExtractError.unreadable("ffmpeg isn't installed (HEIC, WebP and TIFF pictures need it)")
+            throw ExtractError.unreadable("ffmpeg isn't installed (large, HEIC, WebP and TIFF pictures need it)")
+        }
+        guard RGBImage.checkedPixelCount(width: sourceSize.0, height: sourceSize.1) != nil else {
+            throw ExtractError.unreadable("image dimensions are too large")
         }
         var data = Data()
         do {
-            try FFmpeg.run(FFmpeg.ffmpeg, ["-v", "error", "-nostdin", "-i", url.path, "-frames:v", "1", "-pix_fmt",
-                                           "rgb24", "-f", "image2pipe", "-c:v", "ppm", "-"]) { data.append($0) }
+            try FFmpeg.run(FFmpeg.ffmpeg, ["-v", "error", "-nostdin", "-max_pixels", "\(RGBImage.maxSourcePixels)",
+                                           "-i", url.path, "-frames:v", "1", "-vf",
+                                           "scale='min(iw,\(maxPixel))':'min(ih,\(maxPixel))':"
+                                               + "force_original_aspect_ratio=decrease",
+                                           "-pix_fmt", "rgb24", "-f", "image2pipe", "-c:v", "ppm", "-"]) {
+                data.append($0)
+            }
         } catch {
             let ext = url.pathExtension.lowercased()
             if ext == "heic" || ext == "heif" { throw ExtractError.unreadable("this ffmpeg can't read HEIC (8.1 can)") }
@@ -61,6 +75,20 @@ extension ImageExtractor {
         }
         guard let image = RGBImage.load(data) else { throw ExtractError.unreadable("can't decode image") }
         return image
+    }
+
+    private static func sourceSize(_ url: URL) throws -> (Int, Int) {
+        guard FFmpeg.ffprobe != nil else {
+            throw ExtractError.unreadable("ffprobe isn't installed (HEIC, WebP and TIFF pictures need it)")
+        }
+        let text = try FFmpeg.output(FFmpeg.ffprobe, ["-v", "error", "-select_streams", "v:0", "-show_entries",
+                                                       "stream=width,height", "-of", "csv=p=0:s=x", url.path])
+        let dimensions = text.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "x")
+        guard dimensions.count == 2, let width = Int(dimensions[0]), let height = Int(dimensions[1]),
+              RGBImage.checkedPixelCount(width: width, height: height) != nil else {
+            throw ExtractError.unreadable("can't read image dimensions")
+        }
+        return (width, height)
     }
 
     /// Why a picture of a kind neither stb nor ffmpeg decodes isn't readable, for the file's note.
@@ -79,17 +107,28 @@ extension OCR {
 
 /// Packed 8-bit RGB in memory: what stb decodes to and encodes from.
 struct RGBImage {
+    static let maxSourcePixels = (256 << 20) / 3
+    static let directDecodePixels = (64 << 20) / 3
+    private static let maxSourceSide = 100_000
+
     var width: Int
     var height: Int
     var pixels: [UInt8]
+
+    static func checkedPixelCount(width: Int, height: Int) -> Int? {
+        guard width > 0, height > 0, width <= maxSourceSide, height <= maxSourceSide,
+              width <= maxSourcePixels / height else { return nil }
+        return width * height
+    }
 
     /// Decoded from a file (nil when stb can't read it).
     static func load(_ path: String) -> RGBImage? {
         var width: Int32 = 0, height: Int32 = 0, channels: Int32 = 0
         guard let pixels = stbi_load(path, &width, &height, &channels, 3) else { return nil }
         defer { stbi_image_free(pixels) }
-        return RGBImage(width: Int(width), height: Int(height),
-                        pixels: Array(UnsafeBufferPointer(start: pixels, count: Int(width) * Int(height) * 3)))
+        let (w, h) = (Int(width), Int(height))
+        guard let count = checkedPixelCount(width: w, height: h) else { return nil }
+        return RGBImage(width: w, height: h, pixels: Array(UnsafeBufferPointer(start: pixels, count: count * 3)))
     }
 
     /// Decoded from a file's bytes in memory (nil when stb can't read them).
@@ -102,8 +141,9 @@ struct RGBImage {
         }
         guard let pixels else { return nil }
         defer { stbi_image_free(pixels) }
-        return RGBImage(width: Int(width), height: Int(height),
-                        pixels: Array(UnsafeBufferPointer(start: pixels, count: Int(width) * Int(height) * 3)))
+        let (w, h) = (Int(width), Int(height))
+        guard let count = checkedPixelCount(width: w, height: h) else { return nil }
+        return RGBImage(width: w, height: h, pixels: Array(UnsafeBufferPointer(start: pixels, count: count * 3)))
     }
 
     /// Turned the way the camera held it (EXIF orientation 1–8), as ImageIO's thumbnails are.
