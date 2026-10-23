@@ -49,6 +49,14 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
     private var warnedAboutSource = false
     private let lock = NSLock()
     private let output = NSLock()
+    private let typedLock = NSLock()
+    private var newestTyped: String?
+    private let requestQueue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.maxConcurrentOperationCount = 1
+        queue.qualityOfService = .userInitiated
+        return queue
+    }()
     /// Renders for previews: two at a time, beside the request loop, each made once per file version.
     private let previews: URL
     private var rendered: [String: String] = [:]
@@ -97,6 +105,7 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             do {
                 guard let op = request["op"] as? String else { throw CLIError("no op") }
                 if op == "quit" {
+                    requestQueue.cancelAllOperations()
                     write(["id": id, "ok": true])
                     lock.withLock { stopEncoder() }
                     return 0
@@ -113,13 +122,33 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
                     }
                     continue
                 }
-                reply = try lock.withLock { try handle(op, request) }
+                let request = UncheckedSendable(request)
+                let typed = op == "embed_ahead"
+                    ? Self.vectorKey(request.value["q"] as? String ?? "", code: request.value["code"] as? Bool ?? false)
+                    : nil
+                if let typed { typedLock.withLock { newestTyped = typed } }
+                requestQueue.addOperation { [self] in
+                    var reply: [String: Any]
+                    do {
+                        if let typed, typedLock.withLock({ newestTyped }) != typed {
+                            reply = ["ok": true]
+                        } else {
+                            reply = try lock.withLock { try handle(op, request.value) }
+                        }
+                    } catch {
+                        reply = ["ok": false, "error": String("\(error)".prefix(500))]
+                    }
+                    reply["id"] = request.value["id"] ?? NSNull()
+                    write(reply)
+                }
+                continue
             } catch {
                 reply = ["ok": false, "error": String("\(error)".prefix(500))]
             }
             reply["id"] = id
             write(reply)
         }
+        requestQueue.waitUntilAllOperationsAreFinished()
         lock.withLock { stopEncoder() }
         return 0
     }
@@ -286,9 +315,11 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
     // MARK: The query encoder
 
     /// The query's vector (cached), or nil when the encoder can't run: keyword results still work.
+    private static func vectorKey(_ text: String, code: Bool) -> String { (code ? "code\u{0}" : "") + text }
+
     private func vector(for text: String, code: Bool) -> [Float]? {
         lastQuery = Date()
-        let key = (code ? "code\u{0}" : "") + text
+        let key = Self.vectorKey(text, code: code)
         if let cached = vectorCache[key] { return cached }
         guard let encoder = runningEncoder() else { return nil }
         do {
