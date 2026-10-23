@@ -270,23 +270,16 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
         var states = ["indexed": 0, "pending": 0, "failed": 0, "skipped": 0, "unfinished": 0]
         var kinds: [String: Int] = [:]
         var skippedReasons: [String: Int] = [:]   // why files were skipped once read ("no text", "silent or shorter than 2 s")
-        let files = (try? store?.files(under: [root])) ?? []
-        for file in files {
-            kinds[file.kind.rawValue, default: 0] += 1
-            switch file.state {
-            case "done": states["indexed", default: 0] += 1
-            case "partial":
-                states["indexed", default: 0] += 1
-                states["unfinished", default: 0] += 1
-            case "pending": states["pending", default: 0] += 1
-            case "failed": states["failed", default: 0] += 1
-            default:
-                states["skipped", default: 0] += 1
-                skippedReasons[file.detail ?? "not read", default: 0] += 1
-            }
+        var files = 0
+        if let summary = try? store?.fileSummary(under: root) {
+            files = summary.files
+            states = ["indexed": summary.indexed, "pending": summary.pending, "failed": summary.failed,
+                      "skipped": summary.skipped, "unfinished": summary.unfinished]
+            kinds = Dictionary(uniqueKeysWithValues: summary.kinds.map { ($0.key.rawValue, $0.value) })
+            skippedReasons = summary.skippedReasons
         }
         fields.merge(states) { $1 }
-        fields["files"] = files.count
+        fields["files"] = files
         fields["kinds"] = kinds
         fields["skipped_reasons"] = skippedReasons
         return fields
