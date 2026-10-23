@@ -208,10 +208,9 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             let code = request["code"] as? Bool ?? false
             return ["text": try (code ? codeSearcher : searcher)?.text(ofSegment: segment) ?? NSNull()]
         case "reload":
-            let hadVectors = searcher.vectorsLoaded
-            searcher = try Searcher(store: store, loadVectors: hadVectors)
-            if let codeStore {
-                codeSearcher = try Searcher(store: codeStore, loadVectors: codeSearcher?.vectorsLoaded ?? false)
+            if searcher.vectorsLoaded { try searcher.reload() } else { try searcher.reloadFiles() }
+            if let codeSearcher {
+                if codeSearcher.vectorsLoaded { try codeSearcher.reload() } else { try codeSearcher.reloadFiles() }
             } else {
                 try openCode()
             }

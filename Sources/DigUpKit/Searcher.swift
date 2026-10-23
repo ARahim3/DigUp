@@ -97,7 +97,8 @@ public final class Searcher {
         vectorsLoaded = false
     }
 
-    private func reloadFiles() throws {
+    /// Refreshes file kinds and vector provenance without bringing the vector matrix into memory.
+    public func reloadFiles() throws {
         fileKind.removeAll(keepingCapacity: true)
         try store.db.query("SELECT id, kind FROM files") { row in
             fileKind[row.int(0)] = FileKind(rawValue: row.text(1) ?? "")
