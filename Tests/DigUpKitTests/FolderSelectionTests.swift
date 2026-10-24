@@ -55,6 +55,31 @@ import Testing
         #expect(!selection.isSearched("/D/Media/Courses/old/b.mp4"))
     }
 
+    @Test func aHiddenFolderChosenInsideAChosenOneStays() {
+        var selection = FolderSelection(chosen: ["/h/Videos"])
+        selection.setSubfolder("/h/Videos/.gallery", on: true)
+        #expect(selection.chosen == ["/h/Videos", "/h/Videos/.gallery"])
+        #expect(selection.folders == ["/h/Videos", "/h/Videos/.gallery"])
+        #expect(selection.isSearched("/h/Videos/.gallery/clip.mp4"))
+        #expect(!selection.isSearched("/h/Videos/.cache/thumb.jpg"))   // the walk of Videos never gets there
+        #expect(FolderSelection(chosen: ["/h/app/node_modules"]).isSearched("/h/app/node_modules/x/readme.md"))
+        #expect(!FolderSelection(chosen: ["/h/app"]).isSearched("/h/app/node_modules/x/readme.md"))
+        #expect(!FolderSelection(chosen: ["/h"]).isSearched("/h/Scans.noindex/page.pdf"))
+    }
+
+    @Test func crawlsReadAChosenHiddenFolderBesideItsParent() throws {
+        let videos = folder.appendingPathComponent("Videos")
+        for (path, text) in [("Videos/trip.txt", "trip"), ("Videos/.gallery/clip.txt", "clip"),
+                             ("Videos/.cache/thumb.txt", "thumb")] {
+            let url = folder.appendingPathComponent(path)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(text.utf8).write(to: url)
+        }
+        let names = Crawler.crawl([videos, videos.appendingPathComponent(".gallery")], options: IndexOptions()).candidates
+            .map { ($0.path as NSString).lastPathComponent }.sorted()
+        #expect(names == ["clip.txt", "trip.txt"])
+    }
+
     @Test func foldersInsideAnotherChosenOneAreCovered() {
         let selection = FolderSelection(chosen: ["/D/A", "/D", "/E"])
         #expect(selection.folders == ["/D", "/E"])

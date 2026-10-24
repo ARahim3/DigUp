@@ -7,6 +7,8 @@ import Foundation
 ///
 /// The folder lists show folders with one level of their subfolders, each with a checkbox. A subfolder can be searched
 /// without the rest of its folder (it's chosen on its own), or left out of a folder that's searched (it's skipped).
+/// A folder the walk never enters from above (hidden, `.noindex`, a developer folder) isn't searched by the folder
+/// holding it, so choosing it on its own keeps it (`reaches`).
 public struct FolderSelection: Equatable, Sendable {
     /// A folder's checkbox: all of it, some of its subfolders, or none.
     public enum Mark: Sendable {
@@ -31,8 +33,18 @@ public struct FolderSelection: Equatable, Sendable {
 
     public static func isSearched(_ path: String, folders: [String], skipped: [String]) -> Bool {
         folders.contains { folder in
-            (path == folder || isInside(path, folder))
+            (path == folder || reaches(path, from: folder))
                 && !skipped.contains { skip in isInside(skip, folder) && (path == skip || isInside(path, skip)) }
+        }
+    }
+
+    /// Whether a walk of `folder` gets to `path`: inside it, with no hidden, `.noindex` or developer folder on the way.
+    /// The crawl never enters those from above (`Rules.isWalked`); chosen on their own they're read whole.
+    public static func reaches(_ path: String, from folder: String) -> Bool {
+        guard isInside(path, folder) else { return false }
+        let rest = path.dropFirst(folder.hasSuffix("/") ? folder.count : folder.count + 1)
+        return !rest.split(separator: "/").contains {
+            $0.hasPrefix(".") || $0.hasSuffix(".noindex") || Rules.skippedFolderNames.contains(String($0))
         }
     }
 

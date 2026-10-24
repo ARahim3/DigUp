@@ -38,6 +38,15 @@ function parentOf(path) { const c = canon(path); return c.slice(0, c.lastIndexOf
 function native(path) { return isWindows ? canon(path).replaceAll("/", "\\") : canon(path); }
 function nameOf(path) { return canon(path).split("/").filter(Boolean).pop() || path; }
 function unique(paths) { return paths.filter((path, index) => paths.findIndex((other) => same(other, path)) === index); }
+// Folders the crawl never enters from above (the engine's Rules.skippedFolderNames), with hidden and .noindex ones.
+const UNWALKED = new Set(["node_modules", "bower_components", "venv", "site-packages", "__pycache__", "DerivedData", "Pods", "Carthage"]);
+/// Whether a walk of `folder` gets to `path`: inside it, with no hidden, .noindex or developer folder on the way. Chosen
+/// on their own those are read whole, so a choice of one inside a chosen folder stands (the engine's FolderSelection).
+function reaches(path, folder) {
+  if (!inside(path, folder)) return false;
+  return !canon(path).slice(canon(folder).length + 1).split("/")
+    .some((part) => part.startsWith(".") || part.endsWith(".noindex") || UNWALKED.has(part));
+}
 
 // MARK: The selection (the engine's FolderSelection): chosen folders, minus the folders skipped inside them
 
@@ -45,7 +54,7 @@ const selection = {
   chosen: [],
   skipped: [],
   isSearched(path) {
-    return this.chosen.some((folder) => (same(path, folder) || inside(path, folder))
+    return this.chosen.some((folder) => (same(path, folder) || reaches(path, folder))
       && !this.skipped.some((skip) => inside(skip, folder) && (same(path, skip) || inside(path, skip))));
   },
   /// A folder's checkbox: mixed when some of its subfolders are skipped (it's searched) or chosen (it isn't).
@@ -73,7 +82,7 @@ const selection = {
   /// What the indexer gets: the chosen folders, without those another one already searches whole.
   folders() {
     const all = unique(this.chosen);
-    return all.filter((folder) => !all.some((other) => !same(other, folder) && inside(folder, other)
+    return all.filter((folder) => !all.some((other) => !same(other, folder) && reaches(folder, other)
       && !this.skipped.some((skip) => inside(skip, other) && (same(folder, skip) || inside(folder, skip)))));
   },
   /// The skips that leave something out (inside a folder that's searched).
