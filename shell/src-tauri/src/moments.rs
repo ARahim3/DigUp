@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 pub fn open_at(path: &str, page: Option<u32>, seconds: Option<f64>) -> bool {
     let Some(program) = default_app(path) else { return false };
     let Some(args) = arguments(&program, path, page, seconds) else { return false };
-    match crate::editors::start(&program, &args) {
+    match crate::launch::start(&program, &args) {
         Ok(()) => true,
         Err(error) => {
             eprintln!("digup-shell: {} didn't start: {error}", program.display());

@@ -11,6 +11,7 @@ mod editors;
 mod helper;
 mod hotkey;
 mod hours;
+mod launch;
 mod moments;
 mod options;
 mod settings;
@@ -36,7 +37,6 @@ use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, State, W
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
-use tauri_plugin_opener::OpenerExt;
 use watcher::FolderWatcher;
 
 const PANEL_WIDTH: f64 = 780.0;
@@ -397,7 +397,7 @@ fn open_path(app: AppHandle, path: String, page: Option<u32>, seconds: Option<f6
     if (page.is_some() || seconds.is_some()) && moments::open_at(&path, page, seconds) {
         return Ok(());
     }
-    app.opener().open_path(path, None::<&str>).map_err(|error| error.to_string())
+    launch::open(&app, &path)
 }
 
 /// Opens a code result at its line in the editor chosen in Settings (or the first one installed), else in its default
@@ -412,7 +412,7 @@ fn open_code(app: AppHandle, shell: State<'_, Arc<Shell>>, path: String, line: u
             Err(error) => eprintln!("digup-shell: {} didn't start: {error}", program.display()),
         }
     }
-    app.opener().open_path(path, None::<&str>).map_err(|error| error.to_string())
+    launch::open(&app, &path)
 }
 
 /// Ctrl+C on a result: the file on the clipboard, to paste in a file manager, a mail or a chat.
@@ -459,14 +459,14 @@ fn licenses_file(app: &AppHandle) -> Option<PathBuf> {
 #[tauri::command]
 fn open_licenses(app: AppHandle) -> Result<(), String> {
     let file = licenses_file(&app).ok_or("this build has no license notices")?;
-    app.opener().open_path(file.display().to_string(), None::<&str>).map_err(|error| error.to_string())
+    launch::open(&app, &file.display().to_string())
 }
 
 /// Shows a result in the file manager, selected.
 #[tauri::command]
 fn reveal(app: AppHandle, path: String) -> Result<(), String> {
     hide_panel(app.clone());
-    app.opener().reveal_item_in_dir(path).map_err(|error| error.to_string())
+    launch::reveal(&app, &path)
 }
 
 #[tauri::command]

@@ -3,7 +3,6 @@
 //! `vscode://file/…` links would need no program, but they ask for a confirmation each time.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 /// How an editor is told the line.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -86,26 +85,8 @@ impl Editor {
 
     /// Opens `path` at `line` with `program` (this editor's), without waiting for it.
     pub fn open(&self, program: &Path, path: &str, line: u32) -> std::io::Result<()> {
-        start(program, &self.arguments(path, line))
+        crate::launch::start(program, &self.arguments(path, line))
     }
-}
-
-/// Starts an app with `args`, without waiting for it.
-pub fn start(program: &Path, args: &[String]) -> std::io::Result<()> {
-    let mut command = Command::new(program);
-    command.args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: a .cmd would otherwise flash a console
-    }
-    let mut child = command.spawn()?;
-    // An editor's command line hands the file over and ends; an app that is its own program (gedit, a PDF viewer) stays:
-    // either way it's reaped when it ends.
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
-    Ok(())
 }
 
 /// The editors installed, in the list's order.
