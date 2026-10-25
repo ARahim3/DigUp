@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% block body_class %}download-page{% endblock %}
+
+{% macro file_card(file, label, primary=false) %}
+<div class="file">
+  <div class="file-main">
+    <a class="btn {{ 'btn-primary' if primary else 'btn-quiet' }} btn-lg" href="{{ file.url if file else site.releases }}">{{ icon('download') }}{{ label }}</a>
+    {% if file %}<p class="file-meta"><span>{{ file.name }}</span><span>{{ file.size }}</span><span>{{ file.date }}</span></p>{% endif %}
+  </div>
+  {% if file and file.sha256 %}
+  <div class="sha"><span class="sha-label">SHA-256</span><code class="sha-value">{{ file.sha256 }}</code><button class="copy" type="button" data-copy="{{ file.sha256 }}" aria-label="Copy the SHA-256">{{ icon('copy') }}</button></div>
+  {% endif %}
+</div>
+{% endmacro %}
+
+{% macro command(text) %}<div class="cmd"><pre><code>{{ text }}</code></pre><button class="copy" type="button" data-copy="{{ text }}" aria-label="Copy the command">{{ icon('copy') }}</button></div>{% endmacro %}
+
+{% block main %}
+<section class="page-hero wrap">
+  <h1>Download DigUp</h1>
+  <p class="page-lede">Free and open source. The app is small; the model ({{ site.model.download }}) downloads once, on first launch, while you pick the folders to search.</p>
+</section>
+
+<section class="wrap dl" aria-label="Downloads">
+  <div class="tabs dl-tabs" data-tabs data-tabs-os>
+    <section class="tab" data-tab="mac" aria-label="Mac" id="mac">
+      <p class="tab-label">Mac</p>
+      <div class="dl-grid">
+        <div class="dl-card">
+          <header><h2>DigUp for Mac</h2><span class="pill">{{ ('Version ' ~ latest.mac.version) if latest.mac else 'Stable' }}</span></header>
+          <p>Needs {{ site.requirements.mac }}. Signed with a Developer ID and notarized by Apple.</p>
+          {{ file_card(latest.mac, 'Download for Mac', true) }}
+          <p class="dl-alt">Or with Homebrew:</p>
+          {{ command(site.homebrew) }}
+        </div>
+        <div class="dl-steps">
+          <h3>Install</h3>
+          <ol>
+            <li>Open the DMG and drag DigUp to Applications.</li>
+            <li>Open DigUp. While the model downloads, pick the folders to search; each shows how long its first pass will take.</li>
+            <li>Press <kbd>⇧</kbd><kbd>⌘</kbd><kbd>Space</kbd> in any app and describe what you're looking for.</li>
+          </ol>
+          <p><a class="text-link" href="{{ url('docs/install-mac/') }}">The full Mac guide</a></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="tab" data-tab="windows" aria-label="Windows" id="windows">
+      <p class="tab-label">Windows</p>
+      <div class="dl-grid">
+        <div class="dl-card">
+          <header><h2>DigUp for Windows</h2><span class="pill pill-beta">{{ ('Beta ' ~ latest.windows.version) if latest.windows else 'Beta' }}</span></header>
+          <p>Needs {{ site.requirements.windows }}. Installs for you only, with no admin rights.</p>
+          {{ file_card(latest.windows, 'Download the installer', true) }}
+          <aside class="callout callout-warning">{{ icon('warn') }}<div class="callout-body"><p>Windows may say it protected your PC, because the installer isn't signed yet. Choose <b>More info</b>, then <b>Run anyway</b>.</p></div></aside>
+        </div>
+        <div class="dl-steps">
+          <h3>Install</h3>
+          <ol>
+            <li>Run the installer. It adds DigUp to the Start menu and the tray.</li>
+            <li>Open DigUp. While the model downloads, pick the folders to search. A quick check decides whether the model runs on your graphics card or the processor.</li>
+            <li>Press <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>Space</kbd> in any app and describe what you're looking for.</li>
+          </ol>
+          <p><a class="text-link" href="{{ url('docs/install-windows/') }}">The full Windows guide</a></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="tab" data-tab="linux" aria-label="Linux" id="linux">
+      <p class="tab-label">Linux</p>
+      <div class="dl-grid">
+        <div class="dl-card">
+          <header><h2>DigUp for Linux</h2><span class="pill pill-beta">{{ ('Beta ' ~ latest.linux_deb.version) if latest.linux_deb else 'Beta' }}</span></header>
+          <p>Needs {{ site.requirements.linux }}.</p>
+          <h3 class="dl-sub">Ubuntu, Debian, Mint and the like</h3>
+          {{ file_card(latest.linux_deb, 'Download the .deb', true) }}
+          {% if latest.linux_deb %}{{ command('sudo apt install ./' ~ latest.linux_deb.name) }}{% endif %}
+          <h3 class="dl-sub">Any other distribution</h3>
+          {{ file_card(latest.linux_appimage, 'Download the AppImage') }}
+          {% if latest.linux_appimage %}{{ command('chmod +x ' ~ latest.linux_appimage.name ~ ' && ./' ~ latest.linux_appimage.name) }}{% endif %}
+        </div>
+        <div class="dl-steps">
+          <h3>Install</h3>
+          <ol>
+            <li>Install the .deb with apt (the package is called <code>dig-up</code>), or make the AppImage executable and run it.</li>
+            <li>Open DigUp. While the model downloads, pick the folders to search.</li>
+            <li>Press <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>Space</kbd>. On GNOME and KDE under Wayland, DigUp adds it to the desktop's keyboard settings during setup.</li>
+          </ol>
+          <p><a class="text-link" href="{{ url('docs/install-linux/') }}">The full Linux guide</a></p>
+        </div>
+      </div>
+    </section>
+  </div>
+</section>
+
+<section class="wrap compare-section" id="compare">
+  <header class="section-head left">
+    <h2>What's the same, and what differs</h2>
+    <p>The search is the same everywhere: the same model, the same ranking, the same results. These are the differences.</p>
+  </header>
+  <figure class="compare-figure"><img src="{{ asset('img/shots/three-systems.jpg') }}" alt="The same search, a dog on the beach, in DigUp on macOS, Windows and Linux, finding the same photo; each with its shortcut: ⇧⌘Space on a Mac, Ctrl+Shift+Space on Windows and Linux" width="1600" height="686" loading="lazy"><figcaption>The same search on each system's own build, with the same files.</figcaption></figure>
+  <div class="table-wrap">
+    <table class="compare">
+      <thead><tr><th scope="col"></th><th scope="col">Mac</th><th scope="col">Windows</th><th scope="col">Linux</th></tr></thead>
+      <tbody>
+        {% for row in site.compare %}
+        <tr><th scope="row">{{ row.what }}</th>
+          {% for cell in [row.mac, row.windows, row.linux] %}
+          <td>{% if cell == 'yes' %}<span class="yes">{{ icon('check') }}<span class="sr">Yes</span></span>{% elif cell == 'no' %}<span class="no">{{ icon('dash') }}<span class="sr">Not yet</span></span>{% else %}{{ cell }}{% endif %}</td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="wrap dl-more">
+  <div>
+    <h2>{{ icon('shield') }}Checking a download</h2>
+    <p>Every file comes from <a href="{{ site.releases }}">GitHub Releases</a>, which shows each one's SHA-256; the ones above are copied from there. Compare with <code>shasum -a 256</code> on a Mac or Linux, or <code>certutil -hashfile &lt;file&gt; SHA256</code> on Windows. Updates are signed, and an installed copy refuses one that isn't.</p>
+  </div>
+  <div>
+    <h2>{{ icon('refresh') }}Updates</h2>
+    <p>DigUp checks once a day and installs a new version with one click: the Mac app, the Windows installer and the AppImage update themselves. With the .deb, DigUp opens the release page for you. <a href="{{ url('docs/updates/') }}">How updates and betas work</a></p>
+  </div>
+  <div>
+    <h2>{{ icon('terminal') }}Older versions and source</h2>
+    <p>Every release and its notes are in the <a href="{{ url('changelog/') }}">changelog</a> and on <a href="{{ site.releases }}">GitHub</a>. To build DigUp yourself, see <a href="{{ url('docs/contributing/') }}#build-from-source">building from source</a>.</p>
+  </div>
+</section>
+{% endblock %}

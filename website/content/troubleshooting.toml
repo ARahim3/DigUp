@@ -1,0 +1,298 @@
+# Problems people run into, and their fixes. Rendered on docs/troubleshooting/ and searchable from every page.
+#
+# Each problem: a stable `id` (it's the link people share, so don't change it), the `area` it belongs to, a `title`
+# that describes the symptom the way someone would put it, the `platforms` it happens on, and a Markdown `body`
+# (what's going on, then what to do). `fixed` says which release fixed it, by system; "next" means the release after
+# the current one, and should be replaced with the version once it's out.
+
+[[areas]]
+id = "installing"
+title = "Installing"
+
+[[areas]]
+id = "model"
+title = "The model download"
+
+[[areas]]
+id = "indexing"
+title = "Indexing"
+
+[[areas]]
+id = "searching"
+title = "Searching"
+
+[[areas]]
+id = "opening"
+title = "Opening results"
+
+[[areas]]
+id = "shortcut"
+title = "The shortcut and the tray"
+
+[[areas]]
+id = "updates"
+title = "Updates"
+
+[[problem]]
+id = "windows-smartscreen"
+area = "installing"
+title = "Windows says it protected your PC"
+platforms = ["windows"]
+body = """
+The installer isn't code-signed yet, so Microsoft Defender SmartScreen stops it the first time. Choose **More info**, then **Run anyway**.
+
+Download the installer only from the [download page](/download/#windows) or GitHub Releases. The download page shows its SHA-256, so you can check the file you have.
+"""
+
+[[problem]]
+id = "mac-requirements"
+area = "installing"
+title = "DigUp won't open on my Mac"
+platforms = ["mac"]
+body = """
+DigUp needs {{ site.requirements.mac }}; it doesn't run on Intel Macs. If your Mac fits and DigUp still won't open, note any message macOS shows and include it in a [bug report](/docs/report-a-bug/).
+"""
+
+[[problem]]
+id = "linux-package-name"
+area = "installing"
+title = "apt can't find or remove digup"
+platforms = ["linux"]
+body = """
+The package is called `dig-up`, because Debian already has an unrelated `digup`. Remove it with `sudo apt remove dig-up`.
+"""
+
+[[problem]]
+id = "model-download-blocked"
+area = "model"
+title = "The model download fails or is blocked"
+platforms = ["mac", "windows", "linux"]
+body = """
+DigUp downloads two files from Hugging Face, once ({{ site.model.download }} together). Some networks block Hugging Face, and a firewall or a proxy can stop the download. A download that only stopped partway resumes where it left off when DigUp opens again.
+
+On a Mac, download the two files on another network and choose them with **Use Files…** in Settings → Storage; **Copy Links** there copies their addresses. DigUp checks each file's size and SHA-256 before it uses it.
+
+On every system, DigUp also takes the files from the Hugging Face cache on your computer when they're there. With the [Hugging Face CLI](https://huggingface.co/docs/huggingface_hub/guides/cli), on a network that reaches Hugging Face:
+
+```sh
+hf download {{ site.model.gguf }} {{ site.model.text_file }} {{ site.model.mmproj_file }} --revision {{ site.model.revision }}
+```
+
+Then open DigUp again.
+"""
+
+[[problem]]
+id = "linux-download-stops"
+area = "model"
+title = "On Linux, the model download stops after each file"
+platforms = ["linux"]
+fixed = { linux = "0.7.0-beta.2" }
+body = """
+On some distributions, Debian 13 and Ubuntu 26.04 among them, the download stopped after each file it finished, and DigUp had to be opened again to go on. It finishes in one go since 0.7.0-beta.2, and since 0.7.0-beta.3 DigUp checks the files once more before calling a download failed. Update to the latest beta.
+"""
+
+[[problem]]
+id = "nothing-indexed"
+area = "indexing"
+title = "Settings shows 0 files indexed, or far fewer than I expect"
+platforms = ["mac", "windows", "linux"]
+body = """
+A few things explain most cases:
+
+- The model isn't in yet. Until both files are downloaded, only file names are searchable and nothing counts as indexed.
+- The files aren't of a kind DigUp reads, or they're in a part of the folder it leaves out. Click "N not read" next to the folder in Settings → Folders to see why: inside code projects, only in the cloud, types DigUp doesn't read, or folders that look like datasets.
+- Code folders are read after your other folders, so they show nothing at first.
+- Indexing is paused or waiting: for a charger on a Mac, for the hours you set, or for Low Power Mode to end.
+
+On Windows, a file between 2 and 4 GB in a folder used to stop indexing before it started; that's fixed since 0.7.0-beta.2. If none of this fits, a [bug report](/docs/report-a-bug/) with the logs helps.
+"""
+
+[[problem]]
+id = "only-screenshots"
+area = "indexing"
+title = "A folder I chose only has its screenshots indexed"
+platforms = ["mac", "windows", "linux"]
+fixed = { mac = "0.6.2", windows = "0.7.0-beta.3", linux = "0.7.0-beta.3" }
+body = """
+A folder with a `.git`, a `package.json`, a `requirements.txt` or the like counts as a code project, and inside code projects only screenshots are read. Before these versions that applied to a folder you chose too, so a home folder with its dotfiles in git kept only its screenshots.
+
+Now a folder you choose is always read whole. Folders inside it that look like code projects still give only their screenshots; to read one of them whole, add it as a folder of its own.
+"""
+
+[[problem]]
+id = "cloud-files"
+area = "indexing"
+title = "Files in iCloud Drive, OneDrive or Google Drive aren't found"
+platforms = ["mac", "windows"]
+body = """
+DigUp reads only the files that are on your computer, and never downloads one that lives only in the cloud. Make the folder available offline in the service's app ("Keep Downloaded" in iCloud Drive, "Always keep on this device" in OneDrive), and DigUp reads its files at its next check. Settings → Folders counts such files under "not read".
+"""
+
+[[problem]]
+id = "date-named-photos"
+area = "indexing"
+title = "A folder of phone photos named by date is skipped"
+platforms = ["mac", "windows", "linux"]
+fixed = { windows = "0.7.0-beta.3", linux = "0.7.0-beta.3", mac = "next" }
+body = """
+Folders with hundreds of machine-named files of one kind are skipped as datasets, like training data. Photos named by date and time, like Samsung's `20261021_143022.jpg`, were taken for one.
+
+Until your version has the fix, add that folder itself as a folder to search: a folder you choose is never taken for a dataset.
+"""
+
+[[problem]]
+id = "stuck-on-a-file"
+area = "indexing"
+title = "Indexing seems stuck on one file"
+platforms = ["mac", "windows", "linux"]
+body = """
+If reading one file runs away (a damaged PDF once took tens of gigabytes inside the system's own reader), DigUp stops it, skips that file and goes on. Pause and Quit work even while it's on a difficult file.
+
+If the same file stops indexing again and again, its name is in the logs. A [bug report](/docs/report-a-bug/) with the kind of file and the log lines helps; whether to share the file itself is up to you.
+"""
+
+[[problem]]
+id = "first-pass-slow"
+area = "indexing"
+title = "The first pass is taking hours"
+platforms = ["mac", "windows", "linux"]
+body = """
+It can, once. On a processor alone a picture takes a few seconds, so a large photo library takes hours on a computer without a usable graphics card; on a Mac, a big Downloads folder takes about an hour. After the first pass, only new and changed files are read. Things that help:
+
+- Skip subfolders you don't need searched, like years of raw footage, in Settings → Folders.
+- Let it run at night with Index only at set hours.
+- On Windows and Linux, check that DigUp uses your graphics card: the last line of `speed.log` says `"device": "gpu"` or `"cpu"`.
+
+You can search while it runs; the newest files go first.
+"""
+
+[[problem]]
+id = "battery-drain"
+area = "indexing"
+title = "DigUp drains the battery or keeps the CPU busy after the first pass"
+platforms = ["mac"]
+fixed = { mac = "0.6.2" }
+body = """
+Two causes are fixed: a folder where something rewrites files all the time (a database, logs, a build) made DigUp check every folder every few seconds, and iCloud Drive or Google Drive folders made every check take minutes. Update to the latest version.
+
+The first pass itself is heavy. To keep it off battery, turn off Index on battery power in Settings → Folders, or keep it to the night with Index only at set hours.
+"""
+
+[[problem]]
+id = "idle-memory"
+area = "indexing"
+title = "DigUp keeps memory in use while idle"
+platforms = ["mac", "linux"]
+fixed = { linux = "0.7.0-beta.3" }
+body = """
+While you search, a helper keeps the text part of the model in memory (about 250 MB) so results come fast, and quits after ten minutes without a search. On Linux the search helper used to stay; it quits the same way since 0.7.0-beta.3. The app itself stays small, about {{ site.numbers.idle_mac }} on a Mac while idle. During the first pass the indexing helper uses more, up to about 2 GB on a Mac, and quits when it's done.
+"""
+
+[[problem]]
+id = "wrong-results-gpu"
+area = "searching"
+title = "Indexing finished, but searches find nothing or the wrong files"
+platforms = ["windows", "linux"]
+body = """
+Some graphics cards give empty or wrong results with the model. Turn on Settings → General → **Run the model on the processor**. It's slower, and gives the same results as on a Mac. The last line of `speed.log`, in the logs folder, says which one DigUp used.
+
+If searches still come back empty, please [report it](/docs/report-a-bug/) with the logs and your graphics card's name.
+"""
+
+[[problem]]
+id = "file-not-found"
+area = "searching"
+title = "A file I know is there doesn't come up"
+platforms = ["mac", "windows", "linux"]
+body = """
+First check that it was read: Settings → Folders shows each folder's count, and "N not read" says why some files weren't. During the first pass it may simply not be read yet; the newest files go first.
+
+Then describe it another way, or add a word you know is in it. [Writing a good search](/docs/search-tips/) has examples. If DigUp has read the file and a fair description still doesn't find it, a report with the kind of file and your words helps make search better.
+"""
+
+[[problem]]
+id = "screenshot-text"
+area = "searching"
+title = "A code or number typed into the search doesn't find a screenshot"
+platforms = ["windows", "linux"]
+body = """
+On Windows and Linux, the text inside screenshots isn't read yet, so a screenshot is found by what it shows rather than by an exact code or number in it. On a Mac, Apple's text recognition reads it, for about 25 languages.
+"""
+
+[[problem]]
+id = "cjk-exact-words"
+area = "searching"
+title = "Exact words in Chinese, Japanese or Thai don't match"
+platforms = ["mac", "windows", "linux"]
+body = """
+These languages are written without spaces between words, and DigUp's keyword search doesn't split them into words yet, so most exact words in them don't match by their text. Searching by meaning works in them as in any other of the model's languages.
+"""
+
+[[problem]]
+id = "video-from-start"
+area = "opening"
+title = "A video or recording opens from the start"
+platforms = ["mac", "windows", "linux"]
+body = """
+DigUp tells the app that opens the file where to start, when that app can be told: QuickTime Player and IINA on a Mac; VLC, mpv and MPC-HC on Windows; VLC and mpv on Linux. Other apps open the file from the start, and <kbd>Space</kbd> in DigUp plays it from the moment in the preview.
+
+On a Mac, if QuickTime Player opens from the start, DigUp may not be allowed to control it. Turn it on in System Settings → Privacy & Security → Automation → DigUp → QuickTime Player. On Linux, a player installed as a Flatpak can't be told the moment.
+"""
+
+[[problem]]
+id = "pdf-first-page"
+area = "opening"
+title = "A PDF opens at the first page"
+platforms = ["mac", "windows", "linux"]
+body = """
+On a Mac, Preview opens with words from the matching page in its search box and lists the matches by page in its sidebar; it doesn't jump to the page by itself. <kbd>Space</kbd> in DigUp shows Quick Look right at the page.
+
+On Windows and Linux, a PDF opens at the page in viewers that can be told one: Edge, Chrome, Firefox, Brave, Acrobat and SumatraPDF on Windows; Evince, Papers, Okular, Firefox and Chrome on Linux. Make one of them your default PDF app, or use <kbd>Space</kbd> for the preview.
+"""
+
+[[problem]]
+id = "wayland-shortcut"
+area = "shortcut"
+title = "The shortcut does nothing on Linux"
+platforms = ["linux"]
+body = """
+On GNOME and KDE under Wayland, apps can't set global shortcuts, so DigUp adds <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>Space</kbd> to the desktop's own settings during setup. Look for it in Settings → Keyboard → Keyboard Shortcuts on GNOME, or System Settings → Shortcuts on KDE, and change it there.
+
+On other Wayland desktops, like Sway or Hyprland, bind a shortcut yourself: Settings in DigUp shows the command, DigUp's path followed by `--toggle`.
+"""
+
+[[problem]]
+id = "linux-tray"
+area = "shortcut"
+title = "There's no tray icon on Linux"
+platforms = ["linux"]
+body = """
+On GNOME, the tray needs the AppIndicator extension. Ubuntu includes it; elsewhere, install it from your distribution. Without a tray, the window's ⋯ menu has the same items, like Pause, Settings and Quit. On a desktop with no tray at all, like Hyprland without a bar, use the window the same way.
+"""
+
+[[problem]]
+id = "shortcut-taken"
+area = "shortcut"
+title = "The shortcut opens something else"
+platforms = ["mac", "windows", "linux"]
+body = """
+Another app may use the same keys. Choose another shortcut in Settings → General (on GNOME and KDE under Wayland, in the desktop's keyboard settings). DigUp refuses a shortcut the system already uses, and says why.
+"""
+
+[[problem]]
+id = "deb-updates"
+area = "updates"
+title = "The .deb doesn't update itself"
+platforms = ["linux"]
+body = """
+That's expected: a .deb is installed with apt, so DigUp tells you when there's a new version and opens its release page. Download the new .deb and install it over the old one with `sudo apt install ./DigUp_x.y.z_amd64.deb`. The AppImage updates itself with one click.
+"""
+
+[[problem]]
+id = "brew-upgrade"
+area = "updates"
+title = "brew upgrade doesn't update DigUp"
+platforms = ["mac"]
+body = """
+DigUp updates itself, so Homebrew leaves it to do that and `brew upgrade` skips it. Use DigUp → Check for Updates…, or leave Check for updates automatically on in Settings → General.
+"""

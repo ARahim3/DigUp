@@ -1,0 +1,215 @@
+# Facts and settings for DigUp's website.
+#
+# Anything that appears on more than one page lives here, so a change is one edit. Templates read it as `site.…`,
+# and Markdown pages can use `{{ site.model.download }}` and the like. Versions, file sizes and dates of the current
+# releases are not here: the build reads them from GitHub Releases (`latest.mac.version` and so on).
+
+name = "DigUp"
+tagline = "Describe it. Dig it up."
+description = "Search the files on your computer by what's in them. DigUp runs Google DeepMind's EmbeddingGemma 2 on your Mac, Windows PC or Linux machine and finds the photo, the PDF page, the minute in a recording or the moment in a video. Free and open source."
+
+# Where the site is served. For https://arahim.dev/DigUp/ instead, set base_url to "https://arahim.dev/DigUp"
+# and base_path to "/DigUp/".
+base_url = "https://digup.arahim.dev"
+base_path = "/"
+
+repo = "ARahim3/DigUp"
+github = "https://github.com/ARahim3/DigUp"
+releases = "https://github.com/ARahim3/DigUp/releases"
+issues = "https://github.com/ARahim3/DigUp/issues"
+new_issue = "https://github.com/ARahim3/DigUp/issues/new/choose"
+security_report = "https://github.com/ARahim3/DigUp/security/advisories/new"
+advisories = "https://github.com/ARahim3/DigUp/security/advisories"
+support = "https://arahim3.gumroad.com/l/support"
+support_terms = "Through Gumroad: pay what you want, from $5, once. No account or subscription needed."
+author = "Abdur Rahim"
+author_url = "https://arahim.dev/"
+homebrew = "brew install --cask arahim3/tap/digup"
+homebrew_tap = "https://github.com/ARahim3/homebrew-tap"
+
+[model]
+name = "EmbeddingGemma 2"
+by = "Google DeepMind"
+url = "https://huggingface.co/google/embeddinggemma-2"
+gguf = "ggml-org/embeddinggemma-2-GGUF"
+gguf_url = "https://huggingface.co/ggml-org/embeddinggemma-2-GGUF"
+license = "Apache 2.0"
+released = "October 2026"
+params = "740M"
+dims = "768"
+languages = "more than 100"
+download = "865 MB"
+text_part = "310 MB"
+encoders = "555 MB"
+text_file = "embeddinggemma-2-Q8_0.gguf"
+mmproj_file = "mmproj-embeddinggemma-2-Q8_0.gguf"
+revision = "bfcd298762cc34d0357ece5ebdd31791a3a374d8"
+
+# The product video (YouTube). The site loads it from youtube-nocookie.com only when someone chooses to watch it.
+[video]
+id = "_ZXsHBiDimk"
+title = "DigUp: search your Mac by what’s in your files, with EmbeddingGemma 2"
+url = "https://www.youtube.com/watch?v=_ZXsHBiDimk"
+embed = "https://www.youtube-nocookie.com/embed/_ZXsHBiDimk"
+uploaded = "2026-10-11T02:08:03-07:00"
+duration = "PT1M0S"
+length = "1:00"
+description = "Search the files on your Mac by what’s in them. DigUp runs Google DeepMind’s EmbeddingGemma 2 on your Mac, so you can describe what you remember and land right on it."
+
+[requirements]
+mac = "an Apple Silicon Mac (M1 or later) with macOS 14 or later"
+windows = "64-bit Windows 10 or 11"
+linux = "a 64-bit Intel or AMD processor: Ubuntu 22.04, Debian 12, Mint 21 or newer for the .deb, and most distributions for the AppImage"
+
+[shortcut]
+mac = "⇧⌘Space"
+other = "Ctrl+Shift+Space"
+
+# Measured on the developer's Mac (an M4 Pro) and the project's test files.
+[numbers]
+results = "about 0.12 s"
+results_cold = "about 0.35 s"
+idle_mac = "12 to 30 MB"
+query_encoder = "about 250 MB"
+indexing_peak = "under about 2 GB"
+new_file = "about a second"
+picture_cpu = "a few seconds"
+evals_first = "98 of 111"
+evals_top5 = "109 of 111"
+
+[paths]
+mac_data = "~/Library/Application Support/DigUp"
+mac_logs = "~/Library/Application Support/DigUp/index.noindex"
+mac_settings = "~/Library/Preferences/com.abdurrahim.DigUp.plist"
+mac_cli = "/Applications/DigUp.app/Contents/Helpers/digup"
+windows_data = "%LOCALAPPDATA%\\DigUp"
+windows_app = "%LOCALAPPDATA%\\com.abdurrahim.DigUp"
+windows_logs = "%LOCALAPPDATA%\\com.abdurrahim.DigUp\\logs"
+linux_data = "~/.local/share/digup"
+linux_app = "~/.local/share/com.abdurrahim.DigUp"
+linux_config = "~/.config/com.abdurrahim.DigUp"
+linux_logs = "~/.local/share/com.abdurrahim.DigUp/logs"
+linux_autostart = "~/.config/autostart/DigUp.desktop"
+linux_cli = "/usr/lib/DigUp/helper/digup"
+
+[editors]
+all = "Zed, VS Code, Cursor, Windsurf, VSCodium, Sublime Text and JetBrains IDEs"
+mac = "Xcode, BBEdit and TextMate"
+windows = "Notepad++"
+
+[docs]
+# The sidebar's groups, in order. Each page names its group in its front matter.
+sections = ["Get started", "Search", "Your files", "Help", "Reference", "Under the hood", "Project"]
+edit_base = "https://github.com/ARahim3/DigUp/edit/main/website/content/"
+
+[[nav]]
+label = "Features"
+href = "#features"
+home_only = true
+
+[[nav]]
+label = "Docs"
+href = "docs/"
+
+[[nav]]
+label = "Help"
+href = "docs/troubleshooting/"
+
+[[nav]]
+label = "Changelog"
+href = "changelog/"
+
+# The platform cards on the home page and the download page.
+[platforms.mac]
+name = "Mac"
+lives = "In the menu bar"
+gpu = "Runs the model on the GPU with Metal."
+notes = [
+  "Screenshots and scanned pages are also searchable by their text, with Apple's text recognition.",
+  "Videos open at the moment in QuickTime Player or IINA.",
+]
+
+[platforms.windows]
+name = "Windows"
+lives = "In the tray"
+gpu = "Runs the model on the graphics card with Vulkan when that's faster, otherwise on the processor."
+notes = [
+  "Installs for you only, with no admin rights.",
+  "Not yet: text inside screenshots, old .doc files, RAW photos, SVG pictures.",
+]
+
+[platforms.linux]
+name = "Linux"
+lives = "In the tray"
+gpu = "Runs the model on the graphics card with Vulkan when that's faster, otherwise on the processor."
+notes = [
+  "A .deb for Ubuntu, Debian and Mint, and an AppImage for the rest.",
+  "Not yet: text inside screenshots, old .doc files, RAW photos, SVG pictures.",
+]
+
+# What's the same and what differs, on the download page. A cell of "yes" shows a check, "no" a dash.
+[[compare]]
+what = "Search by meaning: photos, screenshots, PDFs, documents, spreadsheets, slides, audio and video"
+mac = "yes"
+windows = "yes"
+linux = "yes"
+
+[[compare]]
+what = "Exact words in file names and document text"
+mac = "yes"
+windows = "yes"
+linux = "yes"
+
+[[compare]]
+what = "Text inside screenshots and scanned PDF pages"
+mac = "Apple's text recognition"
+windows = "no"
+linux = "no"
+
+[[compare]]
+what = "Old Word .doc files, RAW photos, SVG pictures"
+mac = "yes"
+windows = "no"
+linux = "no"
+
+[[compare]]
+what = "Code search"
+mac = "yes"
+windows = "yes"
+linux = "yes"
+
+[[compare]]
+what = "Where the model runs"
+mac = "GPU (Metal)"
+windows = "Graphics card (Vulkan) when faster, else processor"
+linux = "Graphics card (Vulkan) when faster, else processor"
+
+[[compare]]
+what = "Videos and recordings open at the moment in"
+mac = "QuickTime Player, IINA"
+windows = "VLC, mpv, MPC-HC"
+linux = "VLC, mpv"
+
+[[compare]]
+what = "PDFs open"
+mac = "In Preview, with your words searched"
+windows = "At the page in Edge, Chrome, Firefox, Acrobat or SumatraPDF"
+linux = "At the page in Evince, Papers, Okular, Firefox or Chrome"
+
+[[compare]]
+what = "Updates"
+mac = "One click"
+windows = "One click"
+linux = "One click with the AppImage; the .deb opens the release page"
+
+[[compare]]
+what = "Search shortcut"
+mac = "⇧⌘Space"
+windows = "Ctrl+Shift+Space"
+linux = "Ctrl+Shift+Space (on GNOME and KDE under Wayland, in the desktop's settings)"
+
+[[compare]]
+what = "Status"
+mac = "Stable"
+windows = "Beta"
+linux = "Beta"

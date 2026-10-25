@@ -1,0 +1,260 @@
+# Questions people ask, with short answers. Rendered on docs/faq/; the ones with `home = true` also show on the
+# home page. Each has a stable `id`, which is its link.
+
+[[groups]]
+id = "about"
+title = "About DigUp"
+
+[[groups]]
+id = "privacy"
+title = "Privacy"
+
+[[groups]]
+id = "performance"
+title = "Speed, memory and disk"
+
+[[groups]]
+id = "files"
+title = "Files and languages"
+
+[[groups]]
+id = "platforms"
+title = "Mac, Windows and Linux"
+
+[[question]]
+id = "what-is-digup"
+group = "about"
+home = true
+title = "What is DigUp?"
+body = """
+A search app for the files on your computer. It runs {{ site.model.by }}'s {{ site.model.name }}, a model that puts text, pictures, sound and video in one shared space, on your own machine. You describe what you remember, and it finds the photo, the PDF page, the minute in a recording or the moment in a video. It's free and open source, on a Mac, on Windows and on Linux.
+"""
+
+[[question]]
+id = "spotlight"
+group = "about"
+home = true
+title = "How is it different from Spotlight or Windows Search?"
+body = """
+They find files by their names, text and metadata. DigUp also finds them by what they show or say, and takes you to the page or moment that matched. They work fine side by side.
+"""
+
+[[question]]
+id = "chatbot"
+group = "about"
+title = "Does it answer questions about my files, like a chatbot?"
+body = """
+No. DigUp is a search: you describe what you remember and it finds the file and the place in it. No language model writes answers, and nothing is sent anywhere.
+"""
+
+[[question]]
+id = "free"
+group = "about"
+title = "Is it free?"
+body = """
+Yes. DigUp is open source under the MIT license, with no account, subscription or paid tier. If it helps you, you can [support it]({{ site.support }}), but you don't have to.
+"""
+
+[[question]]
+id = "official"
+group = "about"
+title = "Where do I get the official DigUp?"
+body = """
+From this site, the [GitHub repository]({{ site.github }}) and the Homebrew tap `arahim3/tap`. Every download comes from [GitHub Releases]({{ site.releases }}). Other sites that use the name aren't run by the project.
+"""
+
+[[question]]
+id = "other-models"
+group = "about"
+title = "Can I use another embedding model?"
+body = """
+No. DigUp is built around {{ site.model.name }} because it puts text, pictures, sound and video in one space, which is what lets one search rank a video frame against a PDF page. Everything in the index is tied to that model's vectors.
+"""
+
+[[question]]
+id = "embedding-server"
+group = "about"
+title = "Can the model run on another machine, like a home server?"
+body = """
+Not yet. An option to use your own embedding server is planned. Until then, the model runs on the same computer as DigUp.
+"""
+
+[[question]]
+id = "network"
+group = "privacy"
+home = true
+title = "What does DigUp send over the network?"
+body = """
+Nothing you index leaves your computer. DigUp goes online for two things: to download the model once, from Hugging Face, and to check for updates once a day, on GitHub. The update check sends nothing about your files, and you can turn it off in Settings → General. No account, no telemetry. [Privacy and security](/docs/privacy/) has the details.
+"""
+
+[[question]]
+id = "encrypted"
+group = "privacy"
+title = "Is the index encrypted?"
+body = """
+Not by DigUp. The index is one file in your user account's folders, which other users on the computer can't open, and on a Mac with FileVault it's on the encrypted disk like everything else. Anyone who can read it as you can also read the files it came from, but it is one copy of what's in them, so keep that in mind on a shared computer.
+"""
+
+[[question]]
+id = "secrets"
+group = "privacy"
+title = "Will it read my keys or passwords?"
+body = """
+Keys, certificates and similar files aren't among the kinds DigUp reads, and hidden folders like `.ssh` are skipped. In code folders, files named like keys or password stores, and any file holding a private key, are skipped too. A plain text document is read like any other document, so keep notes with secrets in a folder you don't choose, or skip that folder.
+"""
+
+[[question]]
+id = "keep-out"
+group = "privacy"
+title = "Can I keep a folder or a kind of file out?"
+body = """
+Yes. Don't choose it, or skip it in Settings → Folders with Skip a Folder… or Skip these file types. Skipping or removing a folder takes its files out of the index right away.
+"""
+
+[[question]]
+id = "download-size"
+group = "performance"
+home = true
+title = "Why is the download 865 MB?"
+body = """
+That's the model: the text part ({{ site.model.text_part }}) and the image and audio encoders ({{ site.model.encoders }}). It downloads once. The app itself is about 20 MB on a Mac, and 40 to 140 MB on Windows and Linux, depending on the package, since those carry their own PDF, video and image readers.
+"""
+
+[[question]]
+id = "slow-down"
+group = "performance"
+home = true
+title = "Will it slow my computer down?"
+body = """
+Only the first pass is heavy, and it happens once. After that DigUp reads only what's new or changed. The model runs in a separate helper that quits when it's done, and the search side only loads while you search. On a Mac, Low Power Mode and a hot Mac make the first pass wait, and Index only at set hours can keep it to the night.
+"""
+
+[[question]]
+id = "first-pass"
+group = "performance"
+title = "How long does the first pass take?"
+body = """
+On a Mac, a few minutes for a few hundred files, and about an hour for a big Downloads folder. On Windows and Linux it depends on whether the model runs on the graphics card: on a processor alone a picture takes a few seconds (about five on a 2017 laptop's Core i5), so a large photo library can take hours. Setup and Settings show the estimate for each folder, measured on your computer.
+"""
+
+[[question]]
+id = "index-size"
+group = "performance"
+title = "How big does the index get?"
+body = """
+It depends on what your files are more than on how much space they take. Measured on the project's test files: a photo adds about 1.6 KB, a screenshot about 3 KB with its text, a PDF page about 6 KB, an hour of audio about 0.25 MB, an hour of video 1 to 2 MB, and documents 2 to 3 times the size of their text. So 100,000 photos come to about 160 MB, and text is what adds up: about 2 MB for a 300-page book. The model is {{ site.model.download }} on top.
+"""
+
+[[question]]
+id = "ssd"
+group = "performance"
+title = "Does it keep scanning, and wear out my SSD?"
+body = """
+No. After the first pass DigUp doesn't rescan: the system tells it which folders changed, and it reads only what's new or changed. Reading doesn't wear an SSD; writing does, and after the first pass that's a few KB for each new file.
+"""
+
+[[question]]
+id = "memory"
+group = "performance"
+title = "How much memory does it use?"
+body = """
+On a Mac the app idles at about {{ site.numbers.idle_mac }}. While you search, a helper holds the text part of the model, about 250 MB, and quits after ten minutes without a search. During the first pass the indexing helper uses up to about 2 GB on a Mac, and quits when it's done.
+"""
+
+[[question]]
+id = "which-files"
+group = "files"
+title = "Which files does it read?"
+body = """
+Pictures and screenshots, PDFs (scans too), documents (txt, md, typ, rtf, docx, odt, html, and on a Mac doc), spreadsheets and slides (xlsx, ods, pptx, odp), audio and video of any length, and code in the folders you pick for code search. Pages, Keynote, Numbers and EPUB files aren't read. [What DigUp reads](/docs/file-types/) has the full list.
+"""
+
+[[question]]
+id = "languages"
+group = "files"
+home = true
+title = "Which languages does it understand?"
+body = """
+The model knows {{ site.model.languages }} languages, and DigUp searches in all of them, across languages too: a search in English can find a note in Bengali or Arabic. DigUp's tests cover English, Bengali and Arabic because those are the languages of the files it was tested on, and Google notes that the model isn't equally strong in every language. Two limits apply to exact words, not to meaning: the text inside screenshots is read only on a Mac, by Apple's text recognition (about 25 languages), and languages written without spaces, like Chinese, Japanese and Thai, aren't split into words.
+"""
+
+[[question]]
+id = "long-media"
+group = "files"
+title = "Does a two-hour video or a long recording work?"
+body = """
+Yes. Every kept frame (about one per shot) and every 30 seconds of sound has its own place in the index, with its time. A video's score is its best moment, which is also where it opens, so one scene that fits isn't averaged away by the rest.
+"""
+
+[[question]]
+id = "one-folder"
+group = "files"
+title = "Can I search inside one folder only?"
+body = """
+Not yet. A search covers all the folders you chose; the search window filters results by kind.
+"""
+
+[[question]]
+id = "photos-library"
+group = "files"
+title = "What about the Photos library on a Mac?"
+body = """
+Not read yet: the pictures sit inside the library package, which DigUp doesn't open. Photos exported to a folder are read like any other pictures.
+"""
+
+[[question]]
+id = "email"
+group = "files"
+title = "Does it read email?"
+body = """
+No. Mail apps keep messages in their own stores, which DigUp doesn't open.
+"""
+
+[[question]]
+id = "intel-mac"
+group = "platforms"
+title = "Does it run on an Intel Mac?"
+body = """
+No. DigUp needs {{ site.requirements.mac }}.
+"""
+
+[[question]]
+id = "windows-linux"
+group = "platforms"
+title = "What's different on Windows and Linux?"
+body = """
+The search is the same: the same model and the same results. Two things are missing for now: the text inside screenshots isn't read yet, so a screenshot is found by what it shows rather than by an exact code typed into the search; and old Word .doc files, RAW photos and SVG pictures are read only on a Mac. Both are betas, so expect some rough edges, and please report them. The [download page](/download/#compare) compares the three.
+"""
+
+[[question]]
+id = "gpu"
+group = "platforms"
+title = "Is it using my graphics card?"
+body = """
+On a Mac, always, with Metal. On Windows and Linux, a quick check at setup compares the graphics card with the processor and uses the card only when it's faster and gives the same results. The last line of `speed.log` says which one DigUp picked: `"device": "gpu"` or `"cpu"`. It's in `{{ site.paths.windows_logs }}` on Windows and `{{ site.paths.linux_logs }}` on Linux.
+"""
+
+[[question]]
+id = "arm"
+group = "platforms"
+title = "Is there a version for ARM Linux or Windows on ARM?"
+body = """
+Not yet. The Windows and Linux packages are for 64-bit Intel and AMD processors.
+"""
+
+[[question]]
+id = "packages"
+group = "platforms"
+title = "Is there a Flatpak, an .rpm or an Arch package?"
+body = """
+The project builds the .deb and the AppImage, and the AppImage runs on most distributions. Packages made by others aren't checked by the project.
+"""
+
+[[question]]
+id = "remove"
+group = "platforms"
+title = "How do I remove DigUp?"
+body = """
+[Uninstall](/docs/uninstall/) has the steps for each system, including where the model and the index are.
+"""

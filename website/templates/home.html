@@ -1,0 +1,416 @@
+{% extends "base.html" %}
+{% block body_class %}home{% endblock %}
+{% block head %}
+<script type="application/ld+json">{{ {
+  "@context": "https://schema.org", "@type": "SoftwareApplication", "name": "DigUp",
+  "description": site.description, "url": absolute(), "downloadUrl": absolute('download/'),
+  "operatingSystem": "macOS 14 or later (Apple Silicon), Windows 10 or 11 (64-bit), Linux (x86-64)",
+  "applicationCategory": "UtilitiesApplication", "license": "https://opensource.org/licenses/MIT",
+  "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"},
+  "author": {"@type": "Person", "name": site.author, "url": site.author_url},
+  "codeRepository": site.github
+} | tojson }}</script>
+<script type="application/ld+json">{{ {
+  "@context": "https://schema.org", "@type": "VideoObject", "name": site.video.title,
+  "description": site.video.description, "thumbnailUrl": [absolute('assets/img/video-poster.jpg')],
+  "uploadDate": site.video.uploaded, "duration": site.video.duration,
+  "embedUrl": "https://www.youtube.com/embed/" ~ site.video.id, "url": site.video.url
+} | tojson }}</script>
+{% endblock %}
+
+{% macro thumb(row) -%}
+  {%- if row.img -%}<img class="row-thumb" src="{{ asset('img/demo/' ~ row.img) }}" alt="" width="44" height="44" loading="lazy">
+  {%- else -%}<span class="row-thumb glyph">{{ icon(row.glyph) }}</span>{%- endif -%}
+{%- endmacro %}
+
+{% macro keycaps(mac, other) -%}
+  <span class="caps os-mac">{% for k in mac %}<kbd class="cap{{ ' wide' if k|length > 2 }}{{ ' space' if k == 'Space' }}">{{ k }}</kbd>{% endfor %}</span>
+  <span class="caps os-other">{% for k in other %}<kbd class="cap{{ ' wide' if k|length > 2 }}{{ ' space' if k == 'Space' }}">{{ k }}</kbd>{% endfor %}</span>
+{%- endmacro %}
+
+{% set scenes = [
+  {"id": "video", "chip": "A moment in a video", "icon": "video", "queries": ["zebra in a video"],
+   "caption": "Opens the clip at the moment the zebra shows up.",
+   "groups": [
+     {"kind": "Video", "rows": [{"img": "thumb-masai.jpg", "name": "Masai Mara - day 2.mp4", "where": "~/Movies/Kenya 2025", "tag": "0:42", "on": true}]},
+     {"kind": "Images", "rows": [{"img": "thumb-2214.jpg", "name": "IMG_2214.jpg", "where": "~/Pictures/Kenya 2025"},
+                                {"img": "thumb-2219.jpg", "name": "IMG_2219.jpg", "where": "~/Pictures/Kenya 2025"}]}],
+   "media": "zebra.jpg", "title": "Masai Mara - day 2.mp4", "where": "~/Movies/Kenya 2025",
+   "meta": "Video · Aug 15, 2025 · 1:03 · 88.8 MB", "why": "Matches the frame at 0:42", "open": "Open at 0:42",
+   "count": "3 results", "space": "Quick Look at 0:42"},
+  {"id": "audio", "chip": "A minute in a podcast", "icon": "audio", "queries": ["where they talk about sleep"],
+   "caption": "Jumps to the minute of the podcast where they talk about sleep.",
+   "groups": [{"kind": "Audio", "rows": [{"img": "thumb-podcast.jpg", "name": "The Long Run - Ep 14.mp3", "where": "~/Music/Podcasts", "tag": "7:55", "on": true}]}],
+   "wave": true, "window": [57.7, 3.6], "range": "7:55 – 8:25 of 13:43", "title": "The Long Run - Ep 14.mp3", "where": "~/Music/Podcasts",
+   "meta": "Audio · Sep 30, 2026 · 13:43 · 13.2 MB", "why": "Matches what's heard at 7:55", "open": "Open",
+   "count": "1 result", "space": "Quick Look at 7:55"},
+  {"id": "pdf", "chip": "A page in a PDF", "icon": "doc", "queries": ["the clause about pets in the lease"],
+   "caption": "Shows the page of the lease with the clause, among eight pages.",
+   "groups": [{"kind": "Documents", "rows": [{"img": "thumb-lease.jpg", "name": "Lease - 14 Elm Street.pdf", "where": "HARBOR LANE PROPERTIES RESIDENTIAL LEASE …", "tag": "p. 4", "on": true}]}],
+   "page": "lease-page.jpg", "title": "Lease - 14 Elm Street.pdf", "where": "~/Documents/Home",
+   "meta": "PDF · Aug 18, 2025 · 8 pages · 196 KB", "why": "Matches the text on page 4",
+   "snippet": "HARBOR LANE PROPERTIES RESIDENTIAL <b>LEASE</b> AGREEMENT 12. <b>PETS</b> …", "open": "Open",
+   "count": "1 result", "space": "Quick Look at p. 4"},
+  {"id": "photo", "chip": "A photo", "icon": "image", "queries": ["a dog on the beach"],
+   "caption": "Finds the photo by what's in it, and the video and the recording that fit.",
+   "groups": [
+     {"kind": "Images", "rows": [{"img": "thumb-4133.jpg", "name": "IMG_4133.jpg", "where": "~/Pictures/2025 Summer", "on": true},
+                                {"img": "thumb-4128.jpg", "name": "IMG_4128.jpg", "where": "~/Pictures/2025 Summer"},
+                                {"img": "thumb-4127.jpg", "name": "IMG_4127.jpg", "where": "~/Pictures/2025 Summer"}]},
+     {"kind": "Video", "rows": [{"img": "thumb-4141.jpg", "name": "IMG_4141.MOV", "where": "~/Movies", "tag": "0:12"}]},
+     {"kind": "Audio", "rows": [{"glyph": "audio", "name": "Dog barking.m4a", "where": "~/Music/Field recordings"}]}],
+   "media": "beach.jpg", "contain": true, "title": "IMG_4133.jpg", "where": "~/Pictures/2025 Summer",
+   "meta": "Image · Jul 19, 2025 · 3713 × 2477 · 983 KB", "why": "Matches the picture", "open": "Open",
+   "count": "6 results · 2 weaker", "space": "Quick Look"},
+  {"id": "language", "chip": "Any language", "icon": "globe", "queries": ["সৈকতে একটা কুকুর", "كلب على الشاطئ", "a dog on the beach"],
+   "caption": "The same beach, found in Bengali, in Arabic and in English.",
+   "groups": [
+     {"kind": "Video", "rows": [{"img": "thumb-4141.jpg", "name": "IMG_4141.MOV", "where": "~/Movies", "tag": "0:12", "on": true}]},
+     {"kind": "Images", "rows": [{"img": "thumb-4127.jpg", "name": "IMG_4127.jpg", "where": "~/Pictures/2025 Summer"},
+                                {"img": "thumb-4133.jpg", "name": "IMG_4133.jpg", "where": "~/Pictures/2025 Summer"}]},
+     {"kind": "Audio", "rows": [{"glyph": "audio", "name": "Dog barking.m4a", "where": "~/Music/Field recordings"}]}],
+   "media": "beach-video.jpg", "title": "IMG_4141.MOV", "where": "~/Movies",
+   "meta": "Video · Jul 20, 2025 · 0:28 · 30 MB", "why": "Matches the frame at 0:12", "open": "Open at 0:12",
+   "count": "6 results", "space": "Quick Look at 0:12"},
+  {"id": "code", "chip": "Code", "icon": "code", "queries": ["code: retry with backoff"],
+   "caption": "Finds the function by what it does, and opens it in your editor at the line.",
+   "groups": [{"kind": "Code", "rows": [
+     {"glyph": "code", "name": "retry.ts", "where": "// Retry a failed call, waiting longer each time: e…", "tag": "L1–47", "on": true},
+     {"glyph": "code", "name": "retry.py", "where": "…random import time def retry_with_backoff(a…", "tag": "L1–33"},
+     {"glyph": "code", "name": "retry.test.ts", "where": "weather-app/test", "tag": "L1–22"},
+     {"glyph": "code", "name": "test_retry.py", "where": "billing-service/tests"}]}],
+   "weaker": "5 weaker matches", "code": true, "title": "retry.ts", "where": "weather-app/src/net",
+   "meta": "Code · Sep 20, 2026 · 47 lines · 2 KB", "why": "Matches lines 1–47", "open": "Open",
+   "count": "4 results · 5 weaker", "space": "Preview"}
+] %}
+
+{% block main %}
+<section class="hero wrap">
+  {% if releases %}{% set newest = releases[0] %}
+  <a class="announce" href="{{ url('changelog/') }}#{{ newest.tag }}"><span class="announce-dot" aria-hidden="true"></span><span>New: {{ newest.title }}</span>{{ icon('chevron') }}</a>
+  {% endif %}
+  <h1>Describe it.<br><span class="dig">Dig it up.</span></h1>
+  <p class="hero-lede">Search your computer by what's in your files. DigUp runs {{ site.model.by }}'s {{ site.model.name }} on your own machine, so a few words find the photo, the PDF page, the minute in a recording or the moment in a video.</p>
+  <div class="hero-cta" data-download-row>
+    <a class="btn btn-primary btn-lg" data-system="mac" href="{{ latest.mac.url if latest.mac else url('download/') ~ '#mac' }}"
+       data-direct="{{ latest.mac.url if latest.mac else '' }}" data-page="{{ url('download/') }}#mac">{{ icon('download') }}<span data-label data-long="Download for Mac" data-short="Mac">Download for Mac</span></a>
+    <a class="btn btn-quiet btn-lg" data-system="windows" href="{{ url('download/') }}#windows"
+       data-direct="{{ latest.windows.url if latest.windows else '' }}" data-page="{{ url('download/') }}#windows">{{ icon('download') }}<span data-label data-long="Download for Windows" data-short="Windows">Windows</span><small class="beta">beta</small></a>
+    <a class="btn btn-quiet btn-lg" data-system="linux" href="{{ url('download/') }}#linux"
+       data-direct="" data-page="{{ url('download/') }}#linux">{{ icon('download') }}<span data-label data-long="Download for Linux" data-short="Linux">Linux</span><small class="beta">beta</small></a>
+  </div>
+  <p class="hero-req">
+    <span class="os-mac-only">{% if latest.mac %}Version {{ latest.mac.version }} · {% endif %}Apple Silicon, macOS 14 or later</span>
+    <span class="os-windows-only">{% if latest.windows %}Version {{ latest.windows.version }} · {% endif %}64-bit Windows 10 or 11 · in beta</span>
+    <span class="os-linux-only">{% if latest.linux_deb %}Version {{ latest.linux_deb.version }} · {% endif %}.deb or AppImage, x86-64 · in beta</span>
+    <span class="hero-req-free">Free and open source</span>
+  </p>
+</section>
+
+<section class="stage wrap" aria-label="DigUp's search panel">
+  <div class="desk" data-demo>
+    <div class="desk-wall" aria-hidden="true"></div>
+    <div class="desk-top" aria-hidden="true">
+      <span class="desk-top-left"><span class="os-mac">Finder&nbsp;&nbsp; File&nbsp;&nbsp; Edit&nbsp;&nbsp; View&nbsp;&nbsp; Go&nbsp;&nbsp; Window</span><span class="os-linux-only">Activities</span></span>
+      <span class="desk-top-mid os-linux-only">Oct 22&nbsp; 9:41</span>
+      <span class="desk-top-right"><img src="{{ asset('img/icon.svg') }}" alt="" width="16" height="16"><span class="os-mac">Wed 9:41</span></span>
+    </div>
+    <div class="panel" data-panel>
+      <div class="panel-field">{{ icon('search') }}<span class="panel-query" data-query dir="auto">{{ scenes[0].queries[0] }}</span><span class="panel-caret" aria-hidden="true"></span></div>
+      {% for s in scenes %}
+      <div class="panel-scene" data-scene="{{ s.id }}" data-queries="{{ s.queries | tojson | forceescape }}"{% if not loop.first %} hidden{% endif %}>
+        <div class="panel-list">
+          {% for g in s.groups %}
+          <p class="panel-kind">{{ g.kind }}</p>
+          {% for r in g.rows %}
+          <div class="panel-row{{ ' on' if r.on }}">{{ thumb(r) }}<span class="row-text"><span class="row-name">{{ r.name }}{% if r.tag %} <span class="row-tag">{{ r.tag }}</span>{% endif %}</span><span class="row-where">{{ r.where }}</span></span></div>
+          {% endfor %}
+          {% endfor %}
+          {% if s.weaker %}<p class="panel-weaker">{{ icon('chevron') }} {{ s.weaker }}</p>{% endif %}
+        </div>
+        <div class="panel-preview">
+          {% if s.media %}
+          <div class="pv-media{{ ' contain' if s.contain }}"><img src="{{ asset('img/demo/' ~ s.media) }}" alt="" loading="lazy"></div>
+          {% elif s.wave %}
+          <div class="pv-media pv-audio"><span class="pv-wave" aria-hidden="true">{% for h in [34, 58, 80, 46, 92, 62, 40, 72, 50, 30] %}<i style="height:{{ h }}%"></i>{% endfor %}</span><span class="pv-play">{{ icon('play') }}</span><span class="pv-bar"><span class="pv-window" style="left:{{ s.window[0] }}%;width:{{ s.window[1] }}%"></span></span><span class="pv-range">{{ s.range }}</span></div>
+          {% elif s.page %}
+          <div class="pv-media pv-page"><img src="{{ asset('img/demo/' ~ s.page) }}" alt="" loading="lazy"></div>
+          {% elif s.code %}
+          <pre class="pv-code" aria-hidden="true">// <mark>Retry</mark> a failed call, waiting longer each time:
+exponential <mark>backoff</mark> <mark>with</mark> jitter.
+
+/**
+ * Calls `fn` until it succeeds, waiting longer after each
+ * failure: exponential <mark>backoff</mark> <mark>with</mark> full jitter, so many
+ * clients don't <mark>retry</mark> in sync.
+ */
+export async function <mark>retry</mark>&lt;T&gt;(
+  fn: () =&gt; Promise&lt;T&gt;,
+  { attempts = 5, baseDelay = 250, maxDelay = 8_000 } = {}</pre>
+          {% endif %}
+          <p class="pv-title">{{ s.title }}</p>
+          <p class="pv-where">{{ s.where }}</p>
+          <p class="pv-meta">{{ s.meta }}</p>
+          <p class="pv-why">{{ icon('find') }}{{ s.why }}</p>
+          {% if s.snippet %}<p class="pv-snippet">{{ s.snippet | safe }}</p>{% endif %}
+          <p class="pv-buttons"><span class="pv-btn primary">{{ s.open }}</span><span class="pv-btn"><span class="os-mac">Show in Finder</span><span class="os-windows-only">Show in Explorer</span><span class="os-linux-only">Show in Files</span></span></p>
+        </div>
+        <div class="panel-foot"><span>{{ s.count }}</span><span class="panel-keys"><span>↩ Open</span><span class="os-mac">⌘↩ Reveal</span><span class="os-other">Ctrl+↩ Show</span><span>␣ {{ s.space }}</span></span></div>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="desk-bottom os-windows-only" aria-hidden="true"><span class="tb-icons"><i></i><span class="tb-search">{{ icon('search') }} Search</span><i></i><i></i></span><span class="tb-tray"><img src="{{ asset('img/icon.svg') }}" alt="" width="16" height="16">9:41 AM</span></div>
+  </div>
+
+  <div class="scenes" role="tablist" aria-label="Example searches">
+    {% for s in scenes %}
+    <button class="scene-chip" type="button" role="tab" data-scene-chip="{{ s.id }}" aria-selected="{{ 'true' if loop.first else 'false' }}">{{ icon(s.icon) }}{{ s.chip }}</button>
+    {% endfor %}
+  </div>
+  <p class="scene-caption" data-caption aria-live="polite">{{ scenes[0].caption }}</p>
+  {% for s in scenes %}<template data-caption-for="{{ s.id }}">{{ s.caption }}</template>{% endfor %}
+  <p class="stage-foot"><span class="stage-shortcut">{{ keycaps(['⇧', '⌘', 'Space'], ['Ctrl', 'Shift', 'Space']) }} opens it from any app</span></p>
+  <figure class="video-inline" data-yt>
+    <p class="video-inline-head">Prefer to watch? DigUp in one minute, with narration.</p>
+    <a class="video-poster" href="{{ site.video.url }}" data-yt-play data-embed="{{ site.video.embed }}" data-title="{{ site.video.title }}" aria-label="Play the product video ({{ site.video.length }})">
+      <img src="{{ asset('img/video-poster.jpg') }}" alt="" width="1280" height="720" loading="lazy">
+      <span class="video-play">{{ icon('play') }}</span>
+      <span class="video-length">{{ site.video.length }}</span>
+    </a>
+    <figcaption>The video plays from YouTube when you start it; nothing loads from YouTube before that. <a href="{{ site.video.url }}">Watch on YouTube</a></figcaption>
+  </figure>
+</section>
+
+<section class="band band-space" id="features">
+  <div class="wrap">
+    <header class="section-head">
+      <h2>One model, one space for every kind of file</h2>
+      <p>{{ site.model.name }} is the embedding model {{ site.model.by }} released in {{ site.model.released }}. It turns text, pictures, sound and video into points in one shared space, where things that mean the same land close together, in {{ site.model.languages }} languages. It's open ({{ site.model.license }}) and small enough, at {{ site.model.params }} parameters, to run on a laptop.</p>
+    </header>
+    {% if space %}
+    {% set first = space.searches[0] %}
+    {% macro space_card(c) -%}
+      <div class="space-card" style="left:{{ c.x }}%;top:{{ c.y }}%">
+        <div class="sc-media sc-{{ c.kind }}{{ ' sc-page' if c.at and c.at.startswith('p.') }}">
+          {%- if c.src %}<img src="{{ c.src }}" alt="" loading="lazy">{% if c.at %}<span class="sc-at">{{ c.at }}</span>{% endif %}
+          {%- elif c.peaks %}<span class="sc-wave">{% for h in c.peaks %}<i style="height:{{ (h * 100) | round | int }}%"></i>{% endfor %}</span>{% if c.at %}<span class="sc-at">{{ c.at }}</span>{% endif %}
+          {%- elif c.excerpt %}<span class="sc-text" dir="auto">{{ c.excerpt }}</span>{% endif -%}
+        </div>
+        <p class="sc-foot"><span class="sc-role">{{ c.role }}</span><span class="sc-cos" title="cosine similarity">{{ '%.2f' % c.cos }}</span></p>
+        <p class="sc-name" dir="auto">{{ c.name }}</p>
+      </div>
+    {%- endmacro %}
+    <figure class="space" data-space>
+      <div class="space-plane">
+        <span class="space-glow" data-space-glow style="left:{{ first.x }}%;top:{{ first.y }}%"></span>
+        <svg class="space-svg" viewBox="0 0 1600 900" preserveAspectRatio="none" aria-hidden="true">
+          <defs><pattern id="space-grid" width="100" height="100" patternUnits="userSpaceOnUse"><path d="M100 0H0V100" fill="none" stroke="#a2c78e" stroke-opacity="0.07" stroke-width="1"/></pattern></defs>
+          <rect width="1600" height="900" fill="url(#space-grid)"/>
+          <g class="space-points">{% for p in space.points %}<circle class="pt k-{{ p.k }}" cx="{{ p.x * 16 }}" cy="{{ p.y * 9 }}" r="3.8"/>{% endfor %}</g>
+          <g class="space-lines" data-space-lines>{% for c in first.cards %}<line x1="{{ first.x * 16 }}" y1="{{ first.y * 9 }}" x2="{{ c.px * 16 }}" y2="{{ c.py * 9 }}"/>{% endfor %}</g>
+          <g class="space-leads" data-space-leads></g>
+          <g class="space-hits" data-space-hits>{% for c in first.cards %}<circle class="k-{{ space.points[c.i].k }}" cx="{{ c.px * 16 }}" cy="{{ c.py * 9 }}" r="5.6"/>{% endfor %}</g>
+        </svg>
+        {% for l in space.labels %}<span class="space-label" style="left:{{ l.x }}%;top:{{ l.y }}%">{{ l.text }}<small>{{ l.kinds }}</small></span>{% endfor %}
+        <span class="space-query" data-space-query style="left:{{ first.x }}%;top:{{ first.y }}%"></span>
+        <div class="space-cards" data-space-cards>{% for c in first.cards %}{{ space_card(c) }}{% endfor %}</div>
+        <p class="space-search">{{ icon('search') }}<span data-space-q dir="auto">{{ first.q }}</span></p>
+        <p class="space-count"><span class="space-key"><span><i class="k-image"></i>pictures</span><span><i class="k-video"></i>video frames</span><span><i class="k-audio"></i>sound</span><span><i class="k-text"></i>text</span></span><span>{{ space.n }} real {{ site.model.name }} vectors<span class="space-of"> of the demo's files</span> ({{ space.dim }}-d, shown in 2-D)</span></p>
+      </div>
+      <div class="space-queries" role="tablist" aria-label="Try a search">
+        {% for s in space.searches %}<button type="button" role="tab" class="space-chip" dir="auto" aria-selected="{{ 'true' if loop.first else 'false' }}" data-space-chip="{{ loop.index0 }}">{{ s.q }}</button>{% endfor %}
+      </div>
+      <ol class="space-results" data-space-results>{% for c in first.cards %}<li><span class="sr-role">{{ c.role }}</span> <span class="sr-name" dir="auto">{{ c.name }}</span> <span class="sr-cos">{{ '%.2f' % c.cos }}</span></li>{% endfor %}</ol>
+      <figcaption>Every point is a real vector: a picture, a PDF page, a passage, a video frame or 30 seconds of sound from the files in the demo, laid out in two dimensions. A search lands among what it finds, and the cards are DigUp's best matches with their cosine similarity. Try the Bengali one, or the rice pudding: a search in one language finds files written in another.</figcaption>
+    </figure>
+    <script type="application/json" id="space-data">{{ space | tojson }}</script>
+    {% endif %}
+  </div>
+</section>
+
+<section class="band band-features">
+  <div class="wrap">
+    <header class="section-head">
+      <h2>It takes you to the spot</h2>
+      <p>Every page, passage, video frame and stretch of sound has its own place in the index, so a result opens where it matched.</p>
+    </header>
+    <div class="bento">
+      <article class="card wide">
+        <div class="mini mini-moments" aria-hidden="true">
+          <div class="mm-row"><img src="{{ asset('img/demo/thumb-masai.jpg') }}" alt="" width="40" height="40"><span class="mm-track"><span class="mm-fill" style="width:66%"></span><span class="find-dot" style="left:66%"></span></span><span class="mm-at">0:42</span></div>
+          <div class="mm-row"><img src="{{ asset('img/demo/thumb-podcast.jpg') }}" alt="" width="40" height="40"><span class="mm-track mm-wave">{% for h in [30,55,40,70,45,85,60,35,65,50,80,42,58,36,75,48,62,38,70,52,44,66,40,58,34,61,47,73,39,55] %}<i style="height:{{ h }}%"></i>{% endfor %}<span class="mm-window" style="left:57.7%;width:3.6%"></span></span><span class="mm-at">7:55</span></div>
+          <div class="mm-row"><img src="{{ asset('img/demo/thumb-lease.jpg') }}" alt="" width="40" height="40"><span class="mm-pages">{% for n in range(1, 9) %}<i class="{{ 'hit' if n == 4 }}">{{ n }}</i>{% endfor %}</span><span class="mm-at">p. 4</span></div>
+        </div>
+        <h3>The moment, the minute, the page</h3>
+        <p>A video opens at the moment the zebra shows up, a podcast at the minute they talk about sleep, and the preview shows the PDF page that answers. Code opens in your editor at the line.</p>
+      </article>
+      <article class="card">
+        <div class="mini mini-exact" aria-hidden="true">
+          <p class="mx-query">{{ icon('search') }}INV-2047</p>
+          <p class="mx-doc"><span class="mx-name">{{ icon('doc') }}Invoice INV-2047.pdf</span><span class="mx-line">Amount due for <mark>INV-2047</mark> by Oct 30</span></p>
+        </div>
+        <h3>Exact words, too</h3>
+        <p>Invoice numbers, error codes and names are matched as written, next to the meaning. On a Mac that includes the text inside screenshots and scans.</p>
+      </article>
+      <article class="card">
+        <div class="mini mini-langs" aria-hidden="true">
+          <span class="ml-q">a dog on the beach</span>
+          <span class="ml-q" lang="bn">সৈকতে একটা কুকুর</span>
+          <span class="ml-q" lang="ar" dir="rtl">كلب على الشاطئ</span>
+          <img class="ml-hit" src="{{ asset('img/demo/thumb-4133.jpg') }}" alt="" width="52" height="52">
+        </div>
+        <h3>In any of {{ site.model.languages }} languages</h3>
+        <p>A search in one language finds files written in another. The evals cover English, Bengali and Arabic; the model knows many more.</p>
+      </article>
+      <article class="card wide">
+        <div class="mini mini-code" aria-hidden="true">
+          <p class="mc-query">{{ icon('search') }}<span>code: retry a failed call with backoff</span></p>
+          <p class="mc-hit"><span class="mc-glyph">{{ icon('code') }}</span><span><b>retry.ts</b> <span class="row-tag">L1–47</span><br><span class="mc-where">weather-app/src/net</span></span><span class="mc-open">↩ Opens in your editor at line 1</span></p>
+          <p class="mc-editors"><span>Zed</span><span>VS Code</span><span>Cursor</span><span>JetBrains</span><span>Sublime Text</span><span>Xcode</span></p>
+        </div>
+        <h3>Code, if you want it</h3>
+        <p>Turn it on for your projects, then start a search with <code>code:</code> and say what the code does, or type a name to go to where it's defined. Code has an index of its own and never mixes with your files.</p>
+      </article>
+      <article class="card">
+        <div class="mini mini-long" aria-hidden="true">
+          <span class="ml-book">{{ icon('book') }}<span>A 463-page book</span></span>
+          <span class="ml-bar"><span class="ml-now" style="width:6.5%"></span></span>
+          <span class="ml-legend"><span><i class="now"></i>Pages 1–30, in the first pass</span><span><i></i>The rest, once everything else is in</span></span>
+        </div>
+        <h3>Long files, read to the end</h3>
+        <p>Recordings and videos of any length are read whole, 30 seconds of sound and one frame per shot at a time. Big PDFs and documents get their first pages right away and the rest later.</p>
+      </article>
+      <article class="card">
+        <div class="mini mini-kinds" aria-hidden="true">
+          {% for k in [["image", "Photos"], ["image", "Screenshots"], ["doc", "PDFs"], ["text", "Documents"], ["sheet", "Spreadsheets"], ["slides", "Slides"], ["audio", "Audio"], ["video", "Video"]] %}<span>{{ icon(k[0]) }}{{ k[1] }}</span>{% endfor %}
+        </div>
+        <h3>Every kind of file you keep</h3>
+        <p>Pictures, PDFs (scans too), Word, Markdown and other documents, spreadsheets and slides, recordings and videos. <a href="{{ url('docs/file-types/') }}">The full list</a></p>
+      </article>
+      <article class="card">
+        <div class="mini mini-keeps" aria-hidden="true">
+          <span class="mk-row"><span class="mk-time">9:41:12</span><span>{{ icon('image') }}Screenshot saved</span></span>
+          <span class="mk-row"><span class="mk-time">9:41:13</span><span class="mk-found">{{ icon('find') }}Searchable</span></span>
+        </div>
+        <h3>Keeps up quietly</h3>
+        <p>After the first pass, DigUp reads only what's new or changed, a moment after it lands. The model runs in a helper that quits when it's done.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section class="band band-keys">
+  <div class="wrap">
+    <header class="section-head">
+      <h2>Made for the keyboard</h2>
+      <p>Press the shortcut in any app, type, and you're there. Everything else is a key away.</p>
+    </header>
+    <ul class="keys">
+      <li>{{ keycaps(['⇧', '⌘', 'Space'], ['Ctrl', 'Shift', 'Space']) }}<span>Opens the search panel from any app</span></li>
+      <li>{{ keycaps(['↩'], ['Enter']) }}<span>Opens the result at its page, moment or line</span></li>
+      <li>{{ keycaps(['Space'], ['Space']) }}<span>A big preview, right there</span></li>
+      <li>{{ keycaps(['⌘', '↩'], ['Ctrl', 'Enter']) }}<span><span class="os-mac">Shows it in Finder</span><span class="os-windows-only">Shows it in Explorer</span><span class="os-linux-only">Shows it in your file manager</span></span></li>
+      <li>{{ keycaps(['⌘', 'O'], ['Ctrl', 'O']) }}<span>The same search in a window, with filters</span></li>
+    </ul>
+  </div>
+</section>
+
+<section class="band band-private">
+  <div class="wrap private">
+    <div class="private-text">
+      <h2>Nothing you index leaves your computer</h2>
+      <p>The model, the index and every search stay on your machine. DigUp goes online for two things only, and neither carries anything about your files. No account, no telemetry.</p>
+      <p><a class="more" href="{{ url('docs/privacy/') }}">Privacy and security, in detail {{ icon('arrow-right') }}</a></p>
+    </div>
+    <div class="private-diagram" role="img" aria-label="Your folders, DigUp with EmbeddingGemma 2, and the index all stay on your computer. Two connections leave it: the model download, once, and a daily update check that can be turned off.">
+      <div class="pd-box">
+        <p class="pd-label">{{ icon('lock') }}Your computer</p>
+        <div class="pd-flow">
+          <span class="pd-node">{{ icon('folder') }}Your folders</span>
+          <span class="pd-arrow" aria-hidden="true"></span>
+          <span class="pd-node pd-model"><img src="{{ asset('img/icon.svg') }}" alt="" width="22" height="22">DigUp<small>with {{ site.model.name }}</small></span>
+          <span class="pd-arrow" aria-hidden="true"></span>
+          <span class="pd-node">{{ icon('layers') }}One index file</span>
+        </div>
+      </div>
+      <div class="pd-out">
+        <p><span class="pd-when">Once</span>The model, {{ site.model.download }}, from Hugging Face</p>
+        <p><span class="pd-when">Daily</span>An update check on GitHub, which you can turn off</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="band band-platforms">
+  <div class="wrap">
+    <header class="section-head">
+      <h2>On a Mac, on Windows and on Linux</h2>
+      <p>The search engine is the same code on every system, with the same model and the same results. The app around it belongs to each.</p>
+    </header>
+    <div class="platforms">
+      {% for key, file in [("mac", latest.mac), ("windows", latest.windows), ("linux", latest.linux_deb)] %}
+      {% set p = site.platforms[key] %}
+      <article class="platform" data-platform-card="{{ key }}">
+        <header><h3>{{ p.name }}</h3><span class="pill{{ ' pill-beta' if file and file.beta }}">{{ 'Beta' if file and file.beta else 'Stable' }}</span></header>
+        {% if file %}<p class="platform-version">{{ file.version }} · {{ file.date }}</p>{% endif %}
+        <p class="platform-req">Needs {{ site.requirements[key] }}.</p>
+        <ul>
+          <li>{{ p.lives }}. {{ p.gpu }}</li>
+          {% for n in p.notes %}<li>{{ n }}</li>{% endfor %}
+        </ul>
+        <p class="platform-actions">
+          {% if key == 'linux' %}<a class="btn btn-quiet" href="{{ url('download/') }}#linux">Download for Linux</a>
+          {% else %}<a class="btn btn-quiet" href="{{ file.url if file else url('download/') }}">Download for {{ p.name }}</a>{% endif %}
+          <a class="text-link" href="{{ url('docs/install-' ~ key ~ '/') }}">Install guide</a>
+        </p>
+      </article>
+      {% endfor %}
+    </div>
+    <p class="platforms-more"><a href="{{ asset('video/demo.mp4') }}" data-video-open="demo">Watch the same searches on each system</a><a href="{{ url('download/') }}#compare">What differs between them</a><a href="{{ site.releases }}">All releases on GitHub</a><a href="{{ url('docs/contributing/') }}#build-from-source">Build from source</a></p>
+  </div>
+</section>
+
+<section class="band band-faq">
+  <div class="wrap faq-home">
+    <header class="section-head">
+      <h2>Questions people ask</h2>
+      <p>More in the <a href="{{ url('docs/faq/') }}">FAQ</a>, and fixes for common problems in <a href="{{ url('docs/troubleshooting/') }}">Troubleshooting</a>.</p>
+    </header>
+    <div class="faq-list">
+      {% for q in questions if q.home %}
+      <details class="qa" id="q-{{ q.id }}">
+        <summary>{{ q.title }}{{ icon('chevron-down') }}</summary>
+        <div class="qa-body">{{ q.html }}</div>
+      </details>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block before_footer %}
+<section class="closing wrap">
+  <div class="closing-mark" aria-hidden="true"><img src="{{ asset('img/icon.svg') }}" alt="" width="96" height="96"></div>
+  <h2>Find the thing you're thinking of.</h2>
+  <p>Free and open source. Everything runs on your computer.</p>
+  <div class="hero-cta">
+    <a class="btn btn-light btn-lg" data-download-primary href="{{ latest.mac.url if latest.mac else url('download/') }}">{{ icon('download') }}<span data-download-label>Download for Mac</span></a>
+    <a class="btn btn-ghost btn-lg" href="{{ site.github }}">{{ icon('github') }}Star on GitHub</a>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<dialog class="video-dialog" data-video aria-label="Video">
+  <div class="video-frame">
+    <video class="video-demo" data-video-demo src="{{ asset('video/demo.mp4') }}" poster="{{ asset('video/demo-poster.jpg') }}" muted loop playsinline controls preload="none"></video>
+    <p class="video-note">The real app on a Mac, on Windows and on Linux, with the same files: a moment in a video, a podcast minute, a page in a lease, a dog on the beach in three languages, and code that opens in Zed.</p>
+    <button class="video-close" type="button" data-video-close aria-label="Close the video">{{ icon('close') }}</button>
+  </div>
+</dialog>
+<script>window.DIGUP_DOWNLOADS = {{ {
+  "mac": {"url": latest.mac.url if latest.mac else "", "label": "Download for Mac"},
+  "windows": {"url": latest.windows.url if latest.windows else "", "label": "Download for Windows"},
+  "linux": {"url": url('download/') ~ "#linux", "label": "Download for Linux"}
+} | tojson }};</script>
+{% endblock %}

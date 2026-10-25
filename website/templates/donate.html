@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block body_class %}donate-page{% endblock %}
+
+{% block main %}
+<section class="page-hero wrap donate-hero">
+  <h1>Donate to DigUp</h1>
+  <p class="page-lede">DigUp is free and open source, with no account, ads or paid tier. If it's useful to you, a donation is a way to say thanks and to support the work that goes into it.</p>
+</section>
+
+<section class="wrap donate">
+  <div class="give">
+    <span class="give-mark" aria-hidden="true">{{ icon('heart') }}</span>
+    <div class="give-text">
+      <h2>A one-time thank-you</h2>
+      <p>{{ site.support_terms }}</p>
+    </div>
+    <a class="btn btn-light btn-lg" href="{{ site.support }}">Donate on Gumroad{{ icon('external') }}</a>
+  </div>
+
+  <h2 class="donate-more">Other ways to help</h2>
+  <ul class="helps">
+    <li><a href="{{ site.github }}">{{ icon('star') }}<b>Star it on GitHub</b><span>Stars help other people find DigUp.</span></a></li>
+    <li><a href="{{ url('docs/report-a-bug/') }}">{{ icon('bug') }}<b>Report a bug</b><span>What you searched for, what you expected and what happened, with the logs.</span></a></li>
+    <li><a href="{{ url('docs/contributing/') }}">{{ icon('code') }}<b>Contribute</b><span>Fixes, docs and features: how to build DigUp and send a change.</span></a></li>
+  </ul>
+</section>
+{% endblock %}

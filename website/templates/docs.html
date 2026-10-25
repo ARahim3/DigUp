@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% block body_class %}docs-page{% endblock %}
+{% set names = {"mac": "Mac", "windows": "Windows", "linux": "Linux"} %}
+
+{% macro fixed_text(fixed) -%}
+  {%- set parts = [] -%}
+  {%- for version, group in fixed | dictsort | groupby(1) -%}
+    {%- set systems = group | map(attribute=0) | map('replace', 'mac', 'Mac') | map('replace', 'windows', 'Windows') | map('replace', 'linux', 'Linux') | join(' and ') -%}
+    {%- if version == 'next' -%}{%- set _ = parts.append(systems ~ ': in the next release') -%}
+    {%- else -%}{%- set _ = parts.append(version ~ ' on ' ~ systems) -%}{%- endif -%}
+  {%- endfor -%}
+  {{ parts | join('; ') }}
+{%- endmacro %}
+
+{% block main %}
+<div class="docs-layout">
+  <aside class="docs-side" aria-label="Docs">
+    <button class="side-search" type="button" data-search-open>{{ icon('search') }}<span>Search the docs</span><kbd class="os-mac">⌘K</kbd><kbd class="os-other">Ctrl K</kbd></button>
+    <details class="side-menu" open>
+      <summary>{{ page.section }} · {{ page.title }}{{ icon('chevron-down') }}</summary>
+      <nav class="side-nav">
+        {% for group in nav %}
+        <p class="side-group">{{ group.name }}</p>
+        <ul>
+          {% for p in group.pages %}
+          <li><a href="{{ url(p.url) }}"{% if p.url == page.url %} aria-current="page"{% endif %}>{{ p.title }}</a></li>
+          {% endfor %}
+        </ul>
+        {% endfor %}
+      </nav>
+    </details>
+    <script>(function (menu) { if (window.matchMedia("(max-width: 980px)").matches) menu.open = false; })(document.currentScript.previousElementSibling);</script>
+  </aside>
+
+  <article class="docs-main">
+    <nav class="crumbs" aria-label="Breadcrumb"><a href="{{ url('docs/') }}">Docs</a>{% if page.slug %}{{ icon('chevron') }}<span>{{ page.section }}</span>{% endif %}</nav>
+    <header class="doc-head">
+      <h1>{{ page.title }}</h1>
+      <p class="doc-lede">{{ page.description }}</p>
+      {% if page.platforms %}<p class="doc-platforms">{% for pl in page.platforms %}<span class="pill">{{ names[pl] }}</span>{% endfor %}</p>{% endif %}
+    </header>
+
+    {% if page.kind == 'index' %}
+    <div class="docs-start">
+      {% for card in [
+        ("download", "Install", "Get DigUp on a Mac, Windows or Linux.", "docs/install-mac/"),
+        ("search", "Your first searches", "What to type, and where results open.", "docs/searching/"),
+        ("folder", "Choose folders", "What gets read, and what's left out.", "docs/folders/"),
+        ("question", "Troubleshooting", "Fixes for the problems people run into.", "docs/troubleshooting/")] %}
+      <a class="start-card" href="{{ url(card[3]) }}"><span class="start-icon">{{ icon(card[0]) }}</span><span class="start-title">{{ card[1] }}</span><span class="start-text">{{ card[2] }}</span></a>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <div class="prose">{{ page.html }}</div>
+
+    {% if page.kind == 'index' %}
+    <div class="docs-map">
+      {% for group in nav %}
+      <section class="map-group">
+        <h2>{{ group.name }}</h2>
+        <ul>{% for p in group.pages if p.slug %}<li><a href="{{ url(p.url) }}"><span class="map-title">{{ p.title }}</span><span class="map-text">{{ p.description }}</span></a></li>{% endfor %}</ul>
+      </section>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if page.kind == 'troubleshooting' %}
+    <div class="filter" data-filter role="group" aria-label="Show problems for">
+      <span class="filter-label">Show</span>
+      <button type="button" data-filter-value="all" aria-pressed="true">All systems</button>
+      <button type="button" data-filter-value="mac" aria-pressed="false">Mac</button>
+      <button type="button" data-filter-value="windows" aria-pressed="false">Windows</button>
+      <button type="button" data-filter-value="linux" aria-pressed="false">Linux</button>
+    </div>
+    {% for area in trouble.areas %}
+    <section class="problems" id="{{ area.id }}" data-filter-group>
+      <h2>{{ area.title }}</h2>
+      {% for p in problems if p.area == area.id %}
+      <article class="problem" id="{{ p.id }}" data-platforms="{{ p.platforms | join(' ') }}">
+        <header class="problem-head">
+          <h3><a href="#{{ p.id }}">{{ p.title }}</a></h3>
+          <p class="problem-tags">
+            {% if p.platforms | length == 3 %}<span class="pill">Every system</span>{% else %}{% for pl in p.platforms %}<span class="pill">{{ names[pl] }}</span>{% endfor %}{% endif %}
+            {% if p.fixed %}<span class="pill pill-fixed">{{ icon('check') }}Fixed: {{ fixed_text(p.fixed) }}</span>{% endif %}
+          </p>
+        </header>
+        <div class="problem-body prose">{{ p.html }}</div>
+      </article>
+      {% endfor %}
+    </section>
+    {% endfor %}
+    <section class="still-stuck" id="still-stuck">
+      <h2>Still stuck?</h2>
+      <p>Search the <a href="{{ site.issues }}?q=is%3Aissue">existing issues</a>, or open a new one with what you did, what you expected, and the logs. <a href="{{ url('docs/report-a-bug/') }}">How to report a bug</a> says where the logs are on each system.</p>
+    </section>
+    {% endif %}
+
+    {% if page.kind == 'faq' %}
+    {% for group in faq.groups %}
+    <section class="faq-group" id="{{ group.id }}">
+      <h2>{{ group.title }}</h2>
+      {% for q in questions if q.group == group.id %}
+      <details class="qa" id="{{ q.id }}">
+        <summary>{{ q.title }}{{ icon('chevron-down') }}</summary>
+        <div class="qa-body prose">{{ q.html }}</div>
+      </details>
+      {% endfor %}
+    </section>
+    {% endfor %}
+    {% endif %}
+
+    <footer class="doc-foot">
+      <p class="doc-meta">{% if page.updated %}<span>Updated {{ page.updated }}</span>{% endif %}<a href="{{ page.edit }}">{{ icon('external') }}Edit this page on GitHub</a></p>
+      <nav class="pager" aria-label="More docs">
+        {% if page.prev %}<a class="pager-prev" href="{{ url(page.prev.url) }}"><span>{{ icon('arrow-left') }}Previous</span><b>{{ page.prev.title }}</b></a>{% else %}<span></span>{% endif %}
+        {% if page.next %}<a class="pager-next" href="{{ url(page.next.url) }}"><span>Next{{ icon('arrow-right') }}</span><b>{{ page.next.title }}</b></a>{% endif %}
+      </nav>
+    </footer>
+  </article>
+
+  <aside class="docs-toc" aria-label="On this page">
+    {% if page.kind == 'troubleshooting' %}
+      <p class="toc-title">Problems with</p>
+      <ul>{% for area in trouble.areas %}<li class="lvl-2"><a href="#{{ area.id }}">{{ area.title }}</a></li>{% endfor %}<li class="lvl-2"><a href="#still-stuck">Still stuck?</a></li></ul>
+    {% elif page.kind == 'faq' %}
+      <p class="toc-title">On this page</p>
+      <ul>{% for group in faq.groups %}<li class="lvl-2"><a href="#{{ group.id }}">{{ group.title }}</a></li>{% endfor %}</ul>
+    {% elif page.toc %}
+      <p class="toc-title">On this page</p>
+      <ul>{% for h in page.toc %}<li class="lvl-{{ h.level }}"><a href="#{{ h.id }}">{{ h.text }}</a></li>{% endfor %}</ul>
+    {% endif %}
+  </aside>
+</div>
+{% endblock %}

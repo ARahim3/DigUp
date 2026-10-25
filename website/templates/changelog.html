@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block body_class %}changelog-page{% endblock %}
+{% block main %}
+<section class="page-hero wrap">
+  <h1>Changelog</h1>
+  <p class="page-lede">What changed in each release, for every system. One version line covers the Mac, Windows and Linux; a release carries only the systems that changed. <a href="{{ url('docs/updates/') }}#versions">How the numbers work</a></p>
+  <div class="cl-tools">
+    <div class="filter" data-filter role="group" aria-label="Show releases for">
+      <button type="button" data-filter-value="all" aria-pressed="true">All</button>
+      <button type="button" data-filter-value="mac" aria-pressed="false">Mac</button>
+      <button type="button" data-filter-value="windows" aria-pressed="false">Windows</button>
+      <button type="button" data-filter-value="linux" aria-pressed="false">Linux</button>
+    </div>
+    <a class="text-link" href="{{ url('changelog/feed.xml') }}">{{ icon('rss') }}Feed</a>
+  </div>
+</section>
+
+<div class="wrap cl">
+  {% for e in releases %}
+  <article class="release" id="{{ e.tag }}" data-platforms="{{ e.platforms | join(' ') | lower }}">
+    <div class="rel-side">
+      <a class="rel-version" href="#{{ e.tag }}">{{ e.version }}</a>
+      <time datetime="{{ e.iso }}">{{ e.date }}</time>
+      <span class="rel-platforms">{% for p in e.platforms %}<span class="pill">{{ p }}</span>{% endfor %}{% if e.beta %}<span class="pill pill-beta">Beta</span>{% endif %}</span>
+    </div>
+    <div class="rel-main">
+      <h2>{{ e.title }}</h2>
+      {% if e.lede %}<p class="rel-lede">{{ e.lede }}</p>{% endif %}
+      <div class="rel-body prose">{{ e.html }}</div>
+      <div class="rel-assets">
+        {% for a in e.assets %}<a href="{{ a.url }}">{{ icon('download') }}{{ a.name }}<span>{{ a.size }}</span></a>{% endfor %}
+        <a class="rel-gh" href="{{ e.url }}">{{ icon('github') }}On GitHub</a>
+      </div>
+    </div>
+  </article>
+  {% else %}
+  <p class="cl-empty">The release list couldn't be read when this page was built. Every release is on <a href="{{ site.releases }}">GitHub</a>.</p>
+  {% endfor %}
+</div>
+{% endblock %}

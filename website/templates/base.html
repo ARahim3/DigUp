@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+{% set full_title = page.title if page.url == "" else page.title ~ " – DigUp" %}
+<title>{% block title %}{{ "DigUp: search your files by what's in them" if page.url == "" else full_title }}{% endblock %}</title>
+<meta name="description" content="{{ page.description }}">
+<link rel="canonical" href="{{ absolute(page.url) }}">
+<script>
+  /* Before the first paint: the visitor's theme choice and system, so nothing flashes. */
+  (function (d) {
+    try { var t = localStorage.getItem("digup-theme"); if (t === "dark" || t === "light") d.setAttribute("data-theme", t); } catch (e) {}
+    var ua = navigator.userAgent || "", p = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "";
+    var os = /Mac/i.test(p) && !/iPhone|iPad/.test(ua) ? "mac" : /Win/i.test(p) ? "windows" : /Linux|X11|CrOS/i.test(p) && !/Android/i.test(ua) ? "linux" : "";
+    if (os) d.setAttribute("data-os", os);
+    d.classList.add("js");
+  })(document.documentElement);
+</script>
+<link rel="preload" href="{{ asset('fonts/inter.woff2') }}" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="{{ asset('css/site.css') }}">
+<link rel="icon" href="{{ asset('img/icon.svg') }}" type="image/svg+xml">
+<link rel="apple-touch-icon" href="{{ asset('img/icon-180.png') }}">
+<link rel="alternate" type="application/atom+xml" title="DigUp releases" href="{{ url('changelog/feed.xml') }}">
+<meta name="theme-color" content="#f5f7f1" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0f1712" media="(prefers-color-scheme: dark)">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="DigUp">
+<meta property="og:title" content="{{ 'DigUp. Describe it. Dig it up.' if page.url == '' else full_title }}">
+<meta property="og:description" content="{{ page.description }}">
+<meta property="og:url" content="{{ absolute(page.url) }}">
+<meta property="og:image" content="{{ absolute('assets/img/og.png') }}">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+{% block head %}{% endblock %}
+</head>
+<body class="{% block body_class %}{% endblock %}">
+{% include "partials/icons.html" %}
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <nav class="nav" aria-label="Main">
+    <a class="brand" href="{{ url() }}"><img src="{{ asset('img/icon.svg') }}" alt="" width="28" height="28"><span>DigUp</span></a>
+    <div class="nav-links">
+      <a href="{{ url() }}#features">Features</a>
+      <a href="{{ url('docs/') }}"{% if page.url.startswith('docs/') and page.url != 'docs/troubleshooting/' %} aria-current="page"{% endif %}>Docs</a>
+      <a href="{{ url('docs/troubleshooting/') }}"{% if page.url == 'docs/troubleshooting/' %} aria-current="page"{% endif %}>Help</a>
+      <a href="{{ url('changelog/') }}"{% if page.url == 'changelog/' %} aria-current="page"{% endif %}>Changelog</a>
+      <a class="nav-donate" href="{{ url('donate/') }}"{% if page.url == 'donate/' %} aria-current="page"{% endif %}>{{ icon('heart') }}Donate</a>
+    </div>
+    <div class="nav-tools">
+      <button class="search-trigger" type="button" data-search-open aria-label="Search the site">
+        {{ icon('search') }}<span class="search-trigger-label">Search</span><kbd class="os-mac">⌘K</kbd><kbd class="os-other">Ctrl K</kbd>
+      </button>
+      <a class="gh" href="{{ site.github }}" aria-label="DigUp on GitHub, {{ stars }} stars">{{ icon('github') }}<span data-stars>{{ ('%.1fk' % (stars / 1000)).replace('.0k', 'k') if stars >= 1000 else stars }}</span></a>
+      <button class="theme-toggle" type="button" data-theme-toggle aria-label="Switch between light and dark">{{ icon('moon', 'moon') }}{{ icon('sun', 'sun') }}</button>
+      <a class="btn btn-primary btn-sm nav-download" href="{{ url('download/') }}"{% if page.url == 'download/' %} aria-current="page"{% endif %}>Download</a>
+      <details class="nav-menu">
+        <summary aria-label="Menu">{{ icon('menu', 'open') }}{{ icon('close', 'shut') }}</summary>
+        <div class="nav-sheet">
+          <a href="{{ url() }}#features">Features</a>
+          <a href="{{ url('download/') }}">Download</a>
+          <a href="{{ url('docs/') }}">Docs</a>
+          <a href="{{ url('docs/troubleshooting/') }}">Help</a>
+          <a href="{{ url('changelog/') }}">Changelog</a>
+          <a class="nav-donate" href="{{ url('donate/') }}">{{ icon('heart') }}Donate</a>
+          <a href="{{ site.github }}">GitHub</a>
+        </div>
+      </details>
+    </div>
+  </nav>
+</header>
+
+<main id="main">
+{% block main %}{% endblock %}
+</main>
+
+<footer class="footer">
+  {% block before_footer %}{% endblock %}
+  <div class="wrap footer-grid">
+    <div class="footer-brand">
+      <a class="brand" href="{{ url() }}"><img src="{{ asset('img/icon.svg') }}" alt="" width="28" height="28"><span>DigUp</span></a>
+      <p>{{ site.tagline }} Search the files on your computer by what's in them, with {{ site.model.by }}'s {{ site.model.name }}.</p>
+      <p class="footer-small">Free and open source under the MIT license. Made by <a href="{{ site.author_url }}">{{ site.author }}</a>.</p>
+    </div>
+    <div>
+      <h2>Get DigUp</h2>
+      <ul>
+        <li><a href="{{ url('download/') }}">Download</a></li>
+        <li><a href="{{ url('docs/install-mac/') }}">Install on Mac</a></li>
+        <li><a href="{{ url('docs/install-windows/') }}">Install on Windows</a></li>
+        <li><a href="{{ url('docs/install-linux/') }}">Install on Linux</a></li>
+        <li><a href="{{ url('changelog/') }}">Changelog</a></li>
+      </ul>
+    </div>
+    <div>
+      <h2>Help</h2>
+      <ul>
+        <li><a href="{{ url('docs/') }}">Docs</a></li>
+        <li><a href="{{ url('docs/troubleshooting/') }}">Troubleshooting</a></li>
+        <li><a href="{{ url('docs/faq/') }}">FAQ</a></li>
+        <li><a href="{{ url('docs/report-a-bug/') }}">Report a bug</a></li>
+        <li><a href="{{ url('docs/privacy/') }}">Privacy and security</a></li>
+      </ul>
+    </div>
+    <div>
+      <h2>Project</h2>
+      <ul>
+        <li><a href="{{ site.github }}">GitHub</a></li>
+        <li><a href="{{ url('docs/how-it-works/') }}">How it works</a></li>
+        <li><a href="{{ url('docs/contributing/') }}">Contributing</a></li>
+        <li><a href="{{ url('docs/credits/') }}">Credits and licenses</a></li>
+        <li><a href="{{ url('donate/') }}">Donate</a></li>
+      </ul>
+    </div>
+  </div>
+  <div class="wrap footer-legal">
+    <p>DigUp is built on <a href="{{ site.model.url }}">{{ site.model.name }}</a> by {{ site.model.by }} ({{ site.model.license }}) and <a href="https://github.com/ggml-org/llama.cpp">llama.cpp</a> (MIT). It isn't affiliated with Google, Apple or Microsoft. Gemma is a trademark of Google LLC; Mac and Spotlight are trademarks of Apple Inc.; Windows is a trademark of Microsoft Corporation.</p>
+    <p>This site sets no cookies and runs no analytics. <a href="{{ url('changelog/feed.xml') }}">Release feed</a></p>
+  </div>
+</footer>
+
+<dialog class="finder" data-finder aria-label="Search DigUp's site">
+  <div class="finder-field">
+    {{ icon('search') }}
+    <input id="finder-input" type="search" autocomplete="off" spellcheck="false" enterkeyhint="go"
+           placeholder="Describe it: “model download blocked”, “shortcut on Wayland”…" aria-controls="finder-list">
+    <button class="finder-esc" type="button" data-finder-close>esc</button>
+  </div>
+  <div class="finder-body">
+    <div class="finder-list" id="finder-list" role="listbox" aria-label="Results"></div>
+    <div class="finder-preview" aria-live="polite"></div>
+  </div>
+  <div class="finder-foot"><span class="finder-count"></span><span class="finder-keys"><span><kbd>↑</kbd><kbd>↓</kbd> Move</span><span><kbd>↩</kbd> Open</span><span><kbd>esc</kbd> Close</span></span></div>
+</dialog>
+
+<script>window.DIGUP = {base: "{{ site.base_path }}", repo: "{{ site.repo }}", search: "{{ url('search.json') }}"};</script>
+<script src="{{ asset('js/site.js') }}" defer></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

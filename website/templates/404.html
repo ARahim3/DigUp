@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block body_class %}notfound-page{% endblock %}
+{% block main %}
+<section class="page-hero wrap notfound">
+  <p class="notfound-mark" aria-hidden="true"><img src="{{ asset('img/icon.svg') }}" alt="" width="72" height="72"></p>
+  <h1>Nothing dug up here</h1>
+  <p class="page-lede">That page isn't on this site. Describe what you were looking for and the search will try to find it.</p>
+  <div class="hero-cta">
+    <button class="btn btn-primary btn-lg" type="button" data-search-open>{{ icon('search') }}Search the site</button>
+    <a class="btn btn-quiet btn-lg" href="{{ url() }}">Home</a>
+  </div>
+</section>
+{% endblock %}
