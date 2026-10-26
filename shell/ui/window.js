@@ -46,6 +46,7 @@ const state = {
   navigated: false,     // the selection was moved by the arrow keys or a click since the last edit: ← → move it then
   generation: 0,
   timer: null,
+  composing: false,
   error: null,
   info: { folders: [], hotkey: null, hasCode: false },
   app: {},              // indexing and the model, from the shell (status.rs): line, progress, caveat, counts
@@ -62,6 +63,7 @@ function isCode() {
 /// The query or the filter changed: after a short pause in typing, the search (and the same search of one kind, for a
 /// filter), all at once. The query's meaning is embedded on every keystroke, so the pause is the whole wait.
 function run() {
+  if (state.composing) return;
   const generation = ++state.generation;
   clearTimeout(state.timer);
   state.navigated = false;
@@ -111,7 +113,10 @@ function setQuery(text) {
   queryChanged();
 }
 
-function queryChanged() {
+function queryChanged(event) {
+  if (state.composing || event?.isComposing) return;
+  // compositionend already submitted this value; ignore its trailing input event.
+  if (event?.type === "input" && $query.value === state.query) return;
   closeBig();
   state.query = $query.value;
   $("clear").hidden = !state.query;
@@ -953,6 +958,15 @@ window.addEventListener("blur", hideMenu);
 // MARK: Keys and events
 
 $query.addEventListener("input", queryChanged);
+$query.addEventListener("compositionstart", () => {
+  state.composing = true;
+  clearTimeout(state.timer);
+  ++state.generation;   // replies for the previous query must not interrupt conversion
+});
+$query.addEventListener("compositionend", () => {
+  state.composing = false;
+  queryChanged();
+});
 // A click back in the field: ← → move the cursor again (after picking a result, they moved the selection).
 $query.addEventListener("mousedown", () => { state.navigated = false; });
 $("clear").onmousedown = (event) => event.preventDefault();
@@ -980,7 +994,7 @@ function updatePreviewButton() {
 }
 
 document.addEventListener("keydown", (event) => {
-  if (event.isComposing) return;   // an input method is composing: its keys
+  if (state.composing || event.isComposing) return;   // an input method is composing: its keys
   const modifier = isMac ? event.metaKey : event.ctrlKey;
   const plain = !event.altKey && !event.shiftKey && !event.ctrlKey && !event.metaKey;
   if (!$menu.hidden && event.key === "Escape") {

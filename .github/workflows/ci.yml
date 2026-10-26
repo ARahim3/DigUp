@@ -96,3 +96,5 @@ jobs:
       - name: Test
         working-directory: shell/src-tauri
         run: cargo test
+      - name: Shell input tests
+        run: node --test shell/tests/*.test.cjs
