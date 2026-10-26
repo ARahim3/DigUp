@@ -60,7 +60,7 @@ id = "official"
 group = "about"
 title = "Where do I get the official DigUp?"
 body = """
-From this site, the [GitHub repository]({{ site.github }}) and the Homebrew tap `arahim3/tap`. Every download comes from [GitHub Releases]({{ site.releases }}). Other sites that use the name aren't run by the project.
+From this site, the [GitHub repository]({{ site.github }}) and the Homebrew tap `arahim3/tap`. Every download comes from [GitHub Releases]({{ site.releases }}). Other sites offering DigUp aren't the project's; don't download from them.
 """
 
 [[question]]

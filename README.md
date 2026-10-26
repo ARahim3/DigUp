@@ -50,6 +50,10 @@ once a day. The update check sends nothing about your files, and you can turn it
 
 ## Install
 
+> [!NOTE]
+> DigUp is published only here, on this repository's Releases page, and at [digup.arahim.dev](https://digup.arahim.dev).
+> Other sites offering DigUp aren't the project's; don't download from them.
+
 **Mac.** Download the DMG from [Releases](https://github.com/ARahim3/DigUp/releases/latest) and drag DigUp to
 Applications, or use Homebrew: `brew install --cask arahim3/tap/digup`. It needs an Apple Silicon Mac with macOS 14 or
 later.
