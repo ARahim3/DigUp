@@ -11,7 +11,7 @@ order = 3
 
 :::: tabs
 ::: tab Mac
-A recording or a video opens at its moment in QuickTime Player or IINA. The first time, macOS asks whether DigUp may control QuickTime Player; DigUp uses that only to start it at the moment. If you said no, turn it on in System Settings → Privacy & Security → Automation → DigUp. Other players open the file from the start.
+A recording or a video opens at its moment in QuickTime Player, IINA or VLC (in a new VLC window if VLC is already open). The first time, macOS asks whether DigUp may control QuickTime Player; DigUp uses that only to start it at the moment. If you said no, turn it on in System Settings → Privacy & Security → Automation → DigUp. Other players open the file from the start.
 :::
 ::: tab Windows
 A recording or a video opens at its moment in VLC, mpv or MPC-HC (and MPC-BE), when it's the app Windows opens that file with. Other players open the file from the start.
