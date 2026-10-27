@@ -59,6 +59,10 @@ final class AppController {
     func start(showWindow: Bool = false) {
         panel = SearchPanelController(app: self)
         searchWindow = SearchWindowController(app: self)
+        AppLauncher.shared.onChange = { [weak self] in
+            self?.panel.appsChanged()
+            self?.searchWindow.search.appsChanged()
+        }
         settingsWindow = SettingsWindowController(app: self)
         statusMenu = StatusMenuController(model: model)
         statusMenu.onSearch = { [weak self] in self?.panel.show() }
