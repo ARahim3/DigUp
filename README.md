@@ -100,7 +100,7 @@ pause it, or open Settings. Opening it from the Start menu or your app list show
 
 A few things differ by system:
 
-- On a Mac, a video opens at its moment in QuickTime Player (macOS asks once whether DigUp may control it) or IINA,
+- On a Mac, a video opens at its moment in QuickTime Player (macOS asks once whether DigUp may control it), IINA or VLC,
   and a PDF opens in Preview with your words in its search. On Windows and Linux, PDFs open at the page in your PDF
   viewer if it's one that can be told a page (Edge, Chrome, Firefox, Acrobat, SumatraPDF, Evince, Okular), and
   recordings and videos at the moment in VLC, mpv or MPC-HC. Other apps open the file from the start; the big

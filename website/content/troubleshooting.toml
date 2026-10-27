@@ -234,7 +234,7 @@ area = "opening"
 title = "A video or recording opens from the start"
 platforms = ["mac", "windows", "linux"]
 body = """
-DigUp tells the app that opens the file where to start, when that app can be told: QuickTime Player and IINA on a Mac; VLC, mpv and MPC-HC on Windows; VLC and mpv on Linux. Other apps open the file from the start, and <kbd>Space</kbd> in DigUp plays it from the moment in the preview.
+DigUp tells the app that opens the file where to start, when that app can be told: QuickTime Player, IINA and VLC on a Mac; VLC, mpv and MPC-HC on Windows; VLC and mpv on Linux. Other apps open the file from the start, and <kbd>Space</kbd> in DigUp plays it from the moment in the preview.
 
 On a Mac, if QuickTime Player opens from the start, DigUp may not be allowed to control it. Turn it on in System Settings → Privacy & Security → Automation → DigUp → QuickTime Player. On Linux, a player installed as a Flatpak can't be told the moment.
 """
