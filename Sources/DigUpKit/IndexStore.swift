@@ -249,6 +249,38 @@ public final class IndexStore {
         return out
     }
 
+    public struct FileSummary: Sendable {
+        public var files = 0, indexed = 0, pending = 0, failed = 0, skipped = 0, unfinished = 0
+        public var kinds: [FileKind: Int] = [:]
+        public var skippedReasons: [String: Int] = [:]
+    }
+
+    /// Counts the files under one root without materializing their paths and metadata.
+    public func fileSummary(under root: String) throws -> FileSummary {
+        var summary = FileSummary()
+        let ranges = Self.pathRanges(under: root)
+        let whereSQL = ranges.map { _ in "(path >= ? AND path < ?)" }.joined(separator: " OR ")
+        let values = ranges.flatMap { [SQLValue.text($0.from), .text($0.to)] }
+        try db.query("SELECT kind, state, detail, COUNT(*) FROM files WHERE \(whereSQL) GROUP BY kind, state, detail",
+                     values) { row in
+            let count = Int(row.int(3))
+            summary.files += count
+            summary.kinds[FileKind(rawValue: row.text(0) ?? "") ?? .doc, default: 0] += count
+            switch row.text(1) {
+            case "done": summary.indexed += count
+            case "partial":
+                summary.indexed += count
+                summary.unfinished += count
+            case "pending": summary.pending += count
+            case "failed": summary.failed += count
+            default:
+                summary.skipped += count
+                summary.skippedReasons[row.text(2) ?? "not read", default: 0] += count
+            }
+        }
+        return summary
+    }
+
     /// Adds a file (pending) and returns its id.
     @discardableResult
     public func insert(_ file: Candidate) throws -> Int64 {

@@ -196,7 +196,8 @@ public final class Indexer {
         var files = Set(jobs.map { $0.files[0].id }).count
         var states: [String: Int] = [:]
         var finished = Set<Int64>()
-        try process(jobs, shouldStop: shouldStop) { index, job, results, seconds in
+        try process(jobs, shouldStop: shouldStop, documentCache: DocumentPreparationCache()) {
+            index, job, results, seconds in
             let file = job.files[0]
             let (state, note) = results[0]
             if state != "partial", finished.insert(file.id).inserted {
@@ -219,6 +220,7 @@ public final class Indexer {
     /// (images scaled, screenshots OCR'd, PDF pages rendered, audio and video decoded). OCR alone is ~0.24 s per Retina
     /// screenshot, about as long as embedding it.
     private func process(_ jobs: [Job], shouldStop: () -> Bool,
+                         documentCache: DocumentPreparationCache? = nil,
                          committed: (Int, Job, [(String, String?)], Double) -> Void,
                          skip: (Job) -> Bool = { _ in false }) throws {
         var ahead: PendingBatch?
@@ -232,11 +234,15 @@ public final class Indexer {
         }
         for (index, job) in jobs.enumerated() {
             guard !shouldStop() else { break }
+            if skip(job) {
+                if let ahead { try? FileManager.default.removeItem(at: ahead.wait().folder) }
+                ahead = nil
+                continue
+            }
             let started = Date()
-            let prepared = (ahead ?? prepare(job)).wait()
-            ahead = index + 1 < jobs.count ? prepare(jobs[index + 1]) : nil
+            let prepared = (ahead ?? prepare(job, documentCache: documentCache)).wait()
+            ahead = index + 1 < jobs.count ? prepare(jobs[index + 1], documentCache: documentCache) : nil
             defer { try? FileManager.default.removeItem(at: prepared.folder) }
-            guard !skip(job) else { continue }
             // The helper's and the CLI's main thread has no run loop to drain what Foundation autoreleases while a job
             // commits: without a pool per job it all stayed until the process exited (~30 KB a text chunk).
             let modelWasRunning = worker != nil
@@ -350,6 +356,57 @@ public final class Indexer {
         case code(CodeExtractor.File)
     }
 
+    /// The extracted chunks of the document currently in the preparation queue. A long document has one job per
+    /// `docStep`; without this cache every job reopened, reparsed and rechunked the whole file from its beginning.
+    /// Jobs for one file are contiguous, so replacing this one value bounds retained document text to one file.
+    final class DocumentPreparationCache: @unchecked Sendable {
+        private struct Key: Equatable {
+            let file: Int64
+            let path: String
+            let size: Int64
+            let modified: Double
+            let limit: Int
+        }
+
+        struct Value: Sendable {
+            let chunks: [String]
+            let characters: Int
+        }
+
+        private enum Load {
+            case document(Value)
+            case failure(ExtractError)
+        }
+
+        private let lock = NSLock()
+        private var cached: (key: Key, load: Load)?
+
+        func read(_ file: FileRecord, at url: URL, limit: Int) throws -> Value {
+            try lock.withLock {
+                let key = Key(file: file.id, path: file.path, size: file.size, modified: file.mtime, limit: limit)
+                if let cached, cached.key == key {
+                    switch cached.load {
+                    case .document(let value): return value
+                    case .failure(let error): throw error
+                    }
+                }
+                do {
+                    let text = try DocExtractor.text(of: url)
+                    let value = Value(chunks: DocExtractor.chunks(text, limit: limit), characters: text.count)
+                    cached = (key, .document(value))
+                    return value
+                } catch let error as ExtractError {
+                    cached = (key, .failure(error))
+                    throw error
+                } catch {
+                    let error = ExtractError.unreadable("\(error)")
+                    cached = (key, .failure(error))
+                    throw error
+                }
+            }
+        }
+    }
+
     struct ReadyImage: Sendable {
         let slot: Int
         let image: ImageExtractor.Prepared
@@ -388,17 +445,18 @@ public final class Indexer {
         readingLock.withLock { reading = (path, Date()) }
     }
 
-    private func prepare(_ job: Job) -> PendingBatch {
+    private func prepare(_ job: Job, documentCache: DocumentPreparationCache? = nil) -> PendingBatch {
         let pending = PendingBatch()
         jobsPrepared += 1
         let (options, folder) = (options, scratch.appendingPathComponent("batch-\(jobsPrepared)"))
         preparing.async {
-            pending.fulfill(Self.prepare(job, options: options, into: folder))
+            pending.fulfill(Self.prepare(job, options: options, into: folder, documentCache: documentCache))
         }
         return pending
     }
 
-    static func prepare(_ job: Job, options: IndexOptions, into folder: URL) -> Prepared {
+    static func prepare(_ job: Job, options: IndexOptions, into folder: URL,
+                        documentCache: DocumentPreparationCache? = nil) -> Prepared {
         let batch = job.files
         var prepared = Prepared(batch: batch, step: job.step, folder: folder)
         let url = URL(fileURLWithPath: batch[0].path)
@@ -439,11 +497,22 @@ public final class Indexer {
                 prepared.payload = .pdf(pages: read.pages, read: wanted, total: read.total, title: read.title)
             case .doc:
                 // The chunks are cut the same way every time, so a later step goes on where the last one stopped.
-                let text = try DocExtractor.text(of: url)
-                let chunks = DocExtractor.chunks(text, limit: options.maxChunks + 1)
-                let read = (job.step ?? 0..<options.docStep).clamped(to: 0..<min(chunks.count, options.maxChunks))
-                prepared.payload = .doc(chunks: Array(chunks[read]), read: read, total: chunks.count,
-                                        characters: text.count)
+                let size = FileSystem.info(of: url.path)?.size ?? batch[0].size
+                guard size <= options.maxDocumentBytes else {
+                    throw ExtractError.leftOut("document over \(options.maxDocumentBytes >> 20) MB")
+                }
+                let document: DocumentPreparationCache.Value
+                if let documentCache {
+                    document = try documentCache.read(batch[0], at: url, limit: options.maxChunks + 1)
+                } else {
+                    let text = try DocExtractor.text(of: url)
+                    document = DocumentPreparationCache.Value(
+                        chunks: DocExtractor.chunks(text, limit: options.maxChunks + 1), characters: text.count)
+                }
+                let read = (job.step ?? 0..<options.docStep)
+                    .clamped(to: 0..<min(document.chunks.count, options.maxChunks))
+                prepared.payload = .doc(chunks: Array(document.chunks[read]), read: read,
+                                        total: document.chunks.count, characters: document.characters)
             case .audio:
                 let (window, hop) = (options.audioWindow, options.audioHop)
                 let (pieces, duration) = try runBlocking {
