@@ -134,7 +134,8 @@ live in the cloud (iCloud on a Mac, OneDrive on Windows). You can skip more fold
 only reads your files; it never changes, moves or uploads them.
 
 The first pass happens once. On a Mac it takes a few minutes for a few hundred files and can take an hour for a big
-Downloads folder. On Windows and Linux, DigUp runs the model on the graphics card where that's faster and on the
+Downloads folder, and by default it pauses in Low Power Mode (some MacBook Airs get hot otherwise; you can turn that
+off in Settings). On Windows and Linux, DigUp runs the model on the graphics card where that's faster and on the
 processor otherwise; on a processor alone a picture takes a few seconds (about five on a 2017 laptop's Core i5), so a
 large photo library can take hours, which is why setup shows the time first. After that, a new file is searchable a
 few seconds after it lands.
