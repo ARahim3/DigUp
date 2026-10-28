@@ -178,7 +178,19 @@ public final class Searcher {
         let lookup = Self.isLookup(terms) || identifier != nil
         let (meaningWeight, wordsWeight) = lookup ? (0.5, wordWeight * 2) : (1, wordWeight)
         let hinted = Self.kindHints(text)
-        var candidates = Set(best.filter { $0.value.z >= zGate }.keys)
+        // Small corpora can't standardize: with n scale-setting vectors the top z tops out near √(n−1) under the
+        // population deviation, so under 8 vectors a relevant match can't reach the default 2.0 at all (issue 151:
+        // three files, cosine 0.73, z 1.41 → []). A group that small admits by an absolute cosine floor instead —
+        // and unrelated queries stay out (measured tops 0.48–0.55 on such corpora, adjacent-domain 0.59).
+        var scaleCounts: [Modality: Int] = [:]
+        for row in rowModality.indices where rowSetsScale[row] {
+            scaleCounts[rowModality[row], default: 0] += 1
+        }
+        var candidates = Set(best.filter {
+            $0.value.z >= zGate
+                || (scaleCounts[rowModality[$0.value.row], default: 0] < Self.smallCorpusVectors
+                    && $0.value.cosine >= Self.smallCorpusFloor)
+        }.keys)
         for (file, share) in coverage where share >= 0.5 { candidates.insert(file) }
         var scored: [Int64: Double] = [:]
         for file in candidates {
@@ -318,6 +330,15 @@ public final class Searcher {
     /// inflated the narrow ones and buried PDF pages under pictures (2026-10-08, on the three evals: 91 → 94 of 105
     /// queries with the right answer first).
     ///
+    /// The z gate needs a corpus to stand out from, and a tiny one can't: with n scale-setting vectors the top z
+    /// tops out near √(n−1) under the population deviation, so under 8 vectors a relevant match can't reach the
+    /// default 2.0 at all (issue 151 on upstream: three files, cosine 0.73, z 1.41 → []; measured here: n ≤ 5 passes
+    /// 0 of 3 relevant queries, n = 8 passes 3 of 3). A group that small admits by an absolute cosine floor instead
+    /// — the same 0.600 the image layers call a weak match — and unrelated queries stay out (measured tops
+    /// 0.48–0.55 on such corpora, adjacent-domain 0.59).
+    static let smallCorpusVectors = 8
+    static let smallCorpusFloor = 0.600
+
     /// The scale (the averages and the deviation) comes from the vectors in `setsScale` (all by default): `search` leaves
     /// out the later pages of long files, which are scored on it but don't move it. A book's hundreds of pages pulled the
     /// text average down for every query, and documents rose over screenshots everywhere (2026-10-09, the testbed's long
