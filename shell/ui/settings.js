@@ -105,6 +105,7 @@ function wire(box, command) {
 wire($("login"), "set_open_at_login");
 wire($("center"), "set_center_panel");
 wire($("processor"), "set_processor_only");
+wire($("include-datasets"), "set_include_datasets");
 wire($("update-checks"), "set_update_checks");
 for (const choice of document.querySelectorAll('input[name="tray-click"]')) {
   choice.addEventListener("change", () => {
@@ -142,6 +143,7 @@ function renderStatus() {
   if (state.unfinished) parts.push(`${state.unfinished.toLocaleString()} long ${state.unfinished === 1 ? "file" : "files"} to finish`);
   $("status-detail").textContent = parts.join(" · ");
   $("pause").hidden = !info.folders?.length;
+  $("include-datasets").checked = info.includeDatasets;
   $("pause").textContent = state.paused ? "Resume" : "Pause";
 }
 
