@@ -83,6 +83,15 @@
         </div>
         <button id="pause" hidden>Pause</button>
       </div>
+      <label class="option">
+        <input type="checkbox" id="include-datasets">
+        <span class="text">
+          <span class="name">Index folders that look like datasets</span>
+          <span class="info">Off: a folder with thousands of similar files is skipped as a dataset, and its name
+            lands in the report. On: such folders are indexed after all — for collections whose subfolders trip
+            the rule.</span>
+        </span>
+      </label>
 
       <h3>Folders to search</h3>
       <div class="card list" id="folder-rows"></div>

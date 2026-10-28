@@ -238,6 +238,9 @@ impl Shell {
 /// What both helpers are told besides the folders: what's skipped in them, and code search's folders.
 fn folder_arguments(settings: &Settings, code_folders: &[String]) -> Vec<String> {
     let mut args = Vec::new();
+    if settings.include_datasets {
+        args.push("--include-datasets".to_string());
+    }
     for folder in &settings.skipped {
         args.extend(["--exclude".to_string(), folder.clone()]);
     }
@@ -270,6 +273,7 @@ async fn ask(shell: State<'_, Arc<Shell>>, request: Value) -> Result<Value, Stri
 #[tauri::command]
 async fn estimate(shell: State<'_, Arc<Shell>>, folders: Vec<String>, code: Option<bool>) -> Result<Vec<Value>, String> {
     let helper = shell.options.helper.clone();
+    let include_datasets = shell.settings.lock().unwrap().include_datasets;
     // Code folders: what the code index would read in them (its time and size, repository by repository).
     let code = if code == Some(true) { vec!["--code".to_string()] } else { Vec::new() };
     // The index's costs.json: what indexing costs on this computer, once it has indexed enough.
@@ -277,7 +281,11 @@ async fn estimate(shell: State<'_, Arc<Shell>>, folders: Vec<String>, code: Opti
     shell.estimating.fetch_add(1, Ordering::SeqCst);
     let answers = tauri::async_runtime::spawn_blocking(move || {
         let mut command = std::process::Command::new(&helper);
-        command.arg("estimate").args(&folders).args(&index).args(&code).arg("--json");
+        command.arg("estimate").args(&folders).args(&index).args(&code);
+        if include_datasets {
+            command.arg("--include-datasets");
+        }
+        command.arg("--json");
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -573,6 +581,14 @@ fn quit_app(app: AppHandle) {
     quit(&app);
 }
 
+/// Index folders that look like datasets after all (Settings → Folders): the next helper reads the flag.
+#[tauri::command]
+fn set_include_datasets(shell: State<'_, Arc<Shell>>, on: bool) -> Result<(), String> {
+    let mut settings = shell.settings.lock().unwrap();
+    settings.include_datasets = on;
+    settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))
+}
+
 #[tauri::command]
 fn pause_indexing(app: AppHandle, paused: bool) {
     set_paused(&app, paused);
@@ -648,7 +664,7 @@ fn main() {
         )
         .setup(move |app| setup(app, options))
         .invoke_handler(tauri::generate_handler![
-            ask, estimate, setup_info, pick_folders, apply_setup_folders, finish_setup, open_path, open_code, reveal, hide_panel, panel_height,
+            ask, estimate, setup_info, set_include_datasets, pick_folders, apply_setup_folders, finish_setup, open_path, open_code, reveal, hide_panel, panel_height,
             panel_area, settings_info, set_open_at_login, set_center_panel, set_processor_only, debug_query, debug_report, window_info,
             app_state, open_window, open_settings, choose_folders, index_now, quit_app, close_window, pause_indexing,
             remove_folder, set_skipped, set_skip_types, set_index_hours, code_setup_info, set_code_folders, choose_code_folders,
@@ -1229,6 +1245,7 @@ fn settings_info(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Value {
         "folders": shell.folders(),
         "skipped": settings.skipped,
         "skipTypes": settings.skip_types,
+        "includeDatasets": settings.include_datasets,
         "indexHours": {"on": settings.index_hours_on, "start": settings.index_hours.start, "end": settings.index_hours.end},
         "storage": storage(&shell),
         "code": {

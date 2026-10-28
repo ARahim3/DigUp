@@ -15,6 +15,9 @@ pub struct Settings {
     pub skipped: Vec<String>,
     /// File extensions left out ("heic", "txt").
     pub skip_types: Vec<String>,
+    /// Index folders that look like datasets after all (Settings → Folders): the crawler skips them by default,
+    /// which buries whole subfolders of a collection that happen to look alike (issue 153).
+    pub include_datasets: bool,
     /// The panel's hotkey (Tauri's accelerator form); empty: the default.
     pub hotkey: String,
     /// Onboarding is done: the shell starts in the tray.
