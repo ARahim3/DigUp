@@ -23,7 +23,8 @@ enum OfficeText {
         return out.text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func isCompoundFile(_ url: URL) -> Bool {
+    /// Shared with the Word reader: encrypted docx, xlsx and pptx use the same OLE container.
+    static func isCompoundFile(_ url: URL) -> Bool {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
         defer { try? handle.close() }
         return (try? handle.read(upToCount: 8)).map(Array.init) == [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]

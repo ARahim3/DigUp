@@ -53,7 +53,11 @@ enum DocExtractor {
     static func text(of url: URL) throws -> String {
         let ext = url.pathExtension.lowercased()
         switch ext {
-        case "docx", "doc", "odt", "rtf": return try richText(of: url, type: ext)
+        case "docx":
+            // Password-protected OOXML is an OLE container, not the zip the reader expects.
+            if OfficeText.isCompoundFile(url) { throw ExtractError.locked }
+            return try richText(of: url, type: ext)
+        case "doc", "odt", "rtf": return try richText(of: url, type: ext)
         case "xlsx", "pptx", "ods", "odp": return try OfficeText.text(of: url, type: ext)
         case "html", "htm": return plainText(fromHTML: try readText(url))
         default: return try readText(url)
