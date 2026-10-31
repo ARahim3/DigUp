@@ -17,8 +17,12 @@ final class FileReader {
 
     /// Copies up to `count` bytes from `offset` into `buffer`; how many it copied.
     func read(at offset: UInt64, into buffer: UnsafeMutableRawPointer, count: Int) -> Int {
-        guard count > 0, (try? handle.seek(toOffset: offset)) != nil,
-              let data = try? handle.read(upToCount: count) else { return 0 }
+        // A malformed archive can ask for an unsigned offset outside the file (including a wrapped negative
+        // offset). Foundation on Windows traps converting offsets past Int64.max instead of throwing.
+        guard count > 0, offset < size, offset <= UInt64(Int64.max) else { return 0 }
+        let available = Int(min(UInt64(count), size - offset))
+        guard (try? handle.seek(toOffset: offset)) != nil,
+              let data = try? handle.read(upToCount: available) else { return 0 }
         data.copyBytes(to: buffer.assumingMemoryBound(to: UInt8.self), count: data.count)
         return data.count
     }

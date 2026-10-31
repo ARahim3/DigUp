@@ -232,10 +232,64 @@ import Compression
     }
     #endif
 
-    @Test func passwordProtectedFileIsReportedSo() throws {
-        let url = file("secret.xlsx")
+    @Test(arguments: ["docx", "DOCX", "xlsx", "pptx"])
+    func passwordProtectedFileIsReportedSo(_ ext: String) throws {
+        let url = file("secret.\(ext)")
         try Data([0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1] + [UInt8](repeating: 0, count: 504)).write(to: url)
         #expect(failure(url) == "password-protected")
+    }
+
+    @Test func encryptedOfficeFilesDoNotBlockTheIndexingQueue() throws {
+        for ext in ["docx", "xlsx", "pptx"] {
+            let url = file("secret.\(ext)")
+            try Data([0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]
+                     + [UInt8](repeating: 0, count: 504)).write(to: url)
+            try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 2_000)],
+                                                  ofItemAtPath: url.path)
+        }
+        let readable = file("readable.docx")
+        try OfficeFiles.zip([
+            ("[Content_Types].xml", """
+            <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+            <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+            <Override PartName="/word/document.xml"
+            ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+            </Types>
+            """),
+            ("_rels/.rels", """
+            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+            <Relationship Id="rId1"
+            Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
+            Target="word/document.xml"/></Relationships>
+            """),
+            ("word/document.xml", """
+            <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+            <w:body><w:p><w:r><w:t>The next document is searchable.</w:t></w:r></w:p></w:body></w:document>
+            """),
+        ], to: readable)
+        // All the encrypted files come first in the queue (newest modification time first).
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1_000)],
+                                              ofItemAtPath: readable.path)
+        let store = try IndexStore(directory: folder.appendingPathComponent("index"))
+        let indexer = try Indexer(store: store, options: IndexOptions(), makeEmbedder: { FakeEmbedder() })
+        defer { indexer.finish() }
+        _ = try indexer.sync([folder.appendingPathComponent("files")])
+        #expect(try store.pending(limit: nil).last?.path == readable.path)
+        #expect(try indexer.run() == ["failed": 3, "done": 1])
+        #expect(try store.pendingCount() == 0)
+        var locked = 0
+        try store.db.query("SELECT state, detail FROM files WHERE path != ?", [.text(readable.path)]) { row in
+            #expect(row.text(0) == "failed")
+            #expect(row.text(1) == "password-protected")
+            locked += 1
+        }
+        #expect(locked == 3)
+        var chunks = 0
+        try store.db.query("""
+            SELECT COUNT(*) FROM segments s JOIN files f ON f.id = s.file
+            WHERE f.path = ? AND f.state = 'done' AND s.kind = 'chunk'
+            """, [.text(readable.path)]) { chunks = Int($0.int(0)) }
+        #expect(chunks == 1)
     }
 
     @Test func otherFilesAreUnreadable() throws {

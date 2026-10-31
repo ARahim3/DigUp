@@ -41,6 +41,23 @@ import Testing
         #expect(throws: ExtractError.self) { try Zip.entry("word/document.xml", in: huge) }
     }
 
+    @Test func fileReaderRejectsInvalidOffsetsAndStopsAtTheEndOfTheFile() throws {
+        let url = folder.appendingPathComponent("bytes.bin")
+        try Data([0x41, 0x42, 0x43]).write(to: url)
+        let reader = try FileReader(url)
+        let buffer = UnsafeMutableRawPointer.allocate(byteCount: 8, alignment: 1)
+        defer { buffer.deallocate() }
+        for offset in [reader.size, reader.size + 1, UInt64(Int64.max) + 1, UInt64.max] {
+            #expect(reader.read(at: offset, into: buffer, count: 8) == 0)
+        }
+        #expect(reader.read(at: 0, into: buffer, count: 0) == 0)
+        #expect(reader.read(at: 0, into: buffer, count: -1) == 0)
+        #expect(reader.read(at: 1, into: buffer, count: 8) == 2)
+        #expect(Array(UnsafeRawBufferPointer(start: buffer, count: 2)) == [0x42, 0x43])
+        #expect(reader.read(at: 0, into: buffer, count: 3) == 3)
+        #expect(Array(UnsafeRawBufferPointer(start: buffer, count: 3)) == [0x41, 0x42, 0x43])
+    }
+
     /// \\uN is a signed 16-bit value; anything past that used to trap the conversion and end the helper.
     @Test func rtfUnicodeValuesOutOfRangeAreDropped() {
         let text = RTF.text("{\\rtf1 a\\u99999999999?b\\u-99999?c\\u8364?d}")
