@@ -373,4 +373,65 @@ import Testing
         #expect(abs(estimate.seconds - 21 * Costs().codeStretch) < 1e-9)
         #expect(estimate.bytes > 21 * 1600 && estimate.bytes < 200_000)
     }
+
+    @Test func searchUnderScopesToFolderAndWorktreeMainRepo() throws {
+        try write("billing/.git/HEAD", "ref: refs/heads/main\n")
+        try write("billing/src/retry.py", function("retryWithBackoff", body: 10))
+        try write("shipping/.git/HEAD", "ref: refs/heads/main\n")
+        try write("shipping/src/retry.py", function("retryWithBackoff", body: 10))
+
+        let store = try IndexStore(directory: folder.appendingPathComponent("index"), file: IndexStore.codeFile)
+        let indexer = try Indexer(store: store, options: codeOptions, makeEmbedder: { FakeEmbedder() })
+        _ = try indexer.sync([folder.appendingPathComponent("billing"), folder.appendingPathComponent("shipping")])
+        try indexer.run()
+
+        let searcher = try Searcher(store: store)
+        let allHits = try searcher.search("retryWithBackoff", queryVector: nil)
+        #expect(allHits.count == 2)
+
+        let billingRoot = folder.appendingPathComponent("billing").path
+        let shippingRoot = folder.appendingPathComponent("shipping").path
+        let billingHits = try searcher.search("retryWithBackoff", queryVector: nil, under: [billingRoot])
+        #expect(billingHits.count == 1)
+        #expect(billingHits.first?.path.hasPrefix(billingRoot + "/") == true)
+
+        let shippingHits = try searcher.search("retryWithBackoff", queryVector: nil, under: [shippingRoot])
+        #expect(shippingHits.count == 1)
+        #expect(shippingHits.first?.path.hasPrefix(shippingRoot + "/") == true)
+
+        // A git worktree whose .git file points back to billing/.git/worktrees/feature maps to billing.
+        let worktree = folder.appendingPathComponent("worktrees/billing-feature")
+        try FileManager.default.createDirectory(at: worktree.appendingPathComponent("src"), withIntermediateDirectories: true)
+        try "gitdir: \(billingRoot)/.git/worktrees/billing-feature\n"
+            .write(to: worktree.appendingPathComponent(".git"), atomically: false, encoding: .utf8)
+
+        #expect(FolderSelection.worktreeMainPath(worktree.path) == FolderSelection.realPath(billingRoot))
+        #expect(FolderSelection.worktreeMainPath(worktree.appendingPathComponent("src").path)
+                == FolderSelection.realPath(billingRoot) + "/src")
+
+        let worktreeHits = try searcher.search("retryWithBackoff", queryVector: nil, under: [worktree.path])
+        #expect(worktreeHits.map(\.segmentID) == billingHits.map(\.segmentID))
+    }
+
+    @Test func segmentLookupByIdAndFilePath() throws {
+        try write("billing/.git/HEAD", "ref: refs/heads/main\n")
+        let fileURL = try write(
+            "billing/retry.py",
+            [function("firstStretch", body: 22), function("secondStretch", body: 22)].joined(separator: "\n"))
+        let store = try IndexStore(directory: folder.appendingPathComponent("index"), file: IndexStore.codeFile)
+        let indexer = try Indexer(store: store, options: codeOptions, makeEmbedder: { FakeEmbedder() })
+        _ = try indexer.sync([folder.appendingPathComponent("billing")])
+        try indexer.run()
+
+        let searcher = try Searcher(store: store, loadVectors: false)
+        let segments = try searcher.segments(ofFile: FolderSelection.realPath(fileURL.path))
+        #expect(segments.count == 2)
+        #expect(segments[0].loc == 1 && segments[1].loc == 26)
+        #expect(segments[0].text?.contains("func firstStretch()") == true)
+        #expect(segments[1].text?.contains("func secondStretch()") == true)
+
+        let byID = try #require(try searcher.segment(id: segments[1].segmentID))
+        #expect(byID == segments[1])
+        #expect(try searcher.segment(id: -999) == nil)
+    }
 }
