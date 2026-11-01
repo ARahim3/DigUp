@@ -358,6 +358,10 @@ private struct UncheckedSendable<Value>: @unchecked Sendable {
 
 /// A hit as JSON: what `digup search --json` prints, plus what a shell's preview needs.
 func hitFields(_ hit: SearchHit) -> [String: Any] {
+    hitFields(hit, strong: nil, text: nil)
+}
+
+func hitFields(_ hit: SearchHit, strong: Bool?, text: String?) -> [String: Any] {
     var row: [String: Any] = ["path": hit.path, "kind": hit.kind.rawValue, "segment": hit.segment.rawValue,
                               "segment_id": hit.segmentID, "score": hit.score, "modified": hit.modified,
                               "size": hit.size, "info": hit.info]
@@ -368,6 +372,19 @@ func hitFields(_ hit: SearchHit) -> [String: Any] {
     if let end = hit.locEnd { row["loc_end"] = end }
     if let focus = hit.focus { row["focus"] = focus }
     if let excerpt = hit.excerpt { row["excerpt"] = excerpt }
+    if let strong { row["strong"] = strong }
+    if let text { row["text"] = text }
+    return row
+}
+
+func segmentFields(_ detail: SegmentDetail) -> [String: Any] {
+    var row: [String: Any] = ["path": detail.path, "kind": detail.kind.rawValue, "segment": detail.segment.rawValue,
+                              "segment_id": detail.segmentID, "modified": detail.modified, "size": detail.size,
+                              "info": detail.info]
+    if let loc = detail.loc { row["loc"] = loc }
+    if let end = detail.locEnd { row["loc_end"] = end }
+    if let excerpt = detail.excerpt { row["excerpt"] = excerpt }
+    if let text = detail.text { row["text"] = text }
     return row
 }
 

@@ -123,6 +123,62 @@ public struct FolderSelection: Equatable, Sendable {
         #endif
     }
 
+    /// When `path` is inside a git worktree (where `.git` is a file pointing at `<main>/.git/worktrees/<name>`),
+    /// returns the corresponding path inside the main repository. The code crawler skips worktrees because they
+    /// duplicate the main repository (`Rules.codeSkipReason`), so scoping a search to a worktree (`--here`) must
+    /// match the main repository's indexed paths too.
+    public static func worktreeMainPath(_ path: String) -> String? {
+        var current = path
+        while current.count > 1 {
+            let dotGit = current + "/.git"
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: dotGit, isDirectory: &isDir) {
+                guard !isDir.boolValue,
+                      let contents = try? String(contentsOfFile: dotGit, encoding: .utf8) else { return nil }
+                let firstLine = contents.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
+                guard firstLine.hasPrefix("gitdir:") else { return nil }
+                let rawGitDir = firstLine.dropFirst("gitdir:".count).trimmingCharacters(in: .whitespaces)
+                let gitDir = rawGitDir.hasPrefix("/")
+                    ? rawGitDir
+                    : URL(fileURLWithPath: current).appendingPathComponent(rawGitDir).standardizedFileURL.path
+                guard let range = gitDir.range(of: "/.git/worktrees/") else { return nil }
+                let mainRepo = String(gitDir[..<range.lowerBound])
+                let suffix = String(path.dropFirst(current.count))
+                return mainRepo + suffix
+            }
+            let parent = (current as NSString).deletingLastPathComponent
+            if parent == current { break }
+            current = parent
+        }
+        return nil
+    }
+
+    /// All canonical path spellings for `paths` (folders or files), including symlink/realPath resolutions and
+    /// git worktree → main repository mappings.
+    public static func searchTargets(for paths: [String]) -> [String] {
+        var out: [String] = []
+        for raw in paths where !raw.isEmpty {
+            let trimmed = raw.count > 1 && raw.hasSuffix("/") ? String(raw.dropLast()) : raw
+            let real = realPath(trimmed)
+            out.append(trimmed)
+            out.append(real)
+            for candidate in [trimmed, real] {
+                if let main = worktreeMainPath(candidate) {
+                    out.append(main)
+                    out.append(realPath(main))
+                }
+            }
+        }
+        return unique(out)
+    }
+
+    /// Whether `path` is equal to or inside any of `targets`.
+    public static func matches(_ path: String, targets: [String]) -> Bool {
+        targets.contains { target in
+            path == target || isInside(path, target)
+        }
+    }
+
     private static func unique(_ paths: [String]) -> [String] {
         var seen = Set<String>()
         return paths.filter { seen.insert($0).inserted }
