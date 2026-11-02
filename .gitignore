@@ -9,6 +9,7 @@ build.noindex/
 
 # Python: the reference worker's environment
 worker/.venv/
+server/.venv/
 __pycache__/
 *.pyc
 
@@ -26,3 +27,14 @@ shell/src-tauri/gen/
 # What scripts/package-*.sh gather for the packages
 shell/src-tauri/helper/
 shell/src-tauri/THIRD-PARTY-NOTICES.txt
+server/tests/corpus/media/videos/
+server/tests/corpus/media/clips/
+server/tests/corpus/media/index/
+server/tests/corpus/media/models/
+server/data/
+.pytest_cache/
+
+# Compose bind-mount folders (runtime state, never in git)
+deploy/data/
+server/tests/corpus/proof/
+server/tests/corpus2/media/

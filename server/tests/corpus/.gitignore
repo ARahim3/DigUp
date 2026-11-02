@@ -1,0 +1,8 @@
+# Media the corpus script builds (videos and clips are fetched/generated, not committed),
+# the index built from it, and the per-step logs a proof run writes (regenerated evidence;
+# the documented evidence lives in docs/implementation/). The photos in photos/ are committed.
+videos/
+clips/
+index/
+models/
+proof/

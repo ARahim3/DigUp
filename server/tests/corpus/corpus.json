@@ -1,0 +1,22 @@
+{
+  "base": "~/DigUpTestbed",
+  "queries": [
+    { "q": "wakeboarding", "expect": ["photos/wakeboarding-aarhus-04.jpg", "photos/wakeboard-logan.jpg"], "tag": "image" },
+    { "q": "a person riding a wakeboard behind a boat", "expect": ["photos/wakeboarding-aarhus-04.jpg", "photos/wakeboard-logan.jpg"], "tag": "image" },
+    { "q": "wakeboarding", "expect": ["videos/wakeboarding-vienna.webm"], "tag": "video", "kind": "video" },
+    { "q": "hiking", "expect": ["photos/hiking trail at Námafjall.jpg"], "tag": "image" },
+    { "q": "hiking in the mountains", "expect": ["photos/hiking trail at Námafjall.jpg"], "tag": "image" },
+    { "q": "hiking", "expect": ["videos/pct-hiking-southern-oregon.webm"], "tag": "video", "kind": "video" },
+    { "q": "people sitting around a campfire", "expect": ["photos/people-surrounding-campfire.jpg"], "tag": "image" },
+    { "q": "a dog running on the beach", "expect": ["photos/a-dog-running-on-the-beach.jpg"], "tag": "image" },
+    { "q": "a boat on the water at sunset", "expect": ["photos/boats-at-sunset-pakse-laos.jpg"], "tag": "image" },
+    { "q": "someone fishing from a dock", "expect": ["photos/fishing-from-dock-oregon.jpg", "photos/man-on-dock-with-fish-1900.jpg"], "tag": "image" },
+    { "q": "Christmas dinner", "expect": ["photos/christmas-eve-dinner-table.jpg"], "tag": "image" },
+    { "q": "a cat sitting on a sofa", "expect": ["photos/cat-sitting-on-a-sofa.jpg"], "tag": "image" },
+    { "q": "an office desk with a computer monitor", "expect": ["photos/office-desk-with-monitor.jpg"], "tag": "image" },
+    { "q": "cars parked in a parking lot", "expect": ["photos/cars-in-a-parking-lot.jpg"], "tag": "image" },
+    { "q": "television test bars", "expect": ["clips/scenes.mp4@0-6"], "tag": "video", "kind": "video" },
+    { "q": "a fractal", "expect": ["clips/scenes.mp4@6-12"], "tag": "video", "kind": "video" },
+    { "q": "a test pattern with a moving ramp and numbers", "expect": ["clips/scenes.mp4@12-18"], "tag": "video", "kind": "video" }
+  ]
+}

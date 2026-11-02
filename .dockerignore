@@ -1,0 +1,38 @@
+# Docker build context: only what a clean clone contains.
+# Host build output and vendored libraries are host/macOS artifacts by definition (they are
+# git-ignored), and must never reach an image (see docs/implementation/README.md §3).
+.git
+.gitignore
+.dockerignore
+.build/
+.swiftpm/
+build.noindex/
+Vendor/
+.dev/
+.sign-id
+.DS_Store
+
+# The desktop shell's build output and staging (the server image builds no Tauri shell)
+shell/src-tauri/target/
+shell/src-tauri/gen/
+shell/src-tauri/helper/
+shell/src-tauri/THIRD-PARTY-NOTICES.txt
+
+# Python environments and caches
+worker/.venv/
+**/__pycache__/
+*.pyc
+
+# Server-side runtime state and test media (never part of an image): the corpus script puts
+# pictures, videos, clips and indexes under media/, and they are mounted at run time.
+server/data/
+server/tests/corpus/media/
+server/tests/corpus/proof/
+**/.pytest_cache/
+**/.env
+
+# Large documentation media
+docs/*.gif
+
+# Compose bind-mount folders: runtime media/index/model data is never build context
+deploy/data/
