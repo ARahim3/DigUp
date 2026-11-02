@@ -1,0 +1,142 @@
+"""The search-service contract: ops, reply fields, honest empties, the idle-exit restart.
+
+Every expectation here is what the Stage-2 proof *observed the engine saying*
+(docs/implementation/stage-2-headless-proof.md) — the corpus pins, the field names, the
+rankings, the refusal. If upstream changes this protocol, these tests fail loudly; the
+server never papers over it.
+"""
+
+from __future__ import annotations
+
+import os
+import time
+from pathlib import Path
+
+import pytest
+
+from digup_server.engine import EngineConfig, SearchService
+
+BASE_FIELDS = {"path", "kind", "segment", "segment_id", "score", "modified", "size", "info"}
+MAYBE_FIELDS = {"z", "cosine", "keyword_rank", "loc", "loc_end", "focus", "excerpt",
+                "strong", "meaning", "ms", "warning", "id", "ok", "error"}
+
+
+def paths(hits):
+    return [Path(h["path"]).name for h in hits]
+
+
+def test_ready_handshake(search, index):
+    ready = search["ready"]
+    assert ready["event"] == "ready"
+    assert Path(ready["index"]).name == index.name          # the engine names the index it opened
+    assert search["service"].running
+
+
+def test_status_op_counts_are_the_index(search, index):
+    status = search["service"].status()
+    assert {"encoder", "vectors", "code_vectors", "index", "files", "searchable",
+            "pending", "unfinished"} <= set(status)
+    assert status["index"] == str(index / "index.sqlite")
+    assert status["files"] >= 15                            # the corpus is in there
+    assert status["searchable"] == status["files"]          # every file indexed `done`
+    assert status["pending"] == 0
+    assert status["encoder"] in {"stopped", "starting", "ready", "unavailable"}
+
+
+def test_wakeboarding_ranks_the_wakeboards(search):
+    reply = search["service"].search("wakeboarding", limit=10)
+    assert {"hits", "strong", "meaning", "ms"} <= set(reply)
+    assert reply["meaning"] is True                          # vectors were used
+    assert paths(reply["hits"])[:3] == ["wakeboarding-vienna.webm", "wakeboard-logan.jpg",
+                                        "wakeboarding-aarhus-04.jpg"]
+    assert reply["strong"] >= 3
+
+
+def test_hit_fields_are_the_engines_ones(search):
+    hits = search["service"].search("wakeboarding", limit=5)["hits"]
+    for hit in hits:
+        assert BASE_FIELDS <= set(hit), f"missing fields in {hit}"
+        assert set(hit) - BASE_FIELDS <= MAYBE_FIELDS, f"invented fields in {hit}"
+    assert {"z", "cosine", "keyword_rank"} <= set(hits[0])   # the Stage-2 proof's scored hits
+
+
+def test_hiking_finds_a_moment_in_the_video(search):
+    reply = search["service"].search("hiking", limit=10)
+    top = reply["hits"][0]
+    assert Path(top["path"]).name == "pct-hiking-southern-oregon.webm"
+    assert top["segment"] == "frame"
+    assert 0.0 <= top["loc"] <= float(top["info"]["duration"])
+    assert top["loc_end"] >= top["loc"]
+    assert {"embed", "search"} <= set(reply["ms"])           # real milliseconds, per phase
+
+
+def test_kind_filter_is_the_engines(search):
+    hits = search["service"].search("wakeboarding", kinds=["video"], limit=10)["hits"]
+    assert hits and all(h["kind"] == "video" for h in hits)
+
+
+def test_no_good_matches_stays_an_empty_answer(search):
+    # Stage 2's honest miss: the engine refuses to rank below its bar. The server publishes
+    # the emptiness, it never fills it with the best vector it can find.
+    reply = search["service"].search("a person riding a wakeboard behind a boat", limit=10)
+    assert reply["hits"] == []
+    assert reply["meaning"] is True
+    assert "warning" not in reply                            # the encoder worked; the bar held
+
+
+def test_controls_stay_below_the_matches(search):
+    reply = search["service"].search("a cat sitting on a sofa", limit=10)
+    hits = reply["hits"]
+    assert paths(hits)[0] == "cat-sitting-on-a-sofa.jpg"
+    assert not any("wakeboard" in p.lower() for p in paths(hits))
+
+
+def test_summaries_count_the_corpus(search):
+    roots = search["service"].summaries()["roots"]
+    assert len(roots) == 1
+    root = roots[0]
+    assert {"path", "missing", "unreadable", "files", "indexed", "pending", "failed",
+            "skipped", "unfinished", "kinds", "skipped_reasons"} <= set(root)
+    assert root["missing"] is False
+    assert root["files"] >= 15
+    assert root["kinds"].get("image") == 12 and root["kinds"].get("video") == 3
+
+
+def test_embed_ahead_answers_ok(search):
+    reply = search["service"].embed_ahead("wake")
+    assert reply["ok"] is True                               # the engine's own {ok:true}
+
+
+def test_unknown_op_is_the_engines_error(search):
+    reply = search["service"].raw({"op": "definitely-not-an-op"})
+    assert reply["ok"] is False
+    assert "unknown op" in reply["error"]
+
+
+def test_render_makes_a_jpeg_beside_the_index(search, index):
+    hit = search["service"].search("wakeboard photo", kinds=["image"], limit=3)["hits"][0]
+    reply = search["service"].render(hit["path"], kind="image", pixels=256)
+    image = Path(reply["image"])
+    assert str(image).startswith(str(index / "previews"))     # the engine's own previews folder
+    assert image.is_file()
+    assert image.read_bytes()[:2] == b"\xff\xd8"              # a real JPEG, not a promise
+
+
+def test_idle_exit_is_a_restart_not_a_failure(corpus, index):
+    # `--encoder-idle 2`: the engine releases the model at 2 s idle and exits itself at 4 s
+    # (`{"event":"exit","reason":"idle"}`) — and the next request finds it answering again.
+    service = SearchService(EngineConfig(index=str(index), roots=(str(corpus),),
+                                         binary="digup",
+                                         models_dir=os.environ.get("DIGUP_SERVER_MODELS"),
+                                         encoder_idle=2.0))
+    service.start()
+    try:
+        first = service.search("wakeboarding", limit=3)["hits"]
+        assert first
+        assert service.running
+        time.sleep(6)                                        # 2 × idle: the engine ends itself
+        assert not service.running
+        again = service.search("wakeboarding", limit=3)["hits"]   # transparent respawn
+        assert paths(again) == paths(first)
+    finally:
+        service.quit()

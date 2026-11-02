@@ -1,0 +1,29 @@
+[project]
+name = "digup-server"
+version = "0.1.0"
+description = "DigUp as a self-hosted search server: a thin HTTP wrapper over the Swift engine, speaking only DigUp's own JSON-lines protocol"
+requires-python = ">=3.12,<3.13"
+# The adapter (Stage 3) is dependency-free by design: stdlib subprocess/json/fcntl.
+# FastAPI and uvicorn arrive with the API (Stage 4); uv.lock pins exact versions.
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4",
+    "httpx>=0.28",   # starlette's TestClient: API tests, in-process, real adapter
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+# The slow mark times the model (`speed --model`, ~1 min): part of the proof run, not of every test run.
+addopts = "-q -m 'not slow'"
+markers = [
+    "slow: needs the model timed on this machine (runs in the container proof, `pytest -m slow`)",
+]
