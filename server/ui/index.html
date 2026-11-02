@@ -1,0 +1,85 @@
+<!doctype html>
+<!-- DigUp server UI — dependency-free vanilla HTML/CSS/JS, no build step, same origin
+     as the API (/api/v1). Same paradigm and same behavior as the desktop shell's
+     `shell/ui` (README §10.4): keyword-first typing (words at once, meaning after the
+     pause), kind filters, code mode, grouped strong/weaker results, a preview pane for
+     the selection, opening files (video at its moment), the keys footer, and a light /
+     dark / system appearance choice kept in this browser. -->
+<html lang="en" data-theme="system">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DigUp — semantic media search</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="bar">
+    <h1>DigUp</h1>
+    <p id="statusline">connecting…</p>
+    <label class="theme" title="Appearance — kept in this browser">
+      <span>Appearance</span>
+      <select id="theme">
+        <option value="system">System</option>
+        <option value="light">Light</option>
+        <option value="dark">Dark</option>
+      </select>
+    </label>
+  </header>
+
+  <main>
+    <section id="searchbox">
+      <span id="activity" class="activity" hidden></span>
+      <input id="q" type="search" autocomplete="off" autocorrect="off" spellcheck="false" autofocus
+             placeholder="Describe it: “wakeboarding at sunset”, “payment error screenshot” — “code: …” searches code">
+      <label id="code-label" title="Search code by what it does (the “code:” prefix does the same)">
+        <input id="code" type="checkbox"> code
+      </label>
+      <select id="limit" title="How many hits to ask for">
+        <option value="10">10</option>
+        <option value="20">20</option>
+        <option value="40" selected>40</option>
+        <option value="100">100</option>
+      </select>
+    </section>
+
+    <fieldset id="kinds">
+      <legend>Find</legend>
+      <label><input type="checkbox" data-kind="screenshot"> Screenshots</label>
+      <label><input type="checkbox" data-kind="image"> Images</label>
+      <label><input type="checkbox" data-kind="pdf"> PDFs</label>
+      <label><input type="checkbox" data-kind="doc"> Documents</label>
+      <label><input type="checkbox" data-kind="video"> Video</label>
+      <label><input type="checkbox" data-kind="audio"> Audio</label>
+      <button id="kinds-all" type="button" title="All kinds">all</button>
+    </fieldset>
+
+    <section class="tools">
+      <button id="estimate-btn" title="What the folders would cost to index — the engine's own forecast">Estimate</button>
+      <button id="index-btn" title="Run one index sync now (one writer at a time)">Index now</button>
+      <label id="prune-label" title="Also retire index rows for files no longer in the folders — the procedure after remounting media">
+        <input id="prune" type="checkbox"> prune missing
+      </label>
+      <span id="job"></span>
+    </section>
+
+    <p id="rootsline"></p>
+    <p id="engine-says"></p>
+
+    <section id="results">
+      <ul id="hits" role="listbox" aria-label="Results"></ul>
+      <div id="preview" aria-live="polite"></div>
+    </section>
+
+    <div id="estimate" hidden></div>
+  </main>
+
+  <footer id="footer">
+    <span id="summary"></span>
+    <span id="keys">↑↓ pick · ↩ open · Space preview · Esc clear · type to search</span>
+  </footer>
+
+  <div id="big" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,625 @@
+// The DigUp server UI: fetch() to /api/v1, nothing else. No frameworks, no build step,
+// no bundler — same paradigm as the desktop shell's `shell/ui`, and the same behavior:
+// keyword-first typing (words at once with the last word as a prefix, meaning after the
+// 120 ms pause, the query embedded while you type), strong/weaker grouping, kind filters,
+// code mode, selection with the arrow keys, a preview pane, Space for the big look,
+// opening files (video plays from its moment), the engine's numbers in the footer.
+// Every number shown here is the engine's (counts, seconds, scores, timestamps); the only
+// server-added field is the `media_id` handle. DOM is built with createElement +
+// textContent, so file names and excerpts are escaped by the DOM, never as HTML.
+
+const TYPING_PAUSE = 120;              // ms after the last keystroke until meaning results
+const $ = (id) => document.getElementById(id);
+
+const api = async (path, options = {}) => {
+  const reply = await fetch(path, {headers: {"content-type": "application/json"}, ...options});
+  const body = await reply.json().catch(() => ({}));
+  if (!reply.ok) throw Object.assign(new Error(body.detail || reply.statusText), {status: reply.status});
+  return body;
+};
+
+const el = (tag, className, text) => {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;   // textContent: escaped, always
+  return node;
+};
+
+const seconds = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+const clock = (s) => (s >= 3600 ? `${Math.floor(s / 3600)}:${String(Math.floor(s / 60 % 60)).padStart(2, "0")}`
+                                + `:${String(Math.floor(s % 60)).padStart(2, "0")}` : seconds(s));
+const baseName = (path) => path.split("/").pop();
+const folderOf = (path) => path.slice(0, path.lastIndexOf("/")) || "/";
+const extension = (path) => (path.split(".").pop() || "").toLowerCase();
+const bytes = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.round(n / 1e3)} KB`);
+const duration = (s) => (s >= 3600 ? `${Math.round(s / 3600)} h ${Math.round(s / 60 % 60)} min`
+                       : s >= 60 ? `${Math.round(s / 60)} min ${Math.round(s % 60)} s` : `${Math.round(s)} s`);
+const date = (epoch) => new Date(epoch * 1000).toLocaleDateString(undefined, {year: "numeric", month: "short", day: "numeric"});
+
+// The formats browsers stream themselves (H.264/AAC mp4-mov, VP8/VP9 webm, plain audio).
+// Everything else keeps the desktop's honest fallback: the picture and the words here,
+// the file itself through "Open", which plays it in the user's own player.
+const STREAMABLE_VIDEO = new Set(["mp4", "m4v", "mov", "webm"]);
+const STREAMABLE_AUDIO = new Set(["mp3", "wav", "ogg", "oga", "flac", "m4a", "aac"]);
+
+const KIND_TITLE = {screenshot: "Screenshots", image: "Images", pdf: "PDFs", doc: "Documents",
+                    video: "Video", audio: "Audio", code: "Code"};
+const WEAKER = "\u0000weaker";        // the selectable row that folds the weaker matches
+
+const state = {
+  generation: 0,
+  finalGeneration: -1,    // whose meaning results are showing: late keyword replies must not replace them
+  timer: null,
+  phase: "empty",         // empty | words | meaning | wordsOnly | codeHint
+  isCode: false,
+  text: "",
+  strong: [],
+  weaker: [],
+  hits: new Map(),        // media_id → hit, the rows and the preview pane speak through it
+  selection: null,
+  showWeaker: false,
+  navigated: false,       // the arrows/click moved the selection since the last edit
+  error: null,
+  encoder: "stopped",
+  indexing: null,         // the live job's counts, while it runs
+};
+
+// ── appearance: system / light / dark, kept in this browser (the desktop follows the OS;
+// a server has no OS to follow, so the choice is the user's, per browser) ───────────────
+
+function applyTheme(choice) {
+  document.documentElement.dataset.theme = choice;
+  localStorage.setItem("digup-theme", choice);
+  $("theme").value = choice;
+}
+$("theme").onchange = (event) => applyTheme(event.target.value);
+applyTheme(localStorage.getItem("digup-theme") || "system");
+
+// ── the status strip: the engine's own counts, re-read every 15 s ─────────────────────
+async function refreshStatus() {
+  const line = $("statusline");
+  try {
+    const s = await api("/api/v1/status");
+    state.encoder = s.encoder;
+    line.replaceChildren();
+    const parts = [
+      `${s.searchable}/${s.files} files searchable`,
+      s.pending ? `${s.pending} pending` : null,
+      `${s.vectors} vectors`,
+      `encoder ${s.encoder}`,
+      ...(s.kinds || []).map((k) => `${k.kind} ${k.files}`),
+      `index ${bytes(s.index_size)}`,
+      `llama.cpp ${s.build_tag}`,
+    ].filter(Boolean);
+    for (const text of parts) line.append(el("span", "badge", text), " ");
+    const roots = $("rootsline");
+    roots.replaceChildren(el("span", null, "Looking in: "),
+      ...(s.roots || []).flatMap((r, i) => [i ? el("span", null, " · ") : null, el("code", "root", r)])
+        .filter(Boolean));
+    $("activity").hidden = !(s.encoder === "starting" || state.indexing);
+    if ($("activity").hidden === false) {
+      $("activity").replaceChildren(el("span", "dot"),
+        el("span", null, state.indexing ? "indexing…" : "meaning search warming up…"));
+      $("activity").title = "The engine is working: results may miss files it has not read yet";
+    }
+    if (state.phase !== "empty") renderFooter();
+  } catch (error) {
+    line.textContent = `status unavailable: ${error.message}`;
+  }
+}
+
+// ── searching: keyword-first, exactly as the desktop panel types ──────────────────────
+function searchBody(text, meaning, prefixLast) {
+  const body = {q: text, code: state.isCode, meaning, limit: Number($("limit").value)};
+  if (prefixLast) body.prefix_last = true;
+  if (!state.isCode) {
+    const kinds = [...document.querySelectorAll("#kinds input[data-kind]")]
+      .filter((box) => box.checked).map((box) => box.dataset.kind);
+    body.kinds = (kinds.length === 0 || kinds.length === 6) ? null : kinds;   // none ticked = all
+  }
+  return body;
+}
+
+function queryChanged() {
+  const typed = $("q").value.trim();
+  const prefixCode = /^code:/i.test(typed);
+  const code = prefixCode || $("code").checked;
+  $("code").checked = code;                    // the prefix and the box are one state
+  const text = prefixCode ? typed.slice(5).trim() : typed;
+  state.isCode = code;
+  state.text = text;
+  const generation = ++state.generation;
+  clearTimeout(state.timer);
+  state.navigated = false;
+  state.error = null;
+  if (!typed || (code && !text)) { show({hits: [], strong: 0}, code && !typed ? "codeHint" : "empty"); return; }
+  // Words now. The last word is probably half-typed, so it matches as a prefix.
+  api("/api/v1/search", {method: "POST", body: JSON.stringify(searchBody(text, false, true))})
+    .then((reply) => { if (generation === state.generation && state.finalGeneration !== generation) show(reply, "words"); })
+    .catch((error) => { if (generation === state.generation) failed(error); });
+  // The meaning is embedded now, so its vector is ready when typing pauses (embed_ahead).
+  api("/api/v1/embed_ahead", {method: "POST", body: JSON.stringify({q: text, code})}).catch(() => {});
+  state.timer = setTimeout(() => {
+    api("/api/v1/search", {method: "POST", body: JSON.stringify(searchBody(text, true, false))})
+      .then((reply) => {
+        if (generation !== state.generation) return;
+        state.finalGeneration = generation;
+        show(reply, reply.meaning ? "meaning" : "wordsOnly");
+      })
+      .catch((error) => { if (generation === state.generation) failed(error); });
+  }, TYPING_PAUSE);
+}
+
+function failed(error) {
+  state.error = String(error.message || error);
+  renderFooter();
+}
+
+// ── the hits: strong results grouped by kind, the rest folded ("N weaker matches") ───
+function show(reply, phase) {
+  const hits = reply.hits || [];
+  const strong = Math.min(reply.strong ?? hits.length, hits.length);
+  state.phase = phase;
+  state.strong = hits.slice(0, strong);
+  state.weaker = hits.slice(strong);
+  state.hits = new Map(hits.map((hit) => [hit.media_id, hit]));
+  const groups = new Map();
+  for (const hit of state.strong) {
+    const title = KIND_TITLE[hit.kind] || "Files";
+    if (!groups.has(title)) groups.set(title, []);
+    groups.get(title).push(hit);
+  }
+  state.groups = [...groups].map(([title, rows]) => ({title, rows}));
+  if (!state.navigated) state.showWeaker = false;
+  const ids = rowIDs();
+  if (!state.navigated || !ids.includes(state.selection)) state.selection = ids[0] ?? null;
+  state.lastReply = reply;
+  render();
+}
+
+const rowIDs = () => [
+  ...state.groups.flatMap((group) => group.rows.map((hit) => hit.media_id)),
+  ...(state.weaker.length ? [WEAKER] : []),
+  ...(state.showWeaker ? state.weaker.map((hit) => hit.media_id) : []),
+];
+
+const selectedHit = () => state.hits.get(state.selection) ?? null;
+
+function move(step) {
+  const ids = rowIDs();
+  if (!ids.length) return;
+  const at = ids.indexOf(state.selection);
+  state.selection = ids[Math.max(0, Math.min(ids.length - 1, (at < 0 ? -1 : at) + step))];
+  state.navigated = true;
+  render();
+  if (!$("big").hidden) renderBig();
+}
+
+function toggleWeaker() {
+  state.showWeaker = !state.showWeaker;
+  state.selection = WEAKER;
+  render();
+}
+
+// ── drawing ──────────────────────────────────────────────────────────────────────────
+function render() {
+  renderList();
+  renderPreview();
+  renderFooter();
+}
+
+function renderList() {
+  const list = $("hits");
+  list.replaceChildren();
+  for (const group of state.groups) {
+    list.append(el("li", "group-title", group.title));
+    for (const hit of group.rows) list.append(row(hit));
+  }
+  if (state.weaker.length) {
+    const fold = el("li", "weaker" + (state.showWeaker ? " open" : "") + (state.selection === WEAKER ? " selected" : ""));
+    const count = state.weaker.length;
+    fold.append(el("span", "chevron", state.showWeaker ? "▾" : "▸"),
+      el("span", null, state.showWeaker ? "Weaker matches" : `${count} weaker ${count === 1 ? "match" : "matches"}`));
+    fold.onclick = toggleWeaker;
+    list.append(fold);
+    if (state.showWeaker) for (const hit of state.weaker) list.append(row(hit));
+  }
+  const says = $("engine-says");
+  says.replaceChildren();
+  const reply = state.lastReply || {hits: [], strong: 0, meaning: true, ms: {}};
+  const ms = reply.ms || {};
+  says.append(el("span", null,
+    `${reply.hits.length} hits · ${reply.strong} strong`
+    + (ms.embed !== undefined ? ` · embed ${(ms.embed / 1000).toFixed(2)} s` : "")
+    + (ms.search !== undefined ? ` · search ${(ms.search / 1000).toFixed(2)} s` : "")));
+  if (reply.warning) says.append(" · ", el("span", "warn", reply.warning));
+  if (!reply.hits.length && state.phase !== "empty" && state.phase !== "codeHint") {
+    says.append(" — ", el("em", null, reply.meaning
+      ? "the engine found no good matches for this and refused to guess — that is its answer"
+      : "no keyword hits (meaning search is warming up)"));
+  }
+  list.querySelector(".selected")?.scrollIntoView({block: "nearest"});
+}
+
+function row(hit) {
+  const item = el("li", "row" + (state.selection === hit.media_id ? " selected" : ""));
+  item.setAttribute("role", "option");
+  item.tabIndex = 0;
+  item.append(thumbnail(hit));
+  const text = el("div", "row-text");
+  const title = el("div", "row-title");
+  title.append(el("span", "name", baseName(hit.path)),
+    el("span", `badge kind-${hit.kind}`, hit.kind));
+  if (hit.loc !== undefined && hit.loc !== null) title.append(el("span", "badge", `at ${clock(hit.loc)}`));
+  if (hit.z !== undefined) title.append(el("span", "badge", `z ${hit.z.toFixed(1)}`));
+  const sub = el("div", "row-sub");
+  if (hit.excerpt && hit.excerpt.includes("«")) sub.append(excerptSpans(hit.excerpt));  // words found
+  else sub.textContent = folderOf(hit.path);
+  text.append(title, sub);
+  item.append(text);
+  item.onclick = () => { state.selection = hit.media_id; state.navigated = true; render(); };
+  item.ondblclick = () => openHit(hit);
+  item.onkeydown = (event) => { if (event.key === "Enter") { event.preventDefault(); openHit(hit); } };
+  return item;
+}
+
+// The words the keyword search matched, marked with «» by the engine: rendered as spans
+// (textContent), never as HTML.
+function excerptSpans(excerpt) {
+  const box = el("span", "excerpt");
+  for (const piece of excerpt.split(/(«[^»]*»)/)) {
+    if (!piece) continue;
+    if (piece.startsWith("«")) box.append(el("mark", null, piece.slice(1, -1)));
+    else box.append(el("span", null, piece));
+  }
+  return box;
+}
+
+// Row thumbnails: the small picture the engine renders (72 px), lazy so only the visible
+// rows cost a decode. Videos show their frame in the preview pane, at the moment — a
+// frame extraction per row for a whole list is a cost the desktop pays too, and the
+// server's engine is the same engine: honest to keep the list light.
+function thumbnail(hit) {
+  const icon = el("span", `badge kind-${hit.kind} kind-icon`, {screenshot: "▣", image: "▣", pdf: "❐",
+    doc: "≡", video: "▶", audio: "♪", code: "</>"}[hit.kind] || "•");
+  if (!["image", "screenshot", "pdf"].includes(hit.kind)) return icon;
+  const image = el("img", "thumb");
+  image.alt = "";
+  image.loading = "lazy";
+  image.src = `/api/v1/media/${hit.media_id}/preview?pixels=${Math.round(64 * (window.devicePixelRatio || 1))}`;
+  image.onerror = () => image.replaceWith(icon);
+  return image;
+}
+
+// ── the preview pane: what the desktop shows for the selection (panel.js `picture`) ──
+function renderPreview() {
+  const pane = $("preview");
+  pane.replaceChildren();
+  if (!state.strong.length && !state.weaker.length) {
+    const messages = {
+      empty: ["DigUp", "Describe what you'd see, hear, or read in a file — meaning, not just words."],
+      codeHint: ["Search your code", "Say what the code does, or type a name that's in it."],
+      words: ["Searching…", "Words are matched; the meaning results are on their way."],
+      wordsOnly: ["Words only", "Meaning search isn't available right now — the encoder is warming up."],
+    };
+    const [title, body] = messages[state.phase] || ["No good matches",
+      "Try what you'd see or hear in it, or words you remember from it."];
+    pane.replaceChildren(el("div", "message", el("strong", null, title), el("span", null, body)));
+    return;
+  }
+  if (state.selection === WEAKER) {
+    const count = state.weaker.length;
+    pane.replaceChildren(el("div", "message",
+      el("strong", null, state.showWeaker ? "Weaker matches" : `${count} weaker ${count === 1 ? "match" : "matches"}`),
+      el("span", null, "They match much less well than the results above. Press ↩ to "
+        + (state.showWeaker ? "fold them away." : "show them."))));
+    return;
+  }
+  const hit = selectedHit();
+  if (!hit) return;
+  pane.append(picture(hit), facts(hit));
+}
+
+function picture(hit) {
+  const frame = el("div", "picture");
+  const suffix = extension(hit.path);
+  const fileURL = `/api/v1/media/${hit.media_id}/file`;
+  const previewURL = (pixels) => `/api/v1/media/${hit.media_id}/preview?pixels=${pixels}`;
+  switch (hit.kind) {
+    case "image":
+    case "screenshot": {
+      const image = el("img");
+      image.alt = "";
+      image.src = previewURL(1024);
+      frame.append(image);
+      return frame;
+    }
+    case "pdf": {
+      const image = el("img");
+      image.alt = "";
+      image.src = previewURL(1024);          // the page the hit was found on
+      frame.append(image, el("div", "moment",
+        el("span", "at", hit.loc ? `page ${Math.round(hit.loc)}` : "first page")));
+      return frame;
+    }
+    case "video": {
+      const at = hit.loc ?? 0;
+      if (STREAMABLE_VIDEO.has(suffix)) {
+        const video = el("video");
+        video.src = `${fileURL}#t=${at}`;    // Range requests on /file make seeking work
+        video.controls = true;
+        video.poster = previewURL(1024);     // the engine's frame at the moment, first
+        video.preload = "metadata";
+        frame.append(video, el("div", "moment", el("span", "at", `▶ at ${clock(at)}`)));
+      } else {
+        const image = el("img");
+        image.alt = "";
+        image.src = previewURL(1024);
+        frame.append(image, el("div", "moment", el("span", "at", `▶ at ${clock(at)}`)),
+          el("p", "note", `This browser can't stream .${suffix} — ↩ Open plays it in your own player.`));
+      }
+      return frame;
+    }
+    case "audio": {
+      const box = el("div", "audio-picture");
+      if (STREAMABLE_AUDIO.has(suffix)) {
+        const player = el("audio");
+        player.src = `${fileURL}#t=${hit.loc ?? 0}`;
+        player.controls = true;
+        player.preload = "metadata";
+        box.append(player);
+      } else {
+        box.append(el("p", "note", `This browser can't stream .${suffix} — ↩ Open plays it in your own player.`));
+      }
+      box.append(textPassage(hit, suffix === "txt" || suffix === "md"));
+      return box;
+    }
+    default: {
+      const passage = el("div", "passage" + (hit.kind === "code" ? " code" : ""));
+      passage.textContent = (hit.excerpt ?? "").replace(/[«»]/g, "") || baseName(hit.path);
+      api(`/api/v1/media/${hit.media_id}/text`).then((reply) => {
+        if (reply.text) passage.textContent = reply.text.slice(0, 4000);
+      }).catch(() => {});
+      return passage;
+    }
+  }
+}
+
+// Transcripts and text (the desktop pulls the passage that matched; same op /text).
+function textPassage(hit, asIs) {
+  const box = el("pre", "excerpt");
+  box.textContent = "reading…";
+  api(`/api/v1/media/${hit.media_id}/text`).then((reply) => {
+    box.textContent = (reply.text || "").slice(0, 4000) || "no text for this segment";
+  }).catch((error) => { box.textContent = `text unavailable: ${error.message}`; });
+  return box;
+}
+
+function facts(hit) {
+  const box = el("div", "facts");
+  box.append(el("div", "title", baseName(hit.path)),
+    el("div", "line", folderOf(hit.path)));
+  const details = [hit.kind,
+    hit.size ? bytes(hit.size) : null,
+    hit.modified ? date(hit.modified) : null,
+    hit.z !== undefined ? `z ${hit.z.toFixed(2)}` : null,
+    hit.cosine !== undefined ? `cosine ${hit.cosine.toFixed(3)}` : null,
+    hit.keyword_rank !== undefined && hit.keyword_rank !== null ? `keyword #${hit.keyword_rank}` : null,
+    hit.segment !== undefined ? `segment ${hit.segment}` : null].filter(Boolean);
+  box.append(el("div", "line", details.join(" · ")));
+  const reason = el("div", "reason");
+  reason.append(el("span", null, reasonOf(hit)));
+  box.append(reason);
+  const buttons = el("div", "buttons");
+  const open = el("a", "button-like", "Open");
+  open.href = `/api/v1/media/${hit.media_id}/file`;   // server-issued handle, inline media
+  open.target = "_blank";
+  open.rel = "noopener";
+  const save = el("a", "button-like", "Download");
+  save.href = `/api/v1/media/${hit.media_id}/file`;
+  save.download = baseName(hit.path);
+  buttons.append(open, save);
+  box.append(buttons);
+  return box;
+}
+
+function reasonOf(hit) {
+  if (hit.keyword_rank !== undefined && hit.keyword_rank !== null && hit.z === undefined)
+    return `keyword search: the words matched (#${hit.keyword_rank} of the keyword matches)`;
+  if (hit.keyword_rank !== undefined && hit.keyword_rank !== null)
+    return `meaning ${hit.z.toFixed(2)}σ · the words matched too (keyword #${hit.keyword_rank})`;
+  if (hit.z !== undefined) return `meaning match: ${(hit.z).toFixed(2)}σ past the best-mix baseline`;
+  return "keyword search: the words matched in it";
+}
+
+function renderFooter() {
+  const strong = state.strong.length, weaker = state.weaker.length;
+  let summary;
+  if (state.error) summary = `The server's helper: ${state.error}`;
+  else if (state.phase === "words") summary = "Matching words…";
+  else if (state.phase === "wordsOnly") summary = "Words only: meaning search isn't available";
+  else if (state.phase === "codeHint") summary = "Searching your code";
+  else if (state.phase === "empty") summary = "";
+  else summary = `${strong} ${strong === 1 ? "result" : "results"}` + (weaker ? ` · ${weaker} weaker` : "");
+  if (state.indexing) {
+    const j = state.indexing;
+    summary = (summary ? summary + " · " : "")
+      + `indexing ${j.state}${j.files_done ? ` ${j.files_done}` : ""}${j.files ? `/${j.files}` : ""}`
+      + (j.searchable !== undefined && j.searchable !== null ? ` · searchable ${j.searchable}` : "");
+  }
+  $("summary").textContent = summary;
+}
+
+// ── opening a result (the desktop's Open: the file itself; video plays from its moment)
+function openHit(hit) {
+  if (!hit) return;
+  window.open(`/api/v1/media/${hit.media_id}/file`, "_blank", "noopener");
+}
+
+// ── the big look (Space, as Quick Look; Esc puts it away) ─────────────────────────────
+function toggleBig() {
+  if (!$("big").hidden) return closeBig();
+  $("big").hidden = false;
+  renderBig();
+}
+function closeBig() {
+  $("big").hidden = true;
+  $("big").replaceChildren();               // its video or sound stops with it
+}
+function renderBig() {
+  const hit = selectedHit();
+  if (!hit) return closeBig();
+  const head = el("div", "head");
+  head.append(el("span", "name", baseName(hit.path)),
+    el("span", "place", folderOf(hit.path)),
+    el("button", "close", "Esc"));
+  head.querySelector(".close").onclick = closeBig;
+  const box = el("div", "view");
+  box.append(picture(hit));
+  $("big").replaceChildren(el("div", "big-panel", head, box));
+  $("big").onclick = (event) => { if (event.target === $("big")) closeBig(); };
+}
+
+// ── keys and events (the footer says them; they work from the search field and the list)
+$("q").addEventListener("input", queryChanged);
+$("q").addEventListener("keydown", (event) => {
+  // In the field: ↑↓ pick results, ↩ opens the pick, Space types a space (as the desktop
+  // panel: Space previews only after you've navigated).
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    move(event.key === "ArrowDown" ? 1 : -1);
+  } else if (event.key === "Enter") {
+    event.preventDefault();
+    if (state.selection === WEAKER) toggleWeaker();
+    else openHit(selectedHit());
+  } else if (event.key === " " && state.navigated && state.selection) {
+    event.preventDefault();
+    toggleBig();
+  }
+});
+document.addEventListener("keydown", (event) => {
+  const inField = ["INPUT", "SELECT", "TEXTAREA"].includes(event.target.tagName);
+  switch (event.key) {
+    case "Escape":
+      if (!$("big").hidden) { event.preventDefault(); closeBig(); }
+      else if (!$("estimate").hidden) { event.preventDefault(); $("estimate").hidden = true; }
+      else if ($("q").value) { $("q").value = ""; queryChanged(); $("q").focus(); }
+      break;
+    case "ArrowDown":
+    case "ArrowUp":
+      if (event.target === $("q") || inField) break;      // the field has its own handler
+      if (event.target.tagName === "SELECT") return;      // dropdowns keep their arrows
+      event.preventDefault();
+      move(event.key === "ArrowDown" ? 1 : -1);
+      break;
+    case " ":
+      if (event.target.tagName === "SELECT" || event.target.type === "checkbox") return;
+      if (event.target === $("q")) break;                 // typing a space (the field handler above)
+      if (!state.navigated && event.target.tagName === "INPUT") return;
+      if (!state.selection && event.target.tagName !== "INPUT") return;
+      event.preventDefault();
+      if (state.selection === WEAKER) toggleWeaker();
+      else toggleBig();
+      break;
+  }
+});
+
+// Kind boxes, code, limit: change → search again with the same text (the desktop re-searches
+// when its window's filters change).
+for (const box of document.querySelectorAll("#kinds input[data-kind]")) box.onchange = () => { if (state.text) queryChanged(); };
+$("kinds-all").onclick = () => {
+  for (const box of document.querySelectorAll("#kinds input[data-kind]")) box.checked = true;
+  if (state.text) queryChanged();
+};
+$("code").onchange = () => { if ($("q").value.trim()) queryChanged(); else state.isCode = $("code").checked; };
+$("limit").onchange = () => { if (state.text) queryChanged(); };
+
+// ── Estimate: the engine's own forecast for the server's folders (POST /estimate) ─────
+$("estimate-btn").onclick = async () => {
+  const panel = $("estimate");
+  if (!panel.hidden) { panel.hidden = true; return; }
+  panel.hidden = false;
+  panel.replaceChildren(el("p", null, "estimating — the engine is walking the folders…"));
+  try {
+    const {folders} = await api("/api/v1/estimate", {method: "POST", body: JSON.stringify({})});
+    panel.replaceChildren();
+    panel.append(el("p", "note",
+      "The engine's own forecast for the folders this server indexes. Times are measured on "
+      + "this machine once indexing has run here (the `calibrated` badge); until then they are "
+      + "the M4 Pro reference times, far too short for most PCs."));
+    for (const f of folders) {
+      const row = el("div", "estimate-folder");
+      row.append(el("div", "estimate-head",
+        el("code", null, f.folder),
+        el("span", "badge", `≈ ${duration(f.seconds)}`),
+        f.readable ? null : el("span", "badge warn", "can't read it"),
+        f.calibrated ? el("span", "badge", "measured here") : el("span", "badge", "reference times")));
+      if (!f.readable) { panel.append(row); continue; }
+      const kinds = Object.entries(f.files || {}).map(([k, n]) => `${k} ${n}`);
+      const extras = [
+        f.pdf_pages_total ? `${f.pdf_pages_total} PDF pages (${f.pdf_pages} first pass)` : null,
+        f.audio_seconds ? `${duration(f.audio_seconds)} of audio` : null,
+        f.video_seconds ? `${duration(f.video_seconds)} of video` : null,
+        f.bytes ? bytes(f.bytes) : null,
+        f.long_files ? `${f.long_files} long files, ${duration(f.later_seconds)} later` : null,
+        f.skipped ? `${f.skipped} skipped` : null,
+        `looked in ${(f.ms / 1000).toFixed(2)} s`].filter(Boolean);
+      row.append(el("div", "estimate-line", kinds.concat(extras).join(" · ")));
+      const subs = (f.subfolders || []).slice(0, 5);
+      for (const s of subs) row.append(el("div", "estimate-sub",
+        el("code", null, s.folder), ` — ≈ ${duration(s.seconds)}`));
+      panel.append(row);
+    }
+  } catch (error) {
+    panel.replaceChildren(el("p", "warn", `estimate failed: ${error.message}`));
+  }
+};
+
+// ── Index now: one job at a time; states and counts exactly as the engine reported ───
+async function pollJob(id) {
+  const at = $("job");
+  const showJob = (job) => {
+    state.indexing = ["queued", "running"].includes(job.state) ? job : null;
+    $("activity").hidden = !(state.encoder === "starting" || state.indexing);
+    if (state.indexing) {
+      $("activity").replaceChildren(el("span", "dot"), el("span", null, "indexing…"));
+      $("activity").title = `indexing: ${state.indexing.files_done ?? 0} of ${state.indexing.files ?? "?"} files`;
+    }
+    const counts = [job.state,
+      job.searchable !== null && job.searchable !== undefined ? `searchable ${job.searchable}/${job.files}` : null,
+      job.pending ? `pending ${job.pending}` : null,
+      job.vectors ? `vectors ${job.vectors}` : null,
+      job.files_done ? `indexed ${job.files_done}` : null,
+      job.seconds !== undefined ? `${job.seconds} s` : null,
+      job.why].filter(Boolean);
+    at.replaceChildren(el("span", `job-state job-${job.state}`, counts.join(" · ")));
+    if (state.phase !== "empty") renderFooter();
+  };
+  for (;;) {
+    const {job} = await api(`/api/v1/jobs/${id}`);
+    showJob(job);
+    if (["done", "interrupted", "busy"].includes(job.state)) { refreshStatus(); return; }
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+}
+$("index-btn").onclick = async () => {
+  const at = $("job");
+  const prune = $("prune").checked;       // engine --prune: retire rows of files no longer in the folders
+  try {
+    const {job} = await api("/api/v1/index", {method: "POST", body: JSON.stringify({prune})});
+    at.replaceChildren(el("span", "job-state", `job ${job.id} queued`));
+    pollJob(job.id);
+  } catch (error) {
+    if (error.status === 409) {
+      const live = error.message.match(/job ([0-9a-f]+)/);   // answered busy: poll the live one
+      if (live) pollJob(live[1]);
+      at.replaceChildren(el("span", "job-state job-running", "busy — a job is already running"));
+    } else {
+      at.replaceChildren(el("span", "job-state job-interrupted", `index request failed: ${error.message}`));
+    }
+  }
+};
+
+refreshStatus();
+setInterval(refreshStatus, 15000);
+$("q").focus();

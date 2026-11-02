@@ -1,0 +1,169 @@
+/* DigUp server UI — plain CSS, no framework, no build. It reads like the desktop app:
+   grouped results with small badges, a preview pane beside the list, the engine's numbers.
+   Appearance is a choice (system / light / dark): the `data-theme` attribute app.js sets,
+   kept in localStorage. "system" follows prefers-color-scheme; light and dark force it. */
+
+:root {
+  color-scheme: light dark;
+  --bg: canvas; --field: field; --text: canvastext; --soft: #666; --line: #d8d8d8;
+  --accent: #4a77b5; --good: #2a6a35; --warn: #a33; --amber: #7a5a1a;
+  --kind-image: #3b7a45; --kind-video: #8a4a3b; --kind-audio: #6a4a8a; --kind-doc: #3b5a8a;
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="system"] {
+    --bg: #17181a; --field: #212326; --text: #e8e8e8; --soft: #9a9a9a; --line: #3a3a3a;
+    --accent: #7aa5d8; --good: #6fbf7f; --warn: #e08a8a; --amber: #d0b060;
+    --kind-image: #6fbf7f; --kind-video: #d09080; --kind-audio: #b090d0; --kind-doc: #80a0d0;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #17181a; --field: #212326; --text: #e8e8e8; --soft: #9a9a9a; --line: #3a3a3a;
+  --accent: #7aa5d8; --good: #6fbf7f; --warn: #e08a8a; --amber: #d0b060;
+  --kind-image: #6fbf7f; --kind-video: #d09080; --kind-audio: #b090d0; --kind-doc: #80a0d0;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0 auto; max-width: 72rem; padding: 0.9rem 1.25rem 2.5rem;
+  font: 15px/1.45 -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  color: var(--text); background: var(--bg);
+}
+header.bar { display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap; }
+h1 { font-size: 1.3rem; margin: 0; }
+#statusline { color: var(--soft); font-size: 0.85rem; margin: 0; flex: 1; min-width: 18rem; }
+.theme { display: flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; color: var(--soft); }
+
+select, input[type="search"] {
+  font: inherit; color: var(--text); background: var(--field);
+  border: 1px solid var(--line); border-radius: 8px;
+}
+#q { flex: 1; padding: 0.55rem 0.7rem; min-width: 12rem; }
+#q:focus { outline: 2px solid var(--accent); }
+select { padding: 0.4rem 0.5rem; }
+button, a.button-like, #kinds-all {
+  font: inherit; padding: 0.42rem 0.8rem; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--field); color: var(--text); cursor: pointer; text-decoration: none;
+  display: inline-block;
+}
+button:hover, a.button-like:hover { border-color: var(--accent); }
+
+#searchbox { display: flex; gap: 0.5rem; margin: 0.9rem 0 0.3rem; align-items: center; flex-wrap: wrap; }
+.activity { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.8rem; color: var(--amber); }
+.activity .dot { width: 0.55rem; height: 0.55rem; border-radius: 999px; background: var(--amber);
+  animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: 0.35; } }
+
+#kinds { display: flex; gap: 0.7rem; align-items: center; flex-wrap: wrap; margin: 0.2rem 0 0.4rem;
+  border: 1px solid var(--line); border-radius: 8px; padding: 0.35rem 0.7rem; font-size: 0.85rem; color: var(--soft); }
+#kinds legend { font-size: 0.75rem; padding: 0 0.3rem; }
+#kinds label { display: inline-flex; align-items: center; gap: 0.3rem; white-space: nowrap; }
+#kinds-all { padding: 0.1rem 0.6rem; font-size: 0.78rem; }
+
+.tools { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; margin: 0.2rem 0 0.3rem; }
+#prune-label { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; color: var(--soft); }
+#code-label { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; color: var(--soft); }
+#job { min-height: 1.4em; font-size: 0.85rem; }
+#rootsline { color: var(--soft); font-size: 0.8rem; margin: 0.15rem 0; }
+#rootsline .root { font: 0.8rem ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+.badge {
+  display: inline-block; padding: 0.05rem 0.45rem; margin-right: 0.3rem;
+  border: 1px solid var(--line); border-radius: 999px;
+  font-size: 0.74rem; color: var(--soft); background: var(--bg);
+}
+.kind-image, .kind-screenshot { border-color: var(--kind-image); color: var(--kind-image); }
+.kind-video   { border-color: var(--kind-video); color: var(--kind-video); }
+.kind-audio   { border-color: var(--kind-audio); color: var(--kind-audio); }
+.kind-pdf, .kind-doc, .kind-code { border-color: var(--kind-doc); color: var(--kind-doc); }
+.kind-icon { min-width: 1.7rem; text-align: center; }
+
+#engine-says { color: var(--soft); font-size: 0.85rem; min-height: 1.2em; }
+.warn { color: var(--warn); }
+
+/* Results list + preview pane, like the desktop panel: the list carries the ranking, the
+   pane shows the selection the way panel.js shows it. */
+#results { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 1rem;
+  align-items: start; margin: 0.4rem 0 1rem; }
+@media (max-width: 900px) { #results { grid-template-columns: 1fr; } }
+
+ul#hits { list-style: none; padding: 0; margin: 0; }
+ul#hits > li.group-title { color: var(--soft); font-size: 0.75rem; text-transform: uppercase;
+  letter-spacing: 0.04em; padding: 0.5rem 0.1rem 0.15rem; }
+ul#hits > li.row {
+  display: flex; gap: 0.6rem; border-top: 1px solid var(--line); padding: 0.5rem 0.4rem;
+  border-radius: 8px; cursor: pointer;
+}
+ul#hits > li.row.selected { background: color-mix(in srgb, var(--accent) 14%, var(--bg)); }
+ul#hits > li.row:focus-visible { outline: 2px solid var(--accent); }
+img.thumb { width: 2.4rem; height: 2.4rem; object-fit: cover; border: 1px solid var(--line);
+  border-radius: 6px; flex: none; margin-top: 0.15rem; }
+.row-text { min-width: 0; }
+.row-title { display: flex; align-items: baseline; gap: 0.35rem; flex-wrap: wrap; }
+.row-title .name { font-weight: 550; overflow-wrap: anywhere; }
+.row-sub { color: var(--soft); font-size: 0.82rem; overflow-wrap: anywhere; }
+.row-sub mark { background: color-mix(in srgb, var(--accent) 25%, var(--bg)); color: inherit;
+  border-radius: 3px; padding: 0 0.1rem; }
+
+li.weaker { padding: 0.5rem 0.4rem; color: var(--soft); font-size: 0.85rem; cursor: pointer;
+  border-top: 1px solid var(--line); }
+li.weaker .chevron { margin-right: 0.35rem; }
+
+#preview { border: 1px solid var(--line); border-radius: 10px; padding: 0.8rem; min-height: 12rem;
+  position: sticky; top: 0.6rem; }
+#preview .message { display: flex; flex-direction: column; gap: 0.35rem; color: var(--soft);
+  padding: 2rem 0.5rem; text-align: center; }
+#preview .message strong { color: var(--text); }
+#preview .picture img, #preview .picture video { display: block; width: 100%; max-height: 60vh;
+  object-fit: contain; border-radius: 8px; background: #000; }
+#preview .picture audio { width: 100%; margin-top: 0.5rem; }
+#preview .moment { color: var(--soft); font-size: 0.85rem; margin-top: 0.25rem; }
+#preview .passage { font: 0.85rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap; overflow-wrap: anywhere; max-height: 46vh; overflow: auto;
+  border: 1px solid var(--line); border-radius: 8px; padding: 0.6rem 0.8rem; }
+pre.excerpt { margin: 0.5rem 0 0; padding: 0.6rem 0.8rem; max-height: 20rem; overflow: auto;
+  border: 1px solid var(--line); border-radius: 8px; font: 0.85rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg); }
+#preview .facts .title { font-weight: 600; overflow-wrap: anywhere; }
+#preview .facts .line { color: var(--soft); font-size: 0.85rem; overflow-wrap: anywhere; }
+#preview .facts .reason { margin-top: 0.45rem; font-size: 0.88rem; }
+#preview .facts .buttons { display: flex; gap: 0.5rem; margin-top: 0.6rem; }
+#preview .note { color: var(--soft); font-size: 0.82rem; margin-top: 0.4rem; }
+
+footer#footer {
+  position: fixed; inset: auto 0 0 0; display: flex; gap: 1rem; justify-content: space-between;
+  padding: 0.35rem 1.25rem; font-size: 0.8rem; color: var(--soft);
+  background: color-mix(in srgb, var(--bg) 88%, transparent); border-top: 1px solid var(--line);
+  backdrop-filter: blur(6px);
+}
+#keys { white-space: nowrap; }
+
+#estimate { border: 1px solid var(--line); border-radius: 10px; padding: 0.7rem 0.9rem; margin: 0.5rem 0 1rem; }
+#estimate .estimate-folder { border-top: 1px solid var(--line); padding: 0.45rem 0; }
+#estimate .estimate-head { display: flex; gap: 0.5rem; align-items: baseline; flex-wrap: wrap; }
+#estimate code { font: 0.82rem ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+#estimate .estimate-line { color: var(--soft); font-size: 0.85rem; }
+#estimate .estimate-sub { color: var(--soft); font-size: 0.8rem; padding-left: 1rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+#job .job-state { padding: 0.1rem 0.5rem; border-radius: 8px; border: 1px solid var(--line); }
+.job-queued, .job-running { color: var(--amber); }
+.job-done { color: var(--good); }
+.job-interrupted, .job-busy { color: var(--warn); }
+
+/* The big look (Space): the selection over all of it, Esc puts it away. */
+#big { position: fixed; inset: 0; background: color-mix(in srgb, #000 78%, transparent);
+  display: flex; align-items: center; justify-content: center; z-index: 20; }
+#big .big-panel { background: var(--bg); border: 1px solid var(--line); border-radius: 12px;
+  max-width: min(1100px, 92vw); max-height: 90vh; overflow: auto; padding: 0.8rem; }
+#big .head { display: flex; align-items: baseline; gap: 0.6rem; margin-bottom: 0.5rem; }
+#big .head .name { font-weight: 600; }
+#big .head .place { color: var(--soft); font-size: 0.85rem; flex: 1; overflow-wrap: anywhere; }
+#big .view img, #big .view video { display: block; max-width: 100%; max-height: 74vh; object-fit: contain;
+  border-radius: 8px; background: #000; }
+#big .view audio { width: 100%; }
+#big .view .passage { font: 0.9rem/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap; overflow-wrap: anywhere; max-height: 70vh; overflow: auto; }
+#big .close { padding: 0.1rem 0.6rem; font-size: 0.8rem; }
