@@ -1,0 +1,153 @@
+# The server's CI: build the engine from source in the same multi-stage Dockerfile the
+# project ships, run its `swift test` inside the builder, check the CLI runs headless in the
+# runtime image, then run the adapter's contract tests against that exact payload, corpus and
+# model. Needs no GUI, no GPU, no Rust, no Node, no Tauri — a clean clone is the whole input.
+# Also by hand: `gh workflow run server.yml`.
+name: Server
+
+on:
+  pull_request:
+    paths:
+      - "server/**"
+      - "docs/implementation/**"
+      - ".github/workflows/server.yml"
+      - "Package.swift"
+      - "Sources/**"
+      - "scripts/**"
+  push:
+    branches: [main]
+    paths:
+      - "server/**"
+      - "docs/implementation/**"
+      - ".github/workflows/server.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: server-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  server:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The builder stage is upstream's own build, in the container the packages are built in:
+      # vendor libraries verified against committed pins, llama.cpp b11461, `swift build -c
+      # release`, `swift test` — everything in the image build's log below.
+      - name: Build the engine (and run swift test) in the builder image
+        run: docker build --target engine-builder -f server/docker/Dockerfile -t digup-builder:ci .
+
+      - name: The runtime image runs the CLI headless
+        run: |
+          docker build --target engine-runtime -f server/docker/Dockerfile -t digup-engine:ci .
+          docker run --rm digup-engine:ci digup --help
+          docker run --rm digup-engine:ci digup --help | sed -n 2p
+
+      - name: Corpus (pinned photos are in git; the videos, clip, and manifest checks run here)
+        run: server/tests/corpus/build.sh
+
+      # The engine owns the model pins (Sources/DigUpKit/ModelFiles.swift: revision and both
+      # sha256s, verified at runtime by ModelFiles itself). This step keeps the CI download
+      # pinned to the engine's own words: when upstream bumps a model, THIS fails first and
+      # the download step below moves with it — the server never silently runs a different
+      # model than the engine it wraps.
+      - name: Model pins follow the engine (drift guard)
+        run: |
+          engine=$(grep -oE 'sha256: "[0-9a-f]{64}"' Sources/DigUpKit/ModelFiles.swift | grep -oE '[0-9a-f]{64}' | sort)
+          ci=$(printf '%s\n%s\n' \
+            2188ac1deca4b77dffefd603c2776a9d76d9d74ec01841392982ebb840b09135 \
+            c4a8a52691ecef40618438928bdf9e68379b854e24166f292592353db0aab64f | sort)
+          if [ "$engine" != "$ci" ]; then
+            echo "::error::ModelFiles.swift pins differ from server.yml — update the download step's pins in the same PR"
+            echo "engine: $engine"; echo "ci:     $ci"; exit 1
+          fi
+
+      - name: Model files, pinned by Sources/DigUpKit/ModelFiles.swift
+        run: |
+          mkdir -p "$RUNNER_TEMP/models"
+          rev=bfcd298762cc34d0357ece5ebdd31791a3a374d8
+          base=https://huggingface.co/ggml-org/embeddinggemma-2-GGUF/resolve/$rev
+          curl -fsSL -o "$RUNNER_TEMP/models/embeddinggemma-2-Q8_0.gguf" \
+            "$base/embeddinggemma-2-Q8_0.gguf"
+          curl -fsSL -o "$RUNNER_TEMP/models/mmproj-embeddinggemma-2-Q8_0.gguf" \
+            "$base/mmproj-embeddinggemma-2-Q8_0.gguf"
+          echo "2188ac1deca4b77dffefd603c2776a9d76d9d74ec01841392982ebb840b09135  $RUNNER_TEMP/models/embeddinggemma-2-Q8_0.gguf" > "$RUNNER_TEMP/pins.txt"
+          echo "c4a8a52691ecef40618438928bdf9e68379b854e24166f292592353db0aab64f  $RUNNER_TEMP/models/mmproj-embeddinggemma-2-Q8_0.gguf" >> "$RUNNER_TEMP/pins.txt"
+          sha256sum -c "$RUNNER_TEMP/pins.txt"
+
+      - name: Build the test image (engine payload + adapter)
+        run: docker build --target server-test -f server/docker/Dockerfile -t digup-server-test:ci .
+
+      # The contract suite against the real CLI: search/index ops and reply fields verbatim,
+      # the engine's honest "no good matches", idle-exit restart, single-writer lock, reload,
+      # the `/api/v1` surface (health/status/search/estimate/index/jobs/embed_ahead/media
+      # over the real adapter — the lifespan spawns the helpers as children of the test
+      # process, a live parent), the index-job contract (409 while a job runs, the engine's
+      # counts, interrupted recovery from the job log, stop-mid-job resume, log rotation
+      # with history, env knobs), the startup prewarm and the ghost-row rules (walked-root
+      # ghosts retire on plain sync; out-of-scope ghosts survive it and retire under prune),
+      # and the UI surface (same-origin vanilla app, server-issued media ids →
+      # previews/text, 404s for unissued ids).
+      - name: Contract tests
+        run: |
+          mkdir -p "$RUNNER_TEMP/index"
+          docker run --rm \
+            -v "$PWD/server/tests/corpus/media:/corpus:ro" \
+            -v "$PWD/server/tests/corpus:/corpus-root:ro" \
+            -v "$RUNNER_TEMP/models:/models:ro" \
+            -v "$RUNNER_TEMP/index:/index" \
+            digup-server-test:ci
+
+      - name: The headless proof (index + search + eval, the engine's own words)
+        run: |
+          docker run --rm \
+            -v "$PWD:/src:ro" \
+            -v "$PWD/server/tests/corpus/media:/corpus:ro" \
+            -v "$RUNNER_TEMP/models:/models:ro" \
+            -v "$RUNNER_TEMP/index:/index" \
+            -v "$RUNNER_TEMP/proof:/out/proof" \
+            -e OUT=/out/proof \
+            digup-engine:ci bash /src/server/tests/proof.sh
+
+      # The shipping image: tini PID 1 → uvicorn → helpers (the ParentWatch chain),
+      # non-root, HEALTHCHECK = the API's own /health, the UI served at /. SIGTERM must
+      # end it *stopped, not killed*: the lifespan must complete (it marks a running job
+      # interrupted and quit()s every helper) inside the stop grace — exit 143 (a completed
+      # SIGTERM stop) is the graceful code here; 137 means SIGKILL, i.e. the shutdown hung.
+      - name: The Compose file is valid (schema check)
+        run: cd deploy && docker compose config --quiet
+
+      - name: The server runtime image boots, answers, serves the UI, stops cleanly
+        run: |
+          docker build --target server-runtime -f server/docker/Dockerfile -t digup-server:ci .
+          mkdir -p "$RUNNER_TEMP/data/index" "$RUNNER_TEMP/data/config"
+          docker run -d --name server-ci \
+            -p 127.0.0.1:8787:8787 \
+            -v "$RUNNER_TEMP/data/index:/data/index" \
+            -v "$RUNNER_TEMP/data/config:/data/config" \
+            -v "$RUNNER_TEMP/models:/data/models" \
+            -v "$PWD/server/tests/corpus/media/photos:/media/photos:ro" \
+            digup-server:ci
+          code=0
+          for i in $(seq 1 30); do
+            code=$(docker exec server-ci python -c 'import urllib.request; print(urllib.request.urlopen("http://127.0.0.1:8787/api/v1/health", timeout=3).status)' 2>/dev/null || true)
+            [ "$code" = "200" ] && break
+            sleep 2
+          done
+          test "$code" = "200"
+          docker exec server-ci python -c 'import urllib.request; html = urllib.request.urlopen("http://127.0.0.1:8787/", timeout=3).read().decode(); assert "DigUp" in html and "app.js" in html'
+          docker stop --time 15 server-ci
+          exit_code=$(docker inspect server-ci --format '{{.State.ExitCode}}')
+          test "$exit_code" != "137"        # 137 = SIGKILL: the lifespan shutdown hung
+          docker logs server-ci 2>&1 | grep -q "Application shutdown complete"
+          docker rm server-ci
+
+      - name: Proof logs (the run's own output, for the PR log)
+        if: always()
+        run: |
+          for f in "$RUNNER_TEMP"/proof/*.log; do echo "::group::${f##*/}"; cat "$f"; echo "::endgroup::"; done
