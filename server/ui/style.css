@@ -1,28 +1,50 @@
-/* DigUp server UI — plain CSS, no framework, no build. It reads like the desktop app:
-   grouped results with small badges, a preview pane beside the list, the engine's numbers.
-   Appearance is a choice (system / light / dark): the `data-theme` attribute app.js sets,
-   kept in localStorage. "system" follows prefers-color-scheme; light and dark force it. */
+/* DigUp server UI — plain CSS, no framework, no build. The page is a search: a centered
+   search box, its kind chips, results bottom-left, the preview pane right, the keys
+   footer. The server's own controls (appearance, Index now, prune, Estimate, the
+   engine's counts) live in the settings panel behind the gear.
 
-:root {
-  color-scheme: light dark;
-  --bg: canvas; --field: field; --text: canvastext; --soft: #666; --line: #d8d8d8;
-  --accent: #4a77b5; --good: #2a6a35; --warn: #a33; --amber: #7a5a1a;
+   Appearance is a choice (system / light / dark): the `data-theme` attribute app.js sets,
+   kept in localStorage. "system" follows prefers-color-scheme; light and dark force it.
+
+   The palettes below are EXPLICIT per theme — no system colors, no OS dependence — and the
+   text pairs were picked by measured WCAG contrast, not by eye: on dark (#202124) the
+   text reaches 13.4:1, the muted text 8.4:1, the accent 7.6:1, and the kind colors 6.4:1
+   and up; on light the text reaches 17.4:1 and the muted text 5.9:1. Borders are the
+   quiet parts on purpose (hairlines ~1.8:1, panel edges ~2.6:1): they separate surfaces,
+   they are not text. Each theme sets its own `color-scheme`, so checkboxes, selects and
+   scrollbars render IN the theme — the complaint this fixes was "I cannot see anything".
+
+   The overlays (`#big`, `#settings`) carry `[hidden] { display: none }` guards because
+   `display: flex` outranks the UA's rule — the Stage-10 lesson: the big-look layer sat
+   at 78% black over the whole page, permanently, until that one line said otherwise. */
+
+:root, :root[data-theme="system"], :root[data-theme="light"] {
+  --bg: #ffffff; --panel: #f0f1f3; --field: #f5f6f7; --text: #1a1a1a; --soft: #5f6368;
+  --line: #c8c8c8; --edge: #b4b7bb;
+  --accent: #1a73e8; --good: #2a6a35; --warn: #a33327; --amber: #7a5a1a;
   --kind-image: #3b7a45; --kind-video: #8a4a3b; --kind-audio: #6a4a8a; --kind-doc: #3b5a8a;
+  --chev: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 5.5 8 10.5 12.5 5.5' fill='none' stroke='%231a1a1a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  color-scheme: light;
+}
+:root[data-theme="system"] { color-scheme: light dark; }   /* "system" lets the OS pick the controls */
+
+:root[data-theme="dark"] {
+  --bg: #202124; --panel: #2b2f34; --field: #2b2f34; --text: #e8eaed; --soft: #b7bbc1;
+  --line: #454a50; --edge: #5c636a;
+  --accent: #8ab4f8; --good: #81c995; --warn: #f28b82; --amber: #f9ab00;
+  --kind-image: #81c995; --kind-video: #fcad7d; --kind-audio: #c58af9; --kind-doc: #8ab4f8;
+  --chev: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 5.5 8 10.5 12.5 5.5' fill='none' stroke='%23e8eaed' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  color-scheme: dark;
 }
 @media (prefers-color-scheme: dark) {
   :root[data-theme="system"] {
-    --bg: #17181a; --field: #212326; --text: #e8e8e8; --soft: #9a9a9a; --line: #3a3a3a;
-    --accent: #7aa5d8; --good: #6fbf7f; --warn: #e08a8a; --amber: #d0b060;
-    --kind-image: #6fbf7f; --kind-video: #d09080; --kind-audio: #b090d0; --kind-doc: #80a0d0;
+    --bg: #202124; --panel: #2b2f34; --field: #2b2f34; --text: #e8eaed; --soft: #b7bbc1;
+    --line: #454a50; --edge: #5c636a;
+    --accent: #8ab4f8; --good: #81c995; --warn: #f28b82; --amber: #f9ab00;
+    --kind-image: #81c995; --kind-video: #fcad7d; --kind-audio: #c58af9; --kind-doc: #8ab4f8;
+    --chev: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 5.5 8 10.5 12.5 5.5' fill='none' stroke='%23e8eaed' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    color-scheme: dark;
   }
-}
-:root[data-theme="dark"] {
-  --bg: #17181a; --field: #212326; --text: #e8e8e8; --soft: #9a9a9a; --line: #3a3a3a;
-  --accent: #7aa5d8; --good: #6fbf7f; --warn: #e08a8a; --amber: #d0b060;
-  --kind-image: #6fbf7f; --kind-video: #d09080; --kind-audio: #b090d0; --kind-doc: #80a0d0;
-}
-:root[data-theme="light"] {
-  color-scheme: light;
 }
 
 * { box-sizing: border-box; }
@@ -31,56 +53,77 @@ body {
   font: 15px/1.45 -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
   color: var(--text); background: var(--bg);
 }
-header.bar { display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* header: the title, the searchable count beside it, the activity dot, and the gear. */
+header.bar { display: flex; align-items: center; gap: 0.8rem; flex-wrap: wrap; }
 h1 { font-size: 1.3rem; margin: 0; }
-#statusline { color: var(--soft); font-size: 0.85rem; margin: 0; flex: 1; min-width: 18rem; }
-.theme { display: flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; color: var(--soft); }
+#statusline { display: flex; gap: 0.35rem; align-items: baseline; flex-wrap: wrap;
+  flex: 1; min-width: 12rem; margin: 0; color: var(--soft); font-size: 0.85rem; }
+#gear { margin-left: auto; flex: none; width: 2.1rem; height: 2.1rem; display: grid;
+  place-items: center; font-size: 1.05rem; border: 1px solid var(--edge); border-radius: 999px;
+  background: var(--field); color: var(--text); cursor: pointer; }
+#gear:hover { border-color: var(--accent); }
+
+/* settings: the server's own controls, behind the gear. */
+#settings[hidden] { display: none; }   /* same lesson as #big: flex outranks the UA rule */
+#settings { position: fixed; right: 1.25rem; top: 3.4rem; z-index: 15; width: min(24rem, 92vw);
+  display: flex; flex-direction: column; gap: 0.7rem; padding: 0.8rem;
+  background: var(--panel); border: 1px solid var(--edge); border-radius: 12px;
+  box-shadow: 0 8px 28px rgb(0 0 0 / 22%); }
+#settings .set-row { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+#settings .set-title { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--soft); min-width: 5.2rem; }
+#settings #statusfull { display: flex; gap: 0.35rem; flex-wrap: wrap; }
+#settings #job { display: block; min-height: 1.2em; font-size: 0.82rem; margin: 0; }
+#rootsline { color: var(--soft); font-size: 0.78rem; margin: 0; overflow-wrap: anywhere; }
+#rootsline .root { font: 0.78rem ui-monospace, SFMono-Regular, Menlo, monospace; }
 
 select, input[type="search"] {
-  font: inherit; color: var(--text); background: var(--field);
-  border: 1px solid var(--line); border-radius: 8px;
+  font: inherit; color: var(--text);
+  border: 1px solid var(--edge); border-radius: 8px;
 }
-#q { flex: 1; padding: 0.55rem 0.7rem; min-width: 12rem; }
-#q:focus { outline: 2px solid var(--accent); }
-select { padding: 0.4rem 0.5rem; }
+select { /* own arrow, evenly spaced from the edge — not glued to the button */
+  appearance: none; -webkit-appearance: none;
+  background: var(--field) var(--chev) right 0.6rem center / 0.85rem 0.85rem no-repeat;
+  padding: 0.42rem 1.9rem 0.42rem 0.6rem;
+}
+input[type="search"] { background: var(--field); }
+input[type="checkbox"] { accent-color: var(--accent); }
 button, a.button-like, #kinds-all {
-  font: inherit; padding: 0.42rem 0.8rem; border: 1px solid var(--line); border-radius: 8px;
+  font: inherit; padding: 0.42rem 0.8rem; border: 1px solid var(--edge); border-radius: 8px;
   background: var(--field); color: var(--text); cursor: pointer; text-decoration: none;
   display: inline-block;
 }
 button:hover, a.button-like:hover { border-color: var(--accent); }
 
-#searchbox { display: flex; gap: 0.5rem; margin: 0.9rem 0 0.3rem; align-items: center; flex-wrap: wrap; }
+/* the search row: centered, the hit-limit select at its right end. */
+#searchbox { display: flex; gap: 0.5rem; margin: 0.9rem auto 0.3rem; align-items: center;
+  justify-content: center; flex-wrap: wrap; max-width: 46rem; }
+#q { flex: 1 1 22rem; max-width: 34rem; padding: 0.55rem 0.7rem; }
+#q:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+#code-label { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; color: var(--soft); }
+
+/* the kind chips: themed per kind, filled when ticked, evenly spaced under the search. */
+#find { display: flex; gap: 0.5rem; margin: 0.5rem 0 0.2rem; justify-content: center; flex-wrap: wrap; }
+#find .kind { --kc: var(--soft); display: inline-flex; align-items: center; gap: 0.4rem;
+  border: 1px solid var(--edge); border-radius: 999px; padding: 0.3rem 0.75rem;
+  font-size: 0.85rem; color: var(--soft); background: var(--panel); cursor: pointer; }
+#find .kind:has(input:checked) { color: var(--kc); border-color: var(--kc);
+  background: color-mix(in srgb, var(--kc) 14%, var(--panel)); }
+#find .kind[data-kind="screenshot"], #find .kind[data-kind="image"] { --kc: var(--kind-image); }
+#find .kind[data-kind="video"] { --kc: var(--kind-video); }
+#find .kind[data-kind="audio"] { --kc: var(--kind-audio); }
+#find .kind[data-kind="pdf"], #find .kind[data-kind="doc"] { --kc: var(--kind-doc); }
+#kinds-all { padding: 0.1rem 0.6rem; font-size: 0.78rem; border-radius: 999px; }
+
 .activity { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.8rem; color: var(--amber); }
 .activity .dot { width: 0.55rem; height: 0.55rem; border-radius: 999px; background: var(--amber);
   animation: pulse 1.6s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: 0.35; } }
 
-#kinds { display: flex; gap: 0.7rem; align-items: center; flex-wrap: wrap; margin: 0.2rem 0 0.4rem;
-  border: 1px solid var(--line); border-radius: 8px; padding: 0.35rem 0.7rem; font-size: 0.85rem; color: var(--soft); }
-#kinds legend { font-size: 0.75rem; padding: 0 0.3rem; }
-#kinds label { display: inline-flex; align-items: center; gap: 0.3rem; white-space: nowrap; }
-#kinds-all { padding: 0.1rem 0.6rem; font-size: 0.78rem; }
-
-.tools { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; margin: 0.2rem 0 0.3rem; }
 #prune-label { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; color: var(--soft); }
-#code-label { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; color: var(--soft); }
-#job { min-height: 1.4em; font-size: 0.85rem; }
-#rootsline { color: var(--soft); font-size: 0.8rem; margin: 0.15rem 0; }
-#rootsline .root { font: 0.8rem ui-monospace, SFMono-Regular, Menlo, monospace; }
-
-.badge {
-  display: inline-block; padding: 0.05rem 0.45rem; margin-right: 0.3rem;
-  border: 1px solid var(--line); border-radius: 999px;
-  font-size: 0.74rem; color: var(--soft); background: var(--bg);
-}
-.kind-image, .kind-screenshot { border-color: var(--kind-image); color: var(--kind-image); }
-.kind-video   { border-color: var(--kind-video); color: var(--kind-video); }
-.kind-audio   { border-color: var(--kind-audio); color: var(--kind-audio); }
-.kind-pdf, .kind-doc, .kind-code { border-color: var(--kind-doc); color: var(--kind-doc); }
-.kind-icon { min-width: 1.7rem; text-align: center; }
-
-#engine-says { color: var(--soft); font-size: 0.85rem; min-height: 1.2em; }
+#engine-says { color: var(--soft); font-size: 0.85rem; min-height: 1.2em; text-align: center; margin: 0.3rem 0; }
 .warn { color: var(--warn); }
 
 /* Results list + preview pane, like the desktop panel: the list carries the ranking, the
@@ -97,7 +140,6 @@ ul#hits > li.row {
   border-radius: 8px; cursor: pointer;
 }
 ul#hits > li.row.selected { background: color-mix(in srgb, var(--accent) 14%, var(--bg)); }
-ul#hits > li.row:focus-visible { outline: 2px solid var(--accent); }
 img.thumb { width: 2.4rem; height: 2.4rem; object-fit: cover; border: 1px solid var(--line);
   border-radius: 6px; flex: none; margin-top: 0.15rem; }
 .row-text { min-width: 0; }
@@ -111,8 +153,19 @@ li.weaker { padding: 0.5rem 0.4rem; color: var(--soft); font-size: 0.85rem; curs
   border-top: 1px solid var(--line); }
 li.weaker .chevron { margin-right: 0.35rem; }
 
-#preview { border: 1px solid var(--line); border-radius: 10px; padding: 0.8rem; min-height: 12rem;
-  position: sticky; top: 0.6rem; }
+.badge {
+  display: inline-block; padding: 0.05rem 0.45rem; margin-right: 0.3rem;
+  border: 1px solid var(--line); border-radius: 999px;
+  font-size: 0.74rem; color: var(--soft); background: var(--bg);
+}
+.kind-image, .kind-screenshot { border-color: var(--kind-image); color: var(--kind-image); }
+.kind-video   { border-color: var(--kind-video); color: var(--kind-video); }
+.kind-audio   { border-color: var(--kind-audio); color: var(--kind-audio); }
+.kind-pdf, .kind-doc, .kind-code { border-color: var(--kind-doc); color: var(--kind-doc); }
+.kind-icon { min-width: 1.7rem; text-align: center; }
+
+#preview { border: 1px solid var(--edge); border-radius: 10px; padding: 0.8rem; min-height: 12rem;
+  background: var(--panel); position: sticky; top: 0.6rem; }
 #preview .message { display: flex; flex-direction: column; gap: 0.35rem; color: var(--soft);
   padding: 2rem 0.5rem; text-align: center; }
 #preview .message strong { color: var(--text); }
@@ -122,9 +175,9 @@ li.weaker .chevron { margin-right: 0.35rem; }
 #preview .moment { color: var(--soft); font-size: 0.85rem; margin-top: 0.25rem; }
 #preview .passage { font: 0.85rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
   white-space: pre-wrap; overflow-wrap: anywhere; max-height: 46vh; overflow: auto;
-  border: 1px solid var(--line); border-radius: 8px; padding: 0.6rem 0.8rem; }
+  border: 1px solid var(--edge); border-radius: 8px; padding: 0.6rem 0.8rem; background: var(--bg); }
 pre.excerpt { margin: 0.5rem 0 0; padding: 0.6rem 0.8rem; max-height: 20rem; overflow: auto;
-  border: 1px solid var(--line); border-radius: 8px; font: 0.85rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  border: 1px solid var(--edge); border-radius: 8px; font: 0.85rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
   white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg); }
 #preview .facts .title { font-weight: 600; overflow-wrap: anywhere; }
 #preview .facts .line { color: var(--soft); font-size: 0.85rem; overflow-wrap: anywhere; }
@@ -135,12 +188,14 @@ pre.excerpt { margin: 0.5rem 0 0; padding: 0.6rem 0.8rem; max-height: 20rem; ove
 footer#footer {
   position: fixed; inset: auto 0 0 0; display: flex; gap: 1rem; justify-content: space-between;
   padding: 0.35rem 1.25rem; font-size: 0.8rem; color: var(--soft);
-  background: color-mix(in srgb, var(--bg) 88%, transparent); border-top: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg) 88%, transparent); border-top: 1px solid var(--edge);
   backdrop-filter: blur(6px);
 }
 #keys { white-space: nowrap; }
 
-#estimate { border: 1px solid var(--line); border-radius: 10px; padding: 0.7rem 0.9rem; margin: 0.5rem 0 1rem; }
+#estimate { border: 1px solid var(--edge); border-radius: 10px; padding: 0.7rem 0.9rem;
+  margin: 0.3rem auto 1rem; max-width: 46rem; background: var(--panel); }
+#estimate .note { color: var(--soft); font-size: 0.8rem; margin: 0 0 0.3rem; }
 #estimate .estimate-folder { border-top: 1px solid var(--line); padding: 0.45rem 0; }
 #estimate .estimate-head { display: flex; gap: 0.5rem; align-items: baseline; flex-wrap: wrap; }
 #estimate code { font: 0.82rem ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
@@ -148,15 +203,18 @@ footer#footer {
 #estimate .estimate-sub { color: var(--soft); font-size: 0.8rem; padding-left: 1rem;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 
-#job .job-state { padding: 0.1rem 0.5rem; border-radius: 8px; border: 1px solid var(--line); }
+#settings .job-state { padding: 0.1rem 0.5rem; border-radius: 8px; border: 1px solid var(--edge); }
 .job-queued, .job-running { color: var(--amber); }
 .job-done { color: var(--good); }
 .job-interrupted, .job-busy { color: var(--warn); }
 
-/* The big look (Space): the selection over all of it, Esc puts it away. */
+/* The big look (Space): the selection over all of it, Esc puts it away.
+   `display: flex` here outranks the UA's `[hidden] { display: none }` — without the
+   line above it the overlay sat over the whole page at 78% black, permanently. */
+#big[hidden] { display: none; }
 #big { position: fixed; inset: 0; background: color-mix(in srgb, #000 78%, transparent);
   display: flex; align-items: center; justify-content: center; z-index: 20; }
-#big .big-panel { background: var(--bg); border: 1px solid var(--line); border-radius: 12px;
+#big .big-panel { background: var(--panel); border: 1px solid var(--edge); border-radius: 12px;
   max-width: min(1100px, 92vw); max-height: 90vh; overflow: auto; padding: 0.8rem; }
 #big .head { display: flex; align-items: baseline; gap: 0.6rem; margin-bottom: 0.5rem; }
 #big .head .name { font-weight: 600; }

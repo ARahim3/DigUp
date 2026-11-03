@@ -3,10 +3,12 @@
 // keyword-first typing (words at once with the last word as a prefix, meaning after the
 // 120 ms pause, the query embedded while you type), strong/weaker grouping, kind filters,
 // code mode, selection with the arrow keys, a preview pane, Space for the big look,
-// opening files (video plays from its moment), the engine's numbers in the footer.
-// Every number shown here is the engine's (counts, seconds, scores, timestamps); the only
+// opening files (video plays from its moment). The page is a centered search box, its
+// kind chips, results bottom-left, preview right; the server's own controls (appearance,
+// Index now, prune, Estimate, the engine's counts) live in the settings panel (the gear).
+// Every number shown is the engine's (counts, seconds, scores, timestamps); the only
 // server-added field is the `media_id` handle. DOM is built with createElement +
-// textContent, so file names and excerpts are escaped by the DOM, never as HTML.
+// text nodes, so file names and excerpts are escaped by the DOM, never as HTML.
 
 const TYPING_PAUSE = 120;              // ms after the last keystroke until meaning results
 const $ = (id) => document.getElementById(id);
@@ -18,10 +20,16 @@ const api = async (path, options = {}) => {
   return body;
 };
 
-const el = (tag, className, text) => {
+// `el(tag, class, …kids)`: children are strings (appended as escaped text nodes —
+// never HTML) and/or ready-made nodes. The one helper, used everywhere; textContent
+// on an element arg used to stringify it as "[object HTMLElement]" — it appends now.
+const el = (tag, className, ...kids) => {
   const node = document.createElement(tag);
   if (className) node.className = className;
-  if (text !== undefined) node.textContent = text;   // textContent: escaped, always
+  for (const kid of kids) {
+    if (kid === null || kid === undefined) continue;
+    node.append(kid instanceof Node ? kid : String(kid));
+  }
   return node;
 };
 
@@ -75,7 +83,21 @@ function applyTheme(choice) {
 $("theme").onchange = (event) => applyTheme(event.target.value);
 applyTheme(localStorage.getItem("digup-theme") || "system");
 
-// ── the status strip: the engine's own counts, re-read every 15 s ─────────────────────
+// ── settings: the server's own controls (appearance, index, estimate, the counts) live
+// behind the gear, so the page itself stays a search box and its results ──────────────
+
+$("gear").onclick = () => {
+  const box = $("settings");
+  box.hidden = !box.hidden;
+  $("gear").setAttribute("aria-expanded", String(!box.hidden));
+};
+document.addEventListener("click", (event) => {
+  const box = $("settings");
+  if (!box.hidden && event.target !== $("gear") && !box.contains(event.target)) box.hidden = true;
+});
+
+// ── the status: the searchable count by the title; the rest of the engine's numbers
+// live in the settings panel, re-read every 15 s ──────────────────────────────────────
 async function refreshStatus() {
   const line = $("statusline");
   try {
@@ -85,13 +107,15 @@ async function refreshStatus() {
     const parts = [
       `${s.searchable}/${s.files} files searchable`,
       s.pending ? `${s.pending} pending` : null,
+    ].filter(Boolean);
+    for (const text of parts) line.append(el("span", "badge", text), " ");
+    $("statusfull").replaceChildren(...[
       `${s.vectors} vectors`,
       `encoder ${s.encoder}`,
       ...(s.kinds || []).map((k) => `${k.kind} ${k.files}`),
-      `index ${bytes(s.index_size)}`,
+      `index ${s.index_size}`,   // the engine's own human string ("201 KB") — verbatim
       `llama.cpp ${s.build_tag}`,
-    ].filter(Boolean);
-    for (const text of parts) line.append(el("span", "badge", text), " ");
+    ].map((text) => el("span", "badge", text)));
     const roots = $("rootsline");
     roots.replaceChildren(el("span", null, "Looking in: "),
       ...(s.roots || []).flatMap((r, i) => [i ? el("span", null, " · ") : null, el("code", "root", r)])
@@ -113,7 +137,7 @@ function searchBody(text, meaning, prefixLast) {
   const body = {q: text, code: state.isCode, meaning, limit: Number($("limit").value)};
   if (prefixLast) body.prefix_last = true;
   if (!state.isCode) {
-    const kinds = [...document.querySelectorAll("#kinds input[data-kind]")]
+    const kinds = [...document.querySelectorAll("#find input[data-kind]")]
       .filter((box) => box.checked).map((box) => box.dataset.kind);
     body.kinds = (kinds.length === 0 || kinds.length === 6) ? null : kinds;   // none ticked = all
   }
@@ -502,6 +526,7 @@ document.addEventListener("keydown", (event) => {
   switch (event.key) {
     case "Escape":
       if (!$("big").hidden) { event.preventDefault(); closeBig(); }
+      else if (!$("settings").hidden) { event.preventDefault(); $("settings").hidden = true; }
       else if (!$("estimate").hidden) { event.preventDefault(); $("estimate").hidden = true; }
       else if ($("q").value) { $("q").value = ""; queryChanged(); $("q").focus(); }
       break;
@@ -526,27 +551,27 @@ document.addEventListener("keydown", (event) => {
 
 // Kind boxes, code, limit: change → search again with the same text (the desktop re-searches
 // when its window's filters change).
-for (const box of document.querySelectorAll("#kinds input[data-kind]")) box.onchange = () => { if (state.text) queryChanged(); };
+for (const box of document.querySelectorAll("#find input[data-kind]")) box.onchange = () => { if (state.text) queryChanged(); };
 $("kinds-all").onclick = () => {
-  for (const box of document.querySelectorAll("#kinds input[data-kind]")) box.checked = true;
+  for (const box of document.querySelectorAll("#find input[data-kind]")) box.checked = true;
   if (state.text) queryChanged();
 };
 $("code").onchange = () => { if ($("q").value.trim()) queryChanged(); else state.isCode = $("code").checked; };
 $("limit").onchange = () => { if (state.text) queryChanged(); };
 
-// ── Estimate: the engine's own forecast for the server's folders (POST /estimate) ─────
+// ── Estimate: the engine's own forecast for the server's folders (POST /estimate).
+// The button lives in settings; the forecast appears in the page, one honest line.
 $("estimate-btn").onclick = async () => {
   const panel = $("estimate");
+  $("settings").hidden = true;
   if (!panel.hidden) { panel.hidden = true; return; }
   panel.hidden = false;
-  panel.replaceChildren(el("p", null, "estimating — the engine is walking the folders…"));
+  panel.replaceChildren(el("p", "note", "estimating — the engine is walking the folders…"));
   try {
     const {folders} = await api("/api/v1/estimate", {method: "POST", body: JSON.stringify({})});
-    panel.replaceChildren();
-    panel.append(el("p", "note",
-      "The engine's own forecast for the folders this server indexes. Times are measured on "
-      + "this machine once indexing has run here (the `calibrated` badge); until then they are "
-      + "the M4 Pro reference times, far too short for most PCs."));
+    panel.replaceChildren(el("p", "note",
+      "The engine's own forecast for the folders it indexes. “measured here” = timed on this "
+      + "machine by past indexing; “reference times” = the M4 Pro reference, too short for most PCs."));
     for (const f of folders) {
       const row = el("div", "estimate-folder");
       row.append(el("div", "estimate-head",
