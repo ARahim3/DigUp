@@ -91,9 +91,14 @@ $("gear").onclick = () => {
   box.hidden = !box.hidden;
   $("gear").setAttribute("aria-expanded", String(!box.hidden));
 };
+$("settings-close").onclick = () => {
+  $("settings").hidden = true;
+  $("gear").setAttribute("aria-expanded", "false");
+};
 document.addEventListener("click", (event) => {
   const box = $("settings");
-  if (!box.hidden && event.target !== $("gear") && !box.contains(event.target)) box.hidden = true;
+  // closest(), not a bare equality: the gear's svg is the click target, not the button.
+  if (!box.hidden && !event.target.closest("#gear") && !box.contains(event.target)) box.hidden = true;
 });
 
 // ── the status: the searchable count by the title; the rest of the engine's numbers

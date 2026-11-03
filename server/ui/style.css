@@ -55,28 +55,44 @@ body {
 }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-/* header: the title, the searchable count beside it, the activity dot, and the gear. */
-header.bar { display: flex; align-items: center; gap: 0.8rem; flex-wrap: wrap; }
+/* header: row 1 — title left, gear right; row 2 — the searchable count centered on the
+   same axis as everything else. The settings panel hangs off the header's right edge,
+   directly under the gear (the gear IS the anchor). */
+header.bar { position: relative; display: grid; gap: 0.3rem; }
+.bar-top { display: flex; align-items: baseline; justify-content: space-between; gap: 0.8rem; }
 h1 { font-size: 1.3rem; margin: 0; }
+.bar-center { display: flex; align-items: baseline; justify-content: center; gap: 0.6rem; flex-wrap: wrap; }
 #statusline { display: flex; gap: 0.35rem; align-items: baseline; flex-wrap: wrap;
-  flex: 1; min-width: 12rem; margin: 0; color: var(--soft); font-size: 0.85rem; }
-#gear { margin-left: auto; flex: none; width: 2.1rem; height: 2.1rem; display: grid;
-  place-items: center; font-size: 1.05rem; border: 1px solid var(--edge); border-radius: 999px;
+  justify-content: center; margin: 0; color: var(--soft); font-size: 0.85rem; }
+#gear { flex: none; width: 2.1rem; height: 2.1rem; display: grid; place-items: center;
+  border: 1px solid var(--edge); border-radius: 999px; padding: 0;
   background: var(--field); color: var(--text); cursor: pointer; }
+#gear svg { display: block; width: 15px; height: 15px; }
 #gear:hover { border-color: var(--accent); }
 
-/* settings: the server's own controls, behind the gear. */
+/* settings: the server's own controls, behind the gear, anchored under it.
+   One label/control grid per section, controls left-aligned on the same edge. */
 #settings[hidden] { display: none; }   /* same lesson as #big: flex outranks the UA rule */
-#settings { position: fixed; right: 1.25rem; top: 3.4rem; z-index: 15; width: min(24rem, 92vw);
+#settings { position: absolute; right: 0; top: calc(100% + 0.45rem); z-index: 15;
+  width: min(25rem, calc(100vw - 2.5rem));
   display: flex; flex-direction: column; gap: 0.7rem; padding: 0.8rem;
   background: var(--panel); border: 1px solid var(--edge); border-radius: 12px;
   box-shadow: 0 8px 28px rgb(0 0 0 / 22%); }
-#settings .set-row { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+#settings .set-head { display: flex; justify-content: space-between; align-items: center;
+  font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--soft); }
+#settings-close { padding: 0.1rem 0.55rem; font-size: 0.8rem; line-height: 1.2; }
+#settings .set-sec { display: grid; grid-template-columns: 5.6rem minmax(0, 1fr);
+  gap: 0.35rem 0.7rem; align-items: center; }
+#settings .set-sec + .set-sec { border-top: 1px solid var(--line); padding-top: 0.65rem; margin-top: 0.1rem; }
 #settings .set-title { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em;
-  color: var(--soft); min-width: 5.2rem; }
-#settings #statusfull { display: flex; gap: 0.35rem; flex-wrap: wrap; }
-#settings #job { display: block; min-height: 1.2em; font-size: 0.82rem; margin: 0; }
-#rootsline { color: var(--soft); font-size: 0.78rem; margin: 0; overflow-wrap: anywhere; }
+  color: var(--soft); text-align: right; }
+#settings .set-controls { display: flex; flex-direction: column; align-items: flex-start;
+  gap: 0.45rem; min-width: 0; }
+#settings .set-line { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+#settings #job { display: block; min-height: 1.1em; font-size: 0.82rem; margin: 0; }
+#settings .set-facts { display: flex; gap: 0.35rem; flex-wrap: wrap; }
+#rootsline { border-top: 1px solid var(--line); padding-top: 0.6rem; margin: 0;
+  color: var(--soft); font-size: 0.78rem; overflow-wrap: anywhere; }
 #rootsline .root { font: 0.78rem ui-monospace, SFMono-Regular, Menlo, monospace; }
 
 select, input[type="search"] {
@@ -97,12 +113,20 @@ button, a.button-like, #kinds-all {
 }
 button:hover, a.button-like:hover { border-color: var(--accent); }
 
-/* the search row: centered, the hit-limit select at its right end. */
-#searchbox { display: flex; gap: 0.5rem; margin: 0.9rem auto 0.3rem; align-items: center;
-  justify-content: center; flex-wrap: wrap; max-width: 46rem; }
-#q { flex: 1 1 22rem; max-width: 34rem; padding: 0.55rem 0.7rem; }
+/* the search row: 1fr auto 1fr — the input's center IS the page's center (the empty
+   1fr columns balance it), and the limit select + code box sit right at its end. */
+#searchbox { display: grid; grid-template-columns: 1fr auto 1fr; gap: 0.5rem;
+  align-items: center; margin: 0.9rem auto 0.3rem; max-width: 60rem; }
+#q { grid-column: 2; width: min(34rem, calc(100vw - 11rem)); padding: 0.55rem 0.7rem; }
+#search-side { grid-column: 3; display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
 #q:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
-#code-label { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; color: var(--soft); }
+#code-label { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; color: var(--soft); white-space: nowrap; }
+@media (max-width: 720px) {
+  #searchbox { grid-template-columns: 1fr; }
+  #q, #search-side { grid-column: 1; }
+  #q { width: 100%; }
+  #search-side { justify-content: center; }
+}
 
 /* the kind chips: themed per kind, filled when ticked, evenly spaced under the search. */
 #find { display: flex; gap: 0.5rem; margin: 0.5rem 0 0.2rem; justify-content: center; flex-wrap: wrap; }
@@ -186,11 +210,13 @@ pre.excerpt { margin: 0.5rem 0 0; padding: 0.6rem 0.8rem; max-height: 20rem; ove
 #preview .note { color: var(--soft); font-size: 0.82rem; margin-top: 0.4rem; }
 
 footer#footer {
-  position: fixed; inset: auto 0 0 0; display: flex; gap: 1rem; justify-content: space-between;
-  padding: 0.35rem 1.25rem; font-size: 0.8rem; color: var(--soft);
+  position: fixed; inset: auto 0 0 0;
   background: color-mix(in srgb, var(--bg) 88%, transparent); border-top: 1px solid var(--edge);
   backdrop-filter: blur(6px);
 }
+/* the footer's text box aligns with the content column, not the viewport edges */
+#footer .foot-in { display: flex; gap: 1rem; justify-content: space-between; flex-wrap: wrap;
+  max-width: 72rem; margin: 0 auto; padding: 0.35rem 1.25rem; font-size: 0.8rem; color: var(--soft); }
 #keys { white-space: nowrap; }
 
 #estimate { border: 1px solid var(--edge); border-radius: 10px; padding: 0.7rem 0.9rem;

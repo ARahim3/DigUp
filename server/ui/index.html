@@ -15,36 +15,56 @@
 </head>
 <body>
   <header class="bar">
-    <h1>DigUp</h1>
-    <p id="statusline">connecting…</p>
-    <span id="activity" class="activity" hidden></span>
-    <button id="gear" type="button" aria-label="Settings" aria-expanded="false" aria-controls="settings"
-            title="Settings — appearance, index controls, estimate, the engine's counts">⚙</button>
+    <div class="bar-top">
+      <h1>DigUp</h1>
+      <button id="gear" type="button" aria-label="Settings" aria-expanded="false" aria-controls="settings"
+              title="Settings — appearance, index controls, estimate, the engine's counts">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+        </svg>
+      </button>
+    </div>
+    <div class="bar-center">
+      <p id="statusline">connecting…</p>
+      <span id="activity" class="activity" hidden></span>
+    </div>
     <div id="settings" hidden role="dialog" aria-label="Settings">
-      <div class="set-row">
+      <div class="set-head">
+        <span>Settings</span>
+        <button id="settings-close" type="button" aria-label="Close settings">✕</button>
+      </div>
+      <section class="set-sec">
         <span class="set-title">Appearance</span>
         <select id="theme" title="Appearance — kept in this browser">
           <option value="system">System</option>
           <option value="light">Light</option>
           <option value="dark">Dark</option>
         </select>
-      </div>
-      <div class="set-row">
+      </section>
+      <section class="set-sec">
         <span class="set-title">Index</span>
-        <button id="index-btn" title="Run one index sync now (one writer at a time)">Index now</button>
-        <label id="prune-label" title="Also retire index rows for files no longer in the folders — the procedure after remounting media">
-          <input id="prune" type="checkbox"> prune missing
-        </label>
-      </div>
-      <p id="job"></p>
-      <div class="set-row">
+        <div class="set-controls">
+          <div class="set-line">
+            <button id="index-btn" title="Run one index sync now (one writer at a time)">Index now</button>
+            <label id="prune-label" title="Also retire index rows for files no longer in the folders — the procedure after remounting media">
+              <input id="prune" type="checkbox"> prune missing
+            </label>
+          </div>
+          <p id="job"></p>
+        </div>
+      </section>
+      <section class="set-sec">
         <span class="set-title">Estimate</span>
-        <button id="estimate-btn" title="What the folders would cost to index — the engine's own forecast">Estimate</button>
-      </div>
-      <div class="set-row">
+        <div class="set-controls">
+          <button id="estimate-btn" title="What the folders would cost to index — the engine's own forecast">Estimate</button>
+        </div>
+      </section>
+      <section class="set-sec">
         <span class="set-title">The index</span>
-        <span id="statusfull"></span>
-      </div>
+        <span id="statusfull" class="set-facts"></span>
+      </section>
       <p id="rootsline"></p>
     </div>
   </header>
@@ -53,15 +73,17 @@
     <section id="searchbox">
       <input id="q" type="search" autocomplete="off" autocorrect="off" spellcheck="false" autofocus
              placeholder="Describe it: “wakeboarding at sunset”, “payment error screenshot” — “code: …” searches code">
-      <select id="limit" title="How many hits to ask for">
-        <option value="10">10</option>
-        <option value="20">20</option>
-        <option value="40" selected>40</option>
-        <option value="100">100</option>
-      </select>
-      <label id="code-label" title="Search code by what it does (the “code:” prefix does the same)">
-        <input id="code" type="checkbox"> code
-      </label>
+      <div id="search-side">
+        <select id="limit" title="How many hits to ask for">
+          <option value="10">10</option>
+          <option value="20">20</option>
+          <option value="40" selected>40</option>
+          <option value="100">100</option>
+        </select>
+        <label id="code-label" title="Search code by what it does (the “code:” prefix does the same)">
+          <input id="code" type="checkbox"> code
+        </label>
+      </div>
     </section>
 
     <div id="find" role="group" aria-label="Find by kind">
@@ -84,8 +106,10 @@
   </main>
 
   <footer id="footer">
-    <span id="summary"></span>
-    <span id="keys">↑↓ pick · ↩ open · Space preview · Esc clear · type to search</span>
+    <div class="foot-in">
+      <span id="summary"></span>
+      <span id="keys">↑↓ pick · ↩ open · Space preview · Esc clear · type to search</span>
+    </div>
   </footer>
 
   <div id="big" hidden></div>

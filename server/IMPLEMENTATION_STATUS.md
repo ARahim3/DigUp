@@ -28,6 +28,18 @@ One document, kept current (docs/implementation/README.md §10). Newest first.
 * Browser battery re-run: typing → 5 hits (4 strong) → click → preview, settings open,
   estimate clean, theme flip, 0 console errors; layout verdict from the vision model:
   all checks pass (header tidy, centered search, chips even, panel neat).
+* **Geometry pass (the "all off centered" complaint) — measured, not eyeballed:**
+  bounding-box audit in Playwright at 1280 px and 390 px. After: search input center
+  offset **0 px**, chips row **0 px**, statusline −5 px, gear's icon **0/0** in its circle
+  (inline SVG, theme-colored via `currentColor`), settings panel anchored under the gear
+  (right edges equal at 1196) with **all control left edges at one x (911)**, footer text
+  box aligned to the content column, `overflowX: 0` at both widths, search row stacks
+  centered on mobile. One axis, verified by numbers. The single-column system: header
+  grid (title/gear, centered status row), search row `1fr auto 1fr` (the input's center
+  IS the page's center; limit + code at its right end), settings as a label/control
+  grid with section rules. Caught by the same audit: the gear's **svg child** broke the
+  outside-click close (`target !== gear`) — `closest("#gear")` now; the panel-open
+  geometry proved it (a collapsed 0×0 rect = the click had opened and re-closed it).
 
 ## 2026-11-02 — Dark theme made readable, in a real browser (Playwright is up)
 
@@ -281,7 +293,7 @@ running `digup` with no toolchain, no desktop stack. Model files verified agains
 digup-engine:local      runs `digup` headlessly (arm64, CPU)        — image, 296 MB
 server/tests/proof.sh   index + search + eval, the engine's words   — Stage 2 evidence,
                         re-run green 2026-11-02 (EXIT=0, R@1 0.71 / R@5 0.88)
-digup-server-test:local adapter + contract + API + job + UI tests    — 57 passed / 241.18 s
+digup-server-test:local adapter + contract + API + job + UI tests    — 57 passed / 236.12 s
                          (dedicated suite index, prewarm, prune pair,   — Stages 3–8 + 10,
                           stop-mid-job-resume, rotation, env knobs,       green
                           /file 200·206·416·404, roots, UI parity surface,

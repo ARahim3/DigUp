@@ -160,9 +160,11 @@ run measured (`KeyError: 'hits'`, `POST /search → 500`, six searches, then cle
 
 ## Evidence
 
-Suite (19): **57 passed, 1 deselected in 241.18 s, EXIT=0** (`server-tests19.log`);
+Suite (20): **57 passed, 1 deselected in 236.12 s, EXIT=0** (`server-tests20.log`, with the
+layout pass in place; suite 19 recorded the same 57 in 241.18 s before it);
 the 56 before the MP4 sniff test: 192.51 s, EXIT=0 (`server-tests17.log`). Live battery
 log: `stage10-proof.log` (transcripts quoted above, all numbers from that log).
 Screenshots: `.playwright-mcp/`
 (`dark-results.png`, `dark-estimate.png`, `dark-biglook.png`, `light-results.png`,
-`v2-dark-results.png`, `v2-settings.png`, `v2-estimate.png`, `v2-light-results.png`).
+`v2-dark-results.png`, `v2-settings.png`, `v2-estimate.png`, `v2-light-results.png`,
+`v3-settings-dark.png`, `v3-dark-home.png`).
