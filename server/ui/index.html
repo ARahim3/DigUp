@@ -10,6 +10,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- A data: favicon: the browser asks for /favicon.ico on every page load, and the API's
+       honest 404 lands in the console as a red error on a page that is working fine.
+       data: is not a URL fetch — the no-external-URLs pin (test_media_ui) stays green. -->
+  <link rel="icon" href="data:,">
   <title>DigUp — semantic media search</title>
   <link rel="stylesheet" href="style.css">
 </head>
@@ -72,6 +76,7 @@
   <main>
     <section id="searchbox">
       <input id="q" type="search" autocomplete="off" autocorrect="off" spellcheck="false" autofocus
+             maxlength="512"
              placeholder="Describe it: “wakeboarding at sunset”, “payment error screenshot” — “code: …” searches code">
       <div id="search-side">
         <select id="limit" title="How many hits to ask for">

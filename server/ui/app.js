@@ -16,7 +16,16 @@ const $ = (id) => document.getElementById(id);
 const api = async (path, options = {}) => {
   const reply = await fetch(path, {headers: {"content-type": "application/json"}, ...options});
   const body = await reply.json().catch(() => ({}));
-  if (!reply.ok) throw Object.assign(new Error(body.detail || reply.statusText), {status: reply.status});
+  if (!reply.ok) {
+    // FastAPI validation answers a LIST of dicts in `detail` (`new Error(list)` is
+    // "[object Object]" on the footer): render each {loc, msg}, quote any string, fall
+    // back to statusText for a non-JSON body (502 from a proxy, an HTML error page).
+    const d = body.detail;
+    const message = Array.isArray(d)
+      ? d.map((x) => (x.loc || []).filter((p) => p !== "body").join(".") + " " + x.msg).join("; ")
+      : (d || reply.statusText || `HTTP ${reply.status}`);
+    throw Object.assign(new Error(message), {status: reply.status});
+  }
   return body;
 };
 
@@ -86,19 +95,28 @@ applyTheme(localStorage.getItem("digup-theme") || "system");
 // ── settings: the server's own controls (appearance, index, estimate, the counts) live
 // behind the gear, so the page itself stays a search box and its results ──────────────
 
+// All five close paths share one function: the gear's aria-expanded must match the
+// panel's hidden state everywhere (a screen reader must not report an open dialog
+// whose panel is gone), and focus returns to the gear (closing must not drop the
+// keyboard user to <body>).
+function closeSettings() {
+  const hadFocus = $("settings").contains(document.activeElement);
+  $("settings").hidden = true;
+  $("gear").setAttribute("aria-expanded", "false");
+  if (hadFocus) $("gear").focus();
+}
+
 $("gear").onclick = () => {
   const box = $("settings");
   box.hidden = !box.hidden;
   $("gear").setAttribute("aria-expanded", String(!box.hidden));
+  if (!box.hidden) box.querySelector("select, button, input")?.focus();   // keyboard users
 };
-$("settings-close").onclick = () => {
-  $("settings").hidden = true;
-  $("gear").setAttribute("aria-expanded", "false");
-};
+$("settings-close").onclick = closeSettings;
 document.addEventListener("click", (event) => {
-  const box = $("settings");
   // closest(), not a bare equality: the gear's svg is the click target, not the button.
-  if (!box.hidden && !event.target.closest("#gear") && !box.contains(event.target)) box.hidden = true;
+  if (!$("settings").hidden && !event.target.closest("#gear") && !$("settings").contains(event.target))
+    closeSettings();
 });
 
 // ── the status: the searchable count by the title; the rest of the engine's numbers
@@ -161,7 +179,7 @@ function queryChanged() {
   clearTimeout(state.timer);
   state.navigated = false;
   state.error = null;
-  if (!typed || (code && !text)) { show({hits: [], strong: 0}, code && !typed ? "codeHint" : "empty"); return; }
+  if (!typed || (code && !text)) { show({hits: [], strong: 0}, code && !text ? "codeHint" : "empty"); return; }
   // Words now. The last word is probably half-typed, so it matches as a prefix.
   api("/api/v1/search", {method: "POST", body: JSON.stringify(searchBody(text, false, true))})
     .then((reply) => { if (generation === state.generation && state.finalGeneration !== generation) show(reply, "words"); })
@@ -241,11 +259,17 @@ function renderList() {
   const list = $("hits");
   list.replaceChildren();
   for (const group of state.groups) {
-    list.append(el("li", "group-title", group.title));
+    const title = el("li", "group-title", group.title);
+    title.setAttribute("role", "presentation");        // a label, not a listbox option
+    list.append(title);
     for (const hit of group.rows) list.append(row(hit));
   }
   if (state.weaker.length) {
     const fold = el("li", "weaker" + (state.showWeaker ? " open" : "") + (state.selection === WEAKER ? " selected" : ""));
+    fold.setAttribute("role", "option");               // selectable by ↑↓/↩/Space — say so
+    fold.setAttribute("aria-expanded", String(state.showWeaker));
+    fold.setAttribute("aria-selected", String(state.selection === WEAKER));
+    fold.tabIndex = state.selection === WEAKER ? 0 : -1;
     const count = state.weaker.length;
     fold.append(el("span", "chevron", state.showWeaker ? "▾" : "▸"),
       el("span", null, state.showWeaker ? "Weaker matches" : `${count} weaker ${count === 1 ? "match" : "matches"}`));
@@ -271,10 +295,12 @@ function renderList() {
 }
 
 function row(hit) {
-  const item = el("li", "row" + (state.selection === hit.media_id ? " selected" : ""));
+  const selected = state.selection === hit.media_id;
+  const item = el("li", "row" + (selected ? " selected" : ""));
   item.setAttribute("role", "option");
-  item.tabIndex = 0;
-  item.append(thumbnail(hit));
+  item.setAttribute("aria-selected", selected ? "true" : "false");
+  item.tabIndex = selected ? 0 : -1;      // roving tabindex: an arrow-key list with 40–100
+  item.append(thumbnail(hit));            // rows must not turn every search into a tab storm
   const text = el("div", "row-text");
   const title = el("div", "row-title");
   title.append(el("span", "name", baseName(hit.path)),
@@ -400,7 +426,7 @@ function picture(hit) {
       } else {
         box.append(el("p", "note", `This browser can't stream .${suffix} — ↩ Open plays it in your own player.`));
       }
-      box.append(textPassage(hit, suffix === "txt" || suffix === "md"));
+      box.append(textPassage(hit));
       return box;
     }
     default: {
@@ -415,7 +441,7 @@ function picture(hit) {
 }
 
 // Transcripts and text (the desktop pulls the passage that matched; same op /text).
-function textPassage(hit, asIs) {
+function textPassage(hit) {
   const box = el("pre", "excerpt");
   box.textContent = "reading…";
   api(`/api/v1/media/${hit.media_id}/text`).then((reply) => {
@@ -523,7 +549,8 @@ $("q").addEventListener("keydown", (event) => {
     else openHit(selectedHit());
   } else if (event.key === " " && state.navigated && state.selection) {
     event.preventDefault();
-    toggleBig();
+    if (state.selection === WEAKER) toggleWeaker();     // same as ↩ on that row, same as
+    else toggleBig();                                   // the document handler's Space
   }
 });
 document.addEventListener("keydown", (event) => {
@@ -531,19 +558,22 @@ document.addEventListener("keydown", (event) => {
   switch (event.key) {
     case "Escape":
       if (!$("big").hidden) { event.preventDefault(); closeBig(); }
-      else if (!$("settings").hidden) { event.preventDefault(); $("settings").hidden = true; }
+      else if (!$("settings").hidden) { event.preventDefault(); closeSettings(); }
       else if (!$("estimate").hidden) { event.preventDefault(); $("estimate").hidden = true; }
       else if ($("q").value) { $("q").value = ""; queryChanged(); $("q").focus(); }
       break;
     case "ArrowDown":
     case "ArrowUp":
       if (event.target === $("q") || inField) break;      // the field has its own handler
-      if (event.target.tagName === "SELECT") return;      // dropdowns keep their arrows
       event.preventDefault();
       move(event.key === "ArrowDown" ? 1 : -1);
       break;
     case " ":
-      if (event.target.tagName === "SELECT" || event.target.type === "checkbox") return;
+      // Native button/link activation happens on keyup: preventing default here (the
+      // Quick-Look preview) silently killed Space-activation of the gear, ✕, Index now,
+      // Estimate, "all", the Esc close, and Open/Download — Space is a keyboard user's
+      // standard activation key, so buttons and links keep it; only bare page areas type-preview.
+      if (event.target.closest("button, a, [role='button'], input, select, textarea")) return;
       if (event.target === $("q")) break;                 // typing a space (the field handler above)
       if (!state.navigated && event.target.tagName === "INPUT") return;
       if (!state.selection && event.target.tagName !== "INPUT") return;
@@ -566,14 +596,20 @@ $("limit").onchange = () => { if (state.text) queryChanged(); };
 
 // ── Estimate: the engine's own forecast for the server's folders (POST /estimate).
 // The button lives in settings; the forecast appears in the page, one honest line.
+// Generation token (like searches have): a second click during a slow crawl must not
+// let the FIRST crawl's late reply write results into a panel that was closed and
+// reopened in between.
+let estimateToken = 0;
 $("estimate-btn").onclick = async () => {
   const panel = $("estimate");
-  $("settings").hidden = true;
-  if (!panel.hidden) { panel.hidden = true; return; }
+  closeSettings();
+  if (!panel.hidden) { panel.hidden = true; estimateToken++; return; }
+  const token = ++estimateToken;
   panel.hidden = false;
   panel.replaceChildren(el("p", "note", "estimating — the engine is walking the folders…"));
   try {
     const {folders} = await api("/api/v1/estimate", {method: "POST", body: JSON.stringify({})});
+    if (token !== estimateToken) return;               // a newer click owns the panel now
     panel.replaceChildren(el("p", "note",
       "The engine's own forecast for the folders it indexes. “measured here” = timed on this "
       + "machine by past indexing; “reference times” = the M4 Pro reference, too short for most PCs."));
@@ -601,7 +637,8 @@ $("estimate-btn").onclick = async () => {
       panel.append(row);
     }
   } catch (error) {
-    panel.replaceChildren(el("p", "warn", `estimate failed: ${error.message}`));
+    if (token === estimateToken)
+      panel.replaceChildren(el("p", "warn", `estimate failed: ${error.message}`));
   }
 };
 
@@ -610,6 +647,7 @@ async function pollJob(id) {
   const at = $("job");
   const showJob = (job) => {
     state.indexing = ["queued", "running"].includes(job.state) ? job : null;
+    if (!state.indexing) state.jobPoll = null;      // finished: a later 409 may poll afresh
     $("activity").hidden = !(state.encoder === "starting" || state.indexing);
     if (state.indexing) {
       $("activity").replaceChildren(el("span", "dot"), el("span", null, "indexing…"));
@@ -626,7 +664,21 @@ async function pollJob(id) {
     if (state.phase !== "empty") renderFooter();
   };
   for (;;) {
-    const {job} = await api(`/api/v1/jobs/${id}`);
+    let job;
+    try {
+      // A failed poll (server restarting, engine mid-respawn 503, network) used to reject
+      // the loop's promise unhandled: the thread of polling DIED, the job line froze at
+      // its last state, and "indexing…" stayed in the footer forever — no retry, no
+      // honest error. Say what happened, clear the indexing state, stop.
+      job = (await api(`/api/v1/jobs/${id}`)).job;
+    } catch (error) {
+      at.replaceChildren(el("span", "job-state job-interrupted", `job poll failed: ${error.message}`));
+      state.indexing = null;
+      state.jobPoll = null;
+      $("activity").hidden = !(state.encoder === "starting");
+      if (state.phase !== "empty") renderFooter();
+      return;
+    }
     showJob(job);
     if (["done", "interrupted", "busy"].includes(job.state)) { refreshStatus(); return; }
     await new Promise((resolve) => setTimeout(resolve, 2000));
@@ -638,11 +690,15 @@ $("index-btn").onclick = async () => {
   try {
     const {job} = await api("/api/v1/index", {method: "POST", body: JSON.stringify({prune})});
     at.replaceChildren(el("span", "job-state", `job ${job.id} queued`));
+    state.jobPoll = job.id;
     pollJob(job.id);
   } catch (error) {
     if (error.status === 409) {
       const live = error.message.match(/job ([0-9a-f]+)/);   // answered busy: poll the live one
-      if (live) pollJob(live[1]);
+      if (live && live[1] !== state.jobPoll) {               // repeated clicks used to stack
+        state.jobPoll = live[1];                             // a second polling loop on the
+        pollJob(live[1]);                                    // same live id — one loop per job
+      }
       at.replaceChildren(el("span", "job-state job-running", "busy — a job is already running"));
     } else {
       at.replaceChildren(el("span", "job-state job-interrupted", `index request failed: ${error.message}`));

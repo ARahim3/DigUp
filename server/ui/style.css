@@ -134,7 +134,9 @@ button:hover, a.button-like:hover { border-color: var(--accent); }
   border: 1px solid var(--edge); border-radius: 999px; padding: 0.3rem 0.75rem;
   font-size: 0.85rem; color: var(--soft); background: var(--panel); cursor: pointer; }
 #find .kind:has(input:checked) { color: var(--kc); border-color: var(--kc);
-  background: color-mix(in srgb, var(--kc) 14%, var(--panel)); }
+  background: color-mix(in srgb, var(--kc) 10%, var(--panel)); }   /* 10 %, not 14: the ticked
+  chip is kind-color text on a kind-tinted panel, and the measured pair (dark audio #c58af9 on
+  its own tint) is 4.54:1 at 10 % — under 4.5 (AA) at 14 %. Others measure 5.4 and up. */
 #find .kind[data-kind="screenshot"], #find .kind[data-kind="image"] { --kc: var(--kind-image); }
 #find .kind[data-kind="video"] { --kc: var(--kind-video); }
 #find .kind[data-kind="audio"] { --kc: var(--kind-audio); }
@@ -182,6 +184,10 @@ li.weaker .chevron { margin-right: 0.35rem; }
   border: 1px solid var(--line); border-radius: 999px;
   font-size: 0.74rem; color: var(--soft); background: var(--bg);
 }
+/* The estimate's "can't read it" badge: `.warn` (defined above .badge) and `.badge` have
+   the same specificity, so the later .badge won the cascade and the warning rendered in
+   muted grey — identical to the decorative badges beside it. Two classes win on one. */
+.badge.warn { color: var(--warn); border-color: var(--warn); }
 .kind-image, .kind-screenshot { border-color: var(--kind-image); color: var(--kind-image); }
 .kind-video   { border-color: var(--kind-video); color: var(--kind-video); }
 .kind-audio   { border-color: var(--kind-audio); color: var(--kind-audio); }
@@ -195,7 +201,10 @@ li.weaker .chevron { margin-right: 0.35rem; }
 #preview .message strong { color: var(--text); }
 #preview .picture img, #preview .picture video { display: block; width: 100%; max-height: 60vh;
   object-fit: contain; border-radius: 8px; background: #000; }
-#preview .picture audio { width: 100%; margin-top: 0.5rem; }
+/* audio hits live in an `.audio-picture` box (app.js gives the pane that class) —
+   the old `picture` selector never matched them, so the control rendered at its ~300 px
+   default in the pane. */
+#preview .picture audio, #preview .audio-picture audio { width: 100%; margin-top: 0.5rem; }
 #preview .moment { color: var(--soft); font-size: 0.85rem; margin-top: 0.25rem; }
 #preview .passage { font: 0.85rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
   white-space: pre-wrap; overflow-wrap: anywhere; max-height: 46vh; overflow: auto;
@@ -218,6 +227,9 @@ footer#footer {
 #footer .foot-in { display: flex; gap: 1rem; justify-content: space-between; flex-wrap: wrap;
   max-width: 72rem; margin: 0 auto; padding: 0.35rem 1.25rem; font-size: 0.8rem; color: var(--soft); }
 #keys { white-space: nowrap; }
+@media (max-width: 720px) {
+  #keys { white-space: normal; }   /* the 48-char hint at 0.8rem overflows a 320 px viewport */
+}
 
 #estimate { border: 1px solid var(--edge); border-radius: 10px; padding: 0.7rem 0.9rem;
   margin: 0.3rem auto 1rem; max-width: 46rem; background: var(--panel); }
