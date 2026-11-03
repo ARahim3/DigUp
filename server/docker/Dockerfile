@@ -51,6 +51,14 @@ ENV PATH=/opt/swift/usr/bin:$PATH
 
 WORKDIR /src
 COPY . .
+# CI vendor seeding: `.github/workflows/server.yml` caches Vendor/ host-side (the same
+# scripts ci.yml runs, the same hash keys) and passes the built result in the context as
+# `.ci-vendor/`. Copying it into the cache mount below lets fetch-vendor/build-ffmpeg/
+# build-llama land on their own stamps (Vendor/VENDOR, ffmpeg/BUILD, llama/BUILD) and
+# skip the rebuild — hosted runners start their BuildKit cache mounts cold every job,
+# and a 15-minute ffmpeg compile on every PR was overrunning the job's own ceiling.
+# A local build has an empty .ci-vendor/ (the tracked .gitkeep) and pays nothing here.
+COPY .ci-vendor /ci-vendor
 
 # Vendor libraries (SQLite with FTS5, stb, miniz, PDFium) and llama.cpp, pinned by the
 # repository's own scripts; then the small ffmpeg the packages carry (the image and video
@@ -63,6 +71,7 @@ COPY . .
 RUN --mount=type=cache,target=/src/Vendor \
     --mount=type=cache,target=/src/.build \
     set -eux; \
+    if [ -f /ci-vendor/llama/BUILD ]; then cp -a /ci-vendor/. /src/Vendor/; fi; \
     export CC="${CC:-cc}" CXX="${CXX:-c++}"; \
     if [ "$(uname -m)" = aarch64 ]; then \
       found=""; \
@@ -134,9 +143,10 @@ COPY --from=engine-payload /out/ /opt/digup/
 ENV PATH=/opt/digup:$PATH
 
 # The engine runs headlessly as its own user; nothing here is a desktop, a display server, or a
-# service manager, and no Swift toolchain is installed.
+# service manager, and no Swift toolchain is installed. No /data/locks: the writer lock is
+# beside the index (`<index>/.digup-server.writer.lock`, engine/index.py), not a folder.
 RUN useradd --system --create-home --uid 990 digup \
-    && mkdir -p /data/index /data/models /data/config /data/locks \
+    && mkdir -p /data/index /data/models /data/config \
     && chown -R digup:digup /data \
     && digup --help > /dev/null \
     && digup --help | sed -n '2p'
@@ -145,14 +155,16 @@ USER digup
 WORKDIR /data
 
 # ── Test harness (dev): the engine payload + the Python adapter + the contract tests ─────────
-# python:3.12-slim (Debian 12, glibc 2.37 ≥ the payload's 2.35 — forward, never back). The
-# same payload, the same CLI: the contract tests prove the *shipped* binaries, so a passing
-# suite is a statement about the runtime image, not about a dev box. Runs as root: mounts
-# arrive from the host and the scratch indexes are the tests' own.
+# python:3.12-slim — measured in the built image: Debian 13 (trixie), glibc 2.41. The payload
+# is built on Ubuntu 22.04 (glibc 2.35), so the image runs NEWER glibc than the payload was
+# compiled against — forward, never back. The same payload, the same CLI: the contract tests
+# prove the *shipped* binaries, so a passing suite is a statement about the runtime image,
+# not about a dev box. Runs as root: mounts arrive from the host and the scratch indexes are
+# the tests' own.
 FROM python:3.12-slim AS server-test
 
 RUN apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
-    libcurl4 libgomp1 \
+    libcurl4 libgomp1 tini \
     && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir uv
 
@@ -170,12 +182,20 @@ RUN uv sync --frozen
 # Mounts at run time: /corpus (the corpus media), /corpus-root (the corpus folder, the
 # skipped files), /models (the verified model files), /index (a writable index folder; the
 # first run fills it with `digup index`).
+#
+# tini here is not ceremony: the suite's app spawns `search-service` as a child of the test
+# process, and ParentWatch ends a helper whose parent's parent is PID 1 ("the app is gone").
+# Plain `docker run` makes pytest PID 1, so every helper died at once with `exit 0, no
+# stderr` — measured. With tini as PID 1 the test process is a live parent, exactly the
+# production shape, and the suite needs no `--init` flag to be correct.
+ENTRYPOINT ["tini", "--"]
 CMD ["uv", "run", "pytest"]
 
 # ── Server runtime: the shipping image ──────────────────────────────────────────────────
 # Engine payload + API + UI. No Swift, no compiler, no dev deps, no Tauri, no desktop
-# stack. python:3.12-slim (Debian 12, glibc 2.37 ≥ the payload's 2.35 — forward, never
-# back), tini as PID 1, non-root user. The supervision chain (reconnaissance §15 item 8):
+# stack. python:3.12-slim — measured: Debian 13 (trixie), glibc 2.41, newer than the
+# payload's build glibc 2.35 (Ubuntu 22.04) — forward, never back. tini as PID 1, non-root
+# user. The supervision chain (reconnaissance §15 item 8):
 # tini (PID 1) → uvicorn → helpers; a helper's parent is uvicorn (never PID 1, so
 # ParentWatch accepts it), and when uvicorn dies the helpers reparent to PID 1 and end —
 # a stopped API takes its whole process tree with it, which is the point of the mechanism.
@@ -189,26 +209,31 @@ RUN pip install --no-cache-dir uv
 COPY --from=engine-payload /out/ /opt/digup/
 ENV PATH=/opt/digup:$PATH
 COPY server /srv/server
+COPY server/docker/healthcheck.py /opt/digup/healthcheck.py
 WORKDIR /srv/server
 RUN uv sync --frozen --no-dev
 
 # The same engine user as the engine-runtime stage (uid 990); /data is README §5's layout
-# (index/, models/, config/, locks/) — bind-mounted volumes, owned by the server user.
-# `digup --help` here IS the §3 acceptance check: the CLI runs headless in this image.
+# (index/, models/, config/) — bind-mounted volumes, owned by the server user. The writer
+# lock lives beside the index (`<index>/.digup-server.writer.lock`), not in a data folder.
+# `digup --help` proves the CLI runs headless in this image; §3's full acceptance — the
+# CLI answering status and searches from the mounted folders — is proven by CI's boot step
+# and the proof battery, which run against a live index, not from an empty image.
 RUN useradd --system --create-home --uid 990 digup \
-    && mkdir -p /data/index /data/models /data/config /data/locks \
+    && mkdir -p /data/index /data/models /data/config \
     && chown -R digup:digup /data /srv/server \
     && digup --help > /dev/null \
-    && /srv/server/.venv/bin/python -c "import fastapi, uvicorn, digup_server.api"
+    && /srv/server/.venv/bin/python -c "import fastapi, uvicorn, digup_server.api" \
+    && ! /srv/server/.venv/bin/python /opt/digup/healthcheck.py
 
 ENV PATH=/srv/server/.venv/bin:$PATH \
     PYTHONPATH=/srv/server \
     DIGUP_SERVER_INDEX=/data/index \
     DIGUP_SERVER_ROOTS=/media/photos \
     DIGUP_SERVER_MODELS=/data/models \
-    DIGUP_SERVER_CONFIG=/data/config \
-    DIGUP_SERVER_HOST=0.0.0.0 \
-    DIGUP_SERVER_PORT=8787
+    DIGUP_SERVER_CONFIG=/data/config
+# Host and port are NOT env here: the CMD below binds them (DIGUP_SERVER_HOST/PORT feed
+# `python -m digup_server.api`, the bare-metal entry — uvicorn's own args win in a container).
 
 USER digup
 WORKDIR /data
@@ -216,9 +241,13 @@ EXPOSE 8787
 
 # SIGTERM (docker stop): tini forwards it to uvicorn, whose lifespan shutdown marks a
 # running job *interrupted* (the truthful state) and quit()s every helper. The healthcheck
-# asks the API's own /health — a healthy container is one whose engine answers.
+# asks the API's own /health — a healthy container is one whose engine answers. 503 counts
+# as alive: /health answers 503 while the searcher is respawning (a refused search, the
+# engine's own words) — that is the server honestly saying "not right now", not a sick
+# container, and docker must not restart a live server over it. urlopen raises HTTPError
+# on 503, so it is caught, not propagated.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8787/api/v1/health', timeout=5).status == 200 else 1)"
+    CMD python /opt/digup/healthcheck.py
 
 ENTRYPOINT ["tini", "--"]
 CMD ["uvicorn", "--factory", "digup_server.api:app_factory", "--host", "0.0.0.0", "--port", "8787"]

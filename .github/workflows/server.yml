@@ -9,8 +9,11 @@ on:
   pull_request:
     paths:
       - "server/**"
+      - "deploy/**"
       - "docs/implementation/**"
       - ".github/workflows/server.yml"
+      - ".dockerignore"
+      - ".ci-vendor/**"
       - "Package.swift"
       - "Sources/**"
       - "scripts/**"
@@ -18,8 +21,11 @@ on:
     branches: [main]
     paths:
       - "server/**"
+      - "deploy/**"
       - "docs/implementation/**"
       - ".github/workflows/server.yml"
+      - ".dockerignore"
+      - ".ci-vendor/**"
   workflow_dispatch:
 
 permissions:
@@ -32,30 +38,21 @@ concurrency:
 jobs:
   server:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    # The builder compiles ffmpeg + llama.cpp + the Swift package from source (the project's
+    # own scripts, as ci.yml runs them). 90 min was measured too tight mid-proof; 180 covers
+    # a cold cache with room, and a hung job dies on its own well before the 6 h ceiling.
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # The builder stage is upstream's own build, in the container the packages are built in:
-      # vendor libraries verified against committed pins, llama.cpp b11461, `swift build -c
-      # release`, `swift test` — everything in the image build's log below.
-      - name: Build the engine (and run swift test) in the builder image
-        run: docker build --target engine-builder -f server/docker/Dockerfile -t digup-builder:ci .
-
-      - name: The runtime image runs the CLI headless
-        run: |
-          docker build --target engine-runtime -f server/docker/Dockerfile -t digup-engine:ci .
-          docker run --rm digup-engine:ci digup --help
-          docker run --rm digup-engine:ci digup --help | sed -n 2p
-
-      - name: Corpus (pinned photos are in git; the videos, clip, and manifest checks run here)
-        run: server/tests/corpus/build.sh
-
-      # The engine owns the model pins (Sources/DigUpKit/ModelFiles.swift: revision and both
-      # sha256s, verified at runtime by ModelFiles itself). This step keeps the CI download
-      # pinned to the engine's own words: when upstream bumps a model, THIS fails first and
-      # the download step below moves with it — the server never silently runs a different
-      # model than the engine it wraps.
+      # The engine owns the model pins (Sources/DigUpKit/ModelFiles.swift: revision, file
+      # names and both sha256s, verified at runtime by ModelFiles itself). This step keeps
+      # the CI download pinned to the engine's own words — it runs FIRST, before any
+      # compile: when upstream bumps a model, the PR fails in seconds, not after an hour
+      # of build minutes (its comment always promised "fails first"; placement makes it
+      # true). It now catches the revision and the file names too: a revision bump with
+      # unchanged hashes moves the download URL silently, and a renamed file moves it
+      # loudly — both are red here, not in a download failure mid-suite.
       - name: Model pins follow the engine (drift guard)
         run: |
           engine=$(grep -oE 'sha256: "[0-9a-f]{64}"' Sources/DigUpKit/ModelFiles.swift | grep -oE '[0-9a-f]{64}' | sort)
@@ -66,6 +63,42 @@ jobs:
             echo "::error::ModelFiles.swift pins differ from server.yml — update the download step's pins in the same PR"
             echo "engine: $engine"; echo "ci:     $ci"; exit 1
           fi
+          rev=$(sed -nE 's/.*revision = "([0-9a-f]{40})".*/\1/p' Sources/DigUpKit/ModelFiles.swift)
+          if [ "$rev" != "bfcd298762cc34d0357ece5ebdd31791a3a374d8" ]; then
+            echo "::error::ModelFiles.revision moved (engine: $rev) — update this step and the download step together"
+            exit 1
+          fi
+          grep -q '"embeddinggemma-2-Q8_0.gguf"' Sources/DigUpKit/ModelFiles.swift &&
+          grep -q '"mmproj-embeddinggemma-2-Q8_0.gguf"' Sources/DigUpKit/ModelFiles.swift || {
+            echo "::error::ModelFiles.swift file names changed — update the download step in the same PR"; exit 1; }
+
+      - name: Build tools for the vendor scripts
+        run: |
+          sudo apt-get update -q
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
+            ca-certificates curl git gnupg xz-utils unzip python3 binutils build-essential \
+            cmake ninja-build meson nasm pkg-config file zlib1g-dev libcurl4-openssl-dev \
+            libxml2-dev libedit2 libsqlite3-0 libz3-dev libpython3-dev tzdata yasm
+
+      # The engine chain (ffmpeg + llama.cpp) builds inside the Docker builder with
+      # BuildKit cache mounts — per-runner state a hosted job starts cold. ci.yml caches
+      # the same artifacts host-side, keyed by the scripts' own hashes; server.yml now
+      # mirrors those keys, builds Vendor with the same (stamped, idempotent) scripts
+      # ci.yml runs, and passes the result in the build context as `.ci-vendor/` — the
+      # Dockerfile seeds its cache mount from it, the scripts land on their stamps
+      # (Vendor/VENDOR, ffmpeg/BUILD, llama/BUILD) and skip the rebuild. First run pays
+      # it once; every later run restores from cache in seconds.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: Vendor
+          key: server-vendor-linux-${{ hashFiles('scripts/fetch-vendor.sh', 'scripts/build-ffmpeg.sh', 'scripts/build-llama.sh', 'scripts/package-linux.sh') }}
+      - name: Vendored libraries, ffmpeg, llama.cpp (host, cached — ci.yml's own scripts)
+        run: |
+          scripts/fetch-vendor.sh
+          scripts/build-ffmpeg.sh
+          scripts/build-llama.sh
+          mkdir -p .ci-vendor
+          cp -a Vendor/. .ci-vendor/
 
       - name: Model files, pinned by Sources/DigUpKit/ModelFiles.swift
         run: |
@@ -80,6 +113,26 @@ jobs:
           echo "c4a8a52691ecef40618438928bdf9e68379b854e24166f292592353db0aab64f  $RUNNER_TEMP/models/mmproj-embeddinggemma-2-Q8_0.gguf" >> "$RUNNER_TEMP/pins.txt"
           sha256sum -c "$RUNNER_TEMP/pins.txt"
 
+      # The builder stage is upstream's own build, in the container the packages are built
+      # in: vendor libraries verified against committed pins, llama.cpp b11461, `swift
+      # build -c release`, `swift test` — everything in the image build's log below.
+      - name: Build the engine (and run swift test) in the builder image
+        run: docker build --target engine-builder -f server/docker/Dockerfile -t digup-builder:ci .
+
+      - name: The runtime image runs the CLI headless
+        run: |
+          docker build --target engine-runtime -f server/docker/Dockerfile -t digup-engine:ci .
+          docker run --rm digup-engine:ci digup --help
+          docker run --rm digup-engine:ci digup --help | sed -n 2p
+
+      - name: Corpus (pinned photos are in git; the videos, clip, and manifest checks run here)
+        run: server/tests/corpus/build.sh
+
+      # The clip is the suite's video fixture; a runner whose ffmpeg lacks libx264 silently
+      # unbuilds it, ~20 tests skip, and the suite greys out green. It must exist, plainly.
+      - name: The corpus clip exists (the video fixtures are not skippable)
+        run: test -f server/tests/corpus/media/clips/scenes.mp4
+
       - name: Build the test image (engine payload + adapter)
         run: docker build --target server-test -f server/docker/Dockerfile -t digup-server-test:ci .
 
@@ -93,15 +146,27 @@ jobs:
       # ghosts retire on plain sync; out-of-scope ghosts survive it and retire under prune),
       # and the UI surface (same-origin vanilla app, server-issued media ids →
       # previews/text, 404s for unissued ids).
-      - name: Contract tests
+      # Zero-skip gate: the suite skips its own module when /models, /corpus-root or the
+      # clip are missing (conftest) — "57 passed, 20 skipped" would be green-by-construction
+      # and a lie. In CI every test must RUN: any skip is red, loudly.
+      - name: Contract tests (every test runs — skips are red in CI)
         run: |
           mkdir -p "$RUNNER_TEMP/index"
+          # tini is the image's ENTRYPOINT (the ParentWatch rule: the test process must be a
+          # child, not PID 1), so the pytest command is given in full — args alone would
+          # replace the CMD and the container would try to exec `-rs`.
           docker run --rm \
             -v "$PWD/server/tests/corpus/media:/corpus:ro" \
             -v "$PWD/server/tests/corpus:/corpus-root:ro" \
             -v "$RUNNER_TEMP/models:/models:ro" \
             -v "$RUNNER_TEMP/index:/index" \
-            digup-server-test:ci
+            digup-server-test:ci /srv/server/.venv/bin/pytest -rs 2>&1 | tee "$RUNNER_TEMP/suite.log"
+          if grep -qE '^(SKIPPED|tests/.*SKIPPED)' "$RUNNER_TEMP/suite.log"; then
+            echo "::error::a test SKIPPED in CI — the suite self-skipping is a green-by-construction lie"
+            grep -E 'SKIPPED' "$RUNNER_TEMP/suite.log" | head -20
+            exit 1
+          fi
+          grep -qE '[0-9]+ passed' "$RUNNER_TEMP/suite.log"
 
       - name: The headless proof (index + search + eval, the engine's own words)
         run: |
@@ -113,6 +178,8 @@ jobs:
             -v "$RUNNER_TEMP/proof:/out/proof" \
             -e OUT=/out/proof \
             digup-engine:ci bash /src/server/tests/proof.sh
+        # proof.sh counts failures (exit != 0) and gates the eval ALL row (R@1 ≥ 0.60,
+        # R@5 ≥ 0.85) — the numbers the docs quote must be green here, not cited there.
 
       # The shipping image: tini PID 1 → uvicorn → helpers (the ParentWatch chain),
       # non-root, HEALTHCHECK = the API's own /health, the UI served at /. SIGTERM must
@@ -135,8 +202,9 @@ jobs:
             digup-server:ci
           code=0
           for i in $(seq 1 30); do
-            code=$(docker exec server-ci python -c 'import urllib.request; print(urllib.request.urlopen("http://127.0.0.1:8787/api/v1/health", timeout=3).status)' 2>/dev/null || true)
-            [ "$code" = "200" ] && break
+            # The image's OWN healthcheck script — the exact file Docker runs, proven here
+            # against the live API (its exit 0 is the health Docker reports).
+            if docker exec server-ci python /opt/digup/healthcheck.py; then code=200; break; fi
             sleep 2
           done
           test "$code" = "200"
@@ -150,4 +218,17 @@ jobs:
       - name: Proof logs (the run's own output, for the PR log)
         if: always()
         run: |
-          for f in "$RUNNER_TEMP"/proof/*.log; do echo "::group::${f##*/}"; cat "$f"; echo "::endgroup::"; done
+          shopt -s nullglob
+          files=("$RUNNER_TEMP"/proof/*.log "$RUNNER_TEMP"/suite.log)
+          if [ ${#files[@]} -eq 0 ]; then echo "no proof/suite logs to show"; exit 0; fi
+          for f in "${files[@]}"; do echo "::group::${f##*/}"; cat "$f"; echo "::endgroup::"; done
+
+      - name: Upload proof and suite logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: server-proof-logs-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}/proof
+            ${{ runner.temp }}/suite.log
+          if-no-files-found: warn

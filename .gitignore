@@ -39,3 +39,8 @@ deploy/data/
 server/tests/corpus/proof/
 server/tests/corpus2/media/
 .playwright-mcp/
+
+# CI vendor seeding (server.yml): the host cache copied into the build context. Its
+# .gitkeep is tracked (the Dockerfile's COPY needs the folder); a copied Vendor never is.
+.ci-vendor/*
+!.ci-vendor/.gitkeep

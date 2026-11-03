@@ -43,8 +43,14 @@ services:
     # 90 s covers one file's embed, so `docker stop` ends the job truthfully *inside*
     # the grace, with its partial counts: 143 + "Application shutdown complete".
     stop_grace_period: 90s
+    # Survive a daemon restart (a reboot, `docker pull` upgrading, a crash): come back
+    # with Docker, and after a manual `docker stop`, stay down — the honest semantics of
+    # `unless-stopped` for a single-user service.
+    restart: unless-stopped
     ports:
-      - "127.0.0.1:8787:8787"        # localhost-only; LAN exposure needs auth first (§7)
+      # localhost-only; LAN exposure needs auth first (§7). DIGUP_PUBLISH_PORT moves the
+      # host side when 8787 is taken; the container keeps binding 8787.
+      - "127.0.0.1:${DIGUP_PUBLISH_PORT:-8787}:8787"
     environment:
       DIGUP_SERVER_INDEX: /data/index
       DIGUP_SERVER_ROOTS: ${DIGUP_SERVER_ROOTS:-/media/photos}
