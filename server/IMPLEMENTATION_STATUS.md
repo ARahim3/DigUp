@@ -2,6 +2,100 @@
 
 One document, kept current (docs/implementation/README.md §10). Newest first.
 
+## 2026-11-02 — UI reorganized around the search (the user's layout brief), in the browser
+
+* **The page is a search:** centered search box with the hit-limit select at its right
+  end (arrow evenly spaced off the edge — selects render their own chevron per theme),
+  theme-colored kind chips in one evenly spaced centered row beneath it (filled in the
+  kind's color when ticked), results bottom-left, preview right, keys footer. Header:
+  title + searchable count + activity + a gear.
+* **Settings panel (the gear):** Appearance, Index now + prune missing, Estimate, and the
+  engine's counts (vectors, encoder, kinds, index size, build tag, roots). Estimate stays
+  honest and short — one note line, the forecast renders above the results, the long
+  paragraph the user pointed at is gone. The panel closes on Esc, outside click, and on
+  opening the estimate. `#settings[hidden]{display:none}` — the same `[hidden]` lesson as
+  `#big`.
+* **`el()` fixed:** the helper took an element as its text arg at three call sites and
+  stringified it — the "[object HTMLElement]" text the user saw (estimate rows, preview
+  messages). Children are real nodes/text nodes now; verified clean in the browser
+  (`[object HTMLElement]` = false, zero console errors).
+* **"water shows only the harbor photo" is the engine, not the UI:** `Searcher.zGate = 2.0`
+  (`Sources/DigUpKit/Searcher.swift:116`) filters sub-2σ candidates inside the binary —
+  the Linux app with the same index answers the same single hit. Measured live: 1 hit,
+  z 2.09. The UI publishes the engine's answer unchanged (the server's core rule).
+  Panel parity re-audited against `panel.js`: `limit: 40` (the engine default — the
+  select is a superset), the WEAKER fold, groups, keyboard flow, footer summary.
+* Browser battery re-run: typing → 5 hits (4 strong) → click → preview, settings open,
+  estimate clean, theme flip, 0 console errors; layout verdict from the vision model:
+  all checks pass (header tidy, centered search, chips even, panel neat).
+
+## 2026-11-02 — Dark theme made readable, in a real browser (Playwright is up)
+
+* **The complaint ("The UI is way too dark. I cannot see anything for the dark theme") had a
+  root cause found in the browser, not in the palette:** the big-look overlay `#big` set
+  `display: flex`, which outranks the UA's `[hidden] { display: none }` — so a `position: fixed`
+  layer at 78% black covered the whole page permanently, dimming everything under it and
+  intercepting every click (Playwright: "div#big intercepts pointer events"). Fixed with
+  `#big[hidden] { display: none }`; click → preview, Space big-look, Esc all verified live.
+* **Palettes are now explicit per theme — no system colors, no OS dependence:** light/dark var
+  blocks per `data-theme` (+ a `prefers-color-scheme` block for System), each setting its own
+  `color-scheme`, so checkboxes, selects and scrollbars render *in* the theme;
+  `accent-color` on the checkboxes. The text pairs are measured WCAG ratios, not eyeballed:
+  on dark, text `#e8eaed` on `#202124` = 13.4:1, muted `#b7bbc1` = 8.4, accent `#8ab4f8` = 7.6,
+  kind colors ≥ 6.4; on light, text `#1a1a1a` on white = 17.4, muted `#5f6368` = 5.9. Panels
+  got surfaces (`--panel` + `--edge` borders) so structure stops dissolving — hairlines stay
+  deliberately quiet (~1.8:1, they are separators, not text). Screenshot verdict from the
+  vision model after the fix: 9/10 readable, both themes, results + preview + estimate.
+* **The UI ships `cache-control: no-cache` (`UIFiles` in `api.py`):** measured in the browser —
+  without it, Chrome answered reloads from its memory cache for minutes, serving a stylesheet
+  the server no longer had, so a deploy never reached the page. Etag in, 304 out, revalidation
+  is cheap. Pinned by a test.
+* **`EngineRefused` — the engine's refusal is a 503, in its words:** the Stage-10 battery hit
+  the searcher mid-transition right after a done job: the engine answers `{"ok":false,
+  "error":…}` (`SearchService.swift:106,115`) and `api.py` crashed `KeyError: 'hits'` (500).
+  Now `SearchService._checked` raises `EngineRefused` on any `ok:false` reply, the API answers
+  503 with the engine's sentence, the job runner survives a refused post-job refresh (the job
+  stays *done*, with a "searcher refresh deferred" note), and startup's prewarm is best-effort
+  the same way. Proven by the API pair of tests — a refusing injected service, a stub refusal
+  reply, no engine mocks; the proof battery gates on "searchable == files · encoder ready" and
+  retries 503s, printing each refusal it met.
+* Statusline: `index NaN KB` — app.js ran the engine's human string through `bytes()`; now it
+  shows the engine's own words verbatim (`index 201 KB`).
+* **Suite: 56 passed, 1 deselected in 192.51 s (EXIT=0)** — the 53 plus the 503 pair and the
+  revalidation rule. Live proof: [stage-10-ui-parity.md](../docs/implementation/stage-10-ui-parity.md).
+
+## 2026-11-02 — Stage 10 done: the web UI reaches desktop parity; corpus2 for live testing
+
+* **UI parity (`server/ui/`, rewritten against `shell/ui/panel.js`):** keyword-first
+  typing (words at once with `prefix_last`, `embed_ahead`, the `meaning:true` upgrade
+  after 120 ms, generation + final-generation guards); strong/weaker fold; kind
+  checkboxes → `kinds` (none ticked = all = the engine's default); `code:` prefix +
+  code checkbox as one state; limit select (40 = the engine's default); grouped rows
+  with lazy engine thumbnails; a preview pane for the selection (photo, video frame
+  that plays *from* `#t=loc`, PDF page, audio at the moment, matched passage via
+  `/text`) with facts + a plain-language reason built from the engine's own fields;
+  arrows/↩/Space/Esc keyboard flow with the big look; Open + Download; Estimate panel
+  (`POST /estimate`, the `calibrated` truth); activity dot; summary + keys footer.
+* **Appearance (the theme ask):** System / Light / Dark select → `data-theme` + CSS
+  variables, kept in `localStorage`; System tracks `prefers-color-scheme` exactly as
+  the OS-following desktop does.
+* **`GET /media/{id}/file` — the app's "Open" over HTTP:** server-issued handles only,
+  roots-containment on the resolved path, media type from **magic bytes**, inline for
+  media kinds, attachment + `text/plain` for code/doc (a source file named `index.html`
+  never arrives as markup), `Accept-Ranges: bytes` with 206/416 — what makes
+  `<video …#t=loc>` seek.
+* **`/status` publishes the server's own roots** (env-configured paths, shown for the
+  user; display, not path acceptance).
+* **Settings mapping, honestly:** OS integrations (login, tray, shortcut, updates,
+  index hours, folder pickers…) are deployment env config for a server; *reveal* and
+  *copy file* are absent, not faked. Documented in README's parity table.
+* **corpus2:** 60 Commons photos (20 subjects × 3), 1400 px renders pinned by sha256,
+  out of git, `build.sh` fetches + verifies; the H.264 clip travels with it. The suite
+  corpus stays 15 files (rankings normalize over that set).
+* **Suite: 53 passed, 1 deselected in 190.18 s** (48 from Stages 3–8 + 5 Stage-10:
+  the parity UI surface, `/file` 200/206/416/404 + magic types, roots in status).
+  Live proof + UI sweep: [stage-10-ui-parity.md](../docs/implementation/stage-10-ui-parity.md).
+
 ## 2026-11-02 — Stage 8 done: persistence and reliability under load
 
 * **Stop-at-the-safe-point**: `shutdown()` sends the engine's `stop` to the live writer;
@@ -187,11 +281,15 @@ running `digup` with no toolchain, no desktop stack. Model files verified agains
 digup-engine:local      runs `digup` headlessly (arm64, CPU)        — image, 296 MB
 server/tests/proof.sh   index + search + eval, the engine's words   — Stage 2 evidence,
                         re-run green 2026-11-02 (EXIT=0, R@1 0.71 / R@5 0.88)
-digup-server-test:local adapter + contract + API + job + UI tests    — 48 passed / 181.86 s
-                         (dedicated suite index, prewarm, prune pair,   — Stages 3–8, green
-                          stop-mid-job-resume, rotation, env knobs)
-digup-server:local      runtime image: payload+API+UI, tini, non-root — 562 MB, Stage 7
-digup-server-server-1   compose up (healthy), 127.0.0.1:8787, real    — Stages 7–8, live:
+digup-server-test:local adapter + contract + API + job + UI tests    — 57 passed / 241.18 s
+                         (dedicated suite index, prewarm, prune pair,   — Stages 3–8 + 10,
+                          stop-mid-job-resume, rotation, env knobs,       green
+                          /file 200·206·416·404, roots, UI parity surface,
+                          refusal 503 pair, UI no-cache revalidation,
+                          MP4 sniffed by ftyp)
+digup-server:local      runtime image: payload+API+UI, tini, non-root — Stage 7, rebuilt
+digup-server-server-1   compose up (healthy), 127.0.0.1:8787, real    — Stages 7–8 + 10:
                          data volumes, UI+API, stop_grace_period: 90s,   prewarm, prune,
                          mid-job stop measured: 143+partial · 8+7=15,    137+replay+resume
+                         corpus2 gallery (61 files) indexed and served
 ```

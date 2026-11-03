@@ -133,17 +133,17 @@ is the reference, `Sources/DigUpApp/SearchPanel.swift` the Mac one):
 | --- | --- | --- |
 | keyword-first typing: words at once (last word as prefix), meaning after 120 ms | same | `POST /search` `meaning:false, prefix_last:true`, `POST /embed_ahead`, then the `meaning:true` upgrade; generation guards, like panel.js |
 | strong vs weaker results, folded | same | `strong` hits grouped by kind; "N weaker matches" row, click/↩/Space unfolds |
-| kind filters (the window's checkboxes) | same | the Find fieldset → `kinds: [...]` (none ticked = all = the engine's default) |
+| kind filters (the window's checkboxes) | same | the kind-chip row under the search (theme-colored, filled when ticked) → `kinds: [...]` (none ticked = all = the engine's default) |
 | `code:` search | same | the `code:` prefix (and a code checkbox, one state) → `code: true` |
-| limit (the window's row count) | same | the limit select → `limit` (default 40, the engine's own) |
+| limit (the window's row count) | same | the limit select at the right end of the search bar → `limit` (default 40, the engine's own) |
 | arrow keys, ↩ opens, Space = big look, Esc | same | ↑↓ follow the top pick until you navigate; ↩ opens the pick; Space the big look; Esc puts it away |
 | preview pane: photo, frame at the moment (click plays *from* it), PDF page, heard words, matched passage | same | `GET /media/{id}/preview` (the engine's `render`, JPEG) + `/text` + `<video src=/media/{id}/file#t=loc>` |
 | Open (the file itself; `placeToOpen` for video) | same | `GET /media/{id}/file` — inline media opens in the browser (H.264/AAC mp4-mov, webm, plain audio seek at `#t=` via Range); formats a browser can't stream keep the frame + words and open in the user's player; Download = attachment |
 | footer: summary + keys line | same | "N results · M weaker", "Matching words…", "Words only: …", the helper's own error quoted; keys line under the results |
 | activity badge ("Indexing 42%", encoder warming) | same | encoder/job state from `/status` + the polled job's counts |
-| onboarding estimate (the folders' cost) | same | `POST /estimate` → per-folder forecast with kind counts, PDF pages, audio/video durations, the `calibrated` truth, top subfolders |
-| appearance (the desktop follows the OS) | **choice: System / Light / Dark** | a server has no OS to follow; `data-theme` + CSS variables, kept in `localStorage` |
-| roots shown (Settings → Folders) | shown | `GET /status` publishes the server's own configured roots (env-configured; the UI prints them) — display, not path acceptance (§7) |
+| onboarding estimate (the folders' cost) | same | `POST /estimate` → per-folder forecast with kind counts, PDF pages, audio/video durations, the `calibrated` truth, top subfolders — the button lives in the settings panel, the honest note is one line |
+| appearance (the desktop follows the OS) | **choice: System / Light / Dark** | a server has no OS to follow; a select in the settings panel (the gear), `data-theme` + CSS variables, kept in `localStorage` |
+| roots shown (Settings → Folders) | shown | `GET /status` publishes the server's own configured roots (env-configured; the settings panel prints them with the engine's counts) — display, not path acceptance (§7) |
 
 *Settings that don't apply, honestly:* login item, tray, global shortcut, window centering,
 auto-updates, index hours, folder pickers, pause-indexing, the code editor, licenses — these
@@ -195,10 +195,14 @@ This directory is built to be a **clean additive PR** to [ARahim3/DigUp](https:/
 ## Status
 
 [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) — what runs, what's proven, what's open.
-Stages 3–8 are **done: 48 tests green** in the container against the shipped engine payload
-(22 contract + 10 API + 6 index-job + 7 UI/media + 3 persistence), and the shipping shape
-runs live: `docker compose up -d` in `deploy/` boots `digup-server:local` (engine + API +
-UI, tini, non-root, healthy) on `http://127.0.0.1:8787/` with prewarm, index jobs, prune,
-`stop_grace_period: 90s`, and a mid-job stop measured both ways — graceful *interrupted*
-with partial counts (8 + 7 = 15 resumed exactly), and SIGKILL recovered by replay to
-resume. The GPU override (Stage 9, on the prod box) comes next.
+Stages 3–8 and 10 are **done: 57 tests green** in the container against the shipped engine
+payload (22 contract + 13 API + 6 index-job + 13 UI/media + 3 persistence), and the shipping
+shape runs live: `docker compose up -d` in `deploy/` boots `digup-server:local` (engine + API
++ UI, tini, non-root, healthy) on `http://127.0.0.1:8787/` with the desktop panel's behavior
+in the web UI (keyword-first typing, filters, code mode, preview pane, Open at the video's
+moment, Estimate, System/Light/Dark — the dark palette measured for WCAG contrast and the
+whole flow driven through a real browser, Playwright, in both themes), prewarm, index jobs,
+prune, `stop_grace_period: 90s`,
+and a mid-job stop measured both ways — graceful *interrupted* with partial counts
+(8 + 7 = 15 resumed exactly), and SIGKILL recovered by replay to resume. The GPU override
+(Stage 9, on the prod box) comes next.
