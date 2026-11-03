@@ -23,10 +23,16 @@ interrupted; SQLite keeps the index whole; state outlives containers) — implem
    paths (WAL); the rule holds in both: *interrupted, never success*. `reload →
    prewarm` is skipped on the stopping path (the searcher quits right behind us).
 2. **The job log rotates at size** (`DIGUP_SERVER_JOB_LOG_SIZE`, default 1 MiB):
-   rotations chain `jobs.jsonl.1 … .N` (higher number = older), the current log is
-   newest. Replay reads **all** rotations oldest-first, so the job history outlives any
-   rotation — a long-lived server never grows one unbounded file, and never loses the
-   `interrupted` rule along the way.
+   a rotation is **one rename** to a timestamp-suffixed file (`jobs.jsonl.1730…`,
+   `time.time_ns()`; a same-nanosecond collision bumps an `x` on the suffix and the
+   order still holds), and the live log — the one with no suffix — is newest by
+   construction. Replay reads **all** rotations oldest-first, a sort.
+   The first shape chained `.1 … .N` (higher = older) and shifted every file by one on
+   each rotation: O(rotations) renames per rotation, and a kill in the middle of the
+   shift left the chain out of order — a `running` line read *after* its own `done`
+   would report a finished job as *interrupted*. A crash can no longer scramble the
+   history, and the history outlives any rotation either way: a long-lived server
+   never grows one unbounded file, and never loses the `interrupted` rule along the way.
 3. **The backfill knob is env-driven** (`DIGUP_SERVER_BACKFILL`, default on — the
    engine's `--backfill`: sync, then keep embedding the long tail of long PDFs and
    documents in the same job). `0` = sync only. Pinned by a test that reads the knobs
@@ -39,7 +45,7 @@ SQLite kept the index whole) and finishes it** → `done` with `searchable 6, pe
 and `files_done` at least the partial's. The Stage-5 promise ("a cut-short job is
 re-synced by the engine — the server just says so") is now tested at the walk level.
 
-## Tests (`server/tests/test_jobs.py`, +3 → 8 job tests)
+## Tests (`server/tests/test_jobs.py`, 13 job tests — 8 at Stage 8, +5 in the review round)
 
 * `test_a_stop_mid_job_is_interrupted_and_the_next_job_resumes` — the full cycle above,
   real embedding, real kill-window, real resume.
@@ -48,6 +54,30 @@ re-synced by the engine — the server just says so") is now tested at the walk 
   `done` — nothing ghosted, nothing lost.
 * `test_the_knobs_are_read_from_the_environment` — backfill/rotation-size/prewarm env
   reach the runner; `--backfill` appears in the engine argv only when enabled.
+* `test_shutdown_mid_job_finishes_and_marks_the_job_interrupted` — the review round's
+  repro of a **self-deadlock**: `shutdown()` called `_mark()` from inside
+  `with self._lock:` and `_mark` takes that same plain (non-reentrant) Lock, so a
+  `docker stop` whose job outlived the worker's join grace hung the lifespan forever
+  (job never logged *interrupted*, `service.quit()` never ran, and every job poll kept
+  consuming a threadpool thread). The fix reads `_active` under the lock and marks it
+  outside. A fake `_run_one` sleeping 25 s (one long file's embed, past the 20 s join
+  grace) proves `shutdown()` returns in seconds with the job *interrupted* and
+  `why "server stopped"`.
+* `test_a_crashing_job_runner_leaves_indexing_alive` — the runner thread survived a
+  `_run_one` that raised: the refresh after a job answers `TimeoutError` on a 60 s
+  prewarm, and `TimeoutError` is **not** a `RuntimeError`, so the old
+  `except RuntimeError` let it kill the worker silently: `_active` stayed set, every
+  later `POST /index` answered 409 naming a job that could never run, and recovery was
+  a container restart. Now: mark the job interrupted with the reason, clear `_active`,
+  keep the thread — the next job runs on the real path.
+* `test_a_prewarm_timeout_after_done_keeps_the_job_done` — a writer that finished is
+  *done*; a timed-out searcher refresh behind it is a note on the done job
+  (`"searcher refresh deferred"`), never a state that claims more than happened.
+* `test_replay_ignores_lines_that_are_not_job_records` — a hand-merged log with valid
+  JSON that is not a record (`5`, `null`, `{"state":"running"}` with no id) must not
+  brick the boot: the old replay did `record["id"]` on any parsed line, `__init__`
+  propagated, and the app refused to start. Junk lines and torn tails are skipped;
+  the one real `running` record still recovers as *interrupted*.
 
 ## Proof
 
@@ -91,7 +121,7 @@ idle stop at the end: 2 s · exit 143 · shutdown-complete   (the CI contract pa
 
 `8 + 7 = 15` is the resume story in numbers: every file embedded before the kill stayed
 embedded, and the next job did exactly the remaining work. The job log on the config
-volume kept the whole history across all of it (rotation chain `.1…` at 1 MiB; the suite
+volume kept the whole history across all of it (timestamp-suffixed rotations at 1 MiB; the suite
 proves rotation with history at 900 bytes).
 
 ## What this proves / does not

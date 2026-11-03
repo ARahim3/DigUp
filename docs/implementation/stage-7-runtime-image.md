@@ -8,8 +8,11 @@ built natively).
 
 ## The `server-runtime` stage (`server/docker/Dockerfile`)
 
-Base `python:3.12-slim` (Debian 12, glibc 2.37 ≥ the payload's 2.35 — forward, never
-back), carrying only: the engine payload (`/opt/digup`: `digup`, llama.cpp `.so`s,
+Base `python:3.12-slim` — measured in the built image: Debian 13 (trixie), glibc
+2.41-12+deb13u4. The payload is compiled on Ubuntu 22.04 (glibc 2.35), so the image runs
+**newer** glibc than the payload was built against: forward, never back — a binary linked
+against 2.35 starts on 2.41, the reverse is what fails. The image carries only:
+the engine payload (`/opt/digup`: `digup`, llama.cpp `.so`s,
 `ffmpeg`/`ffprobe`, `libpdfium`, rpath `$ORIGIN` — verified by running `digup --help`
 during the build, §3's acceptance rule), the runtime libs (`libcurl4 libgomp1
 tzdata ca-certificates`), `tini`, `uv` + the `uv sync --frozen --no-dev` environment
@@ -26,7 +29,9 @@ PID 1  tini            → forwards SIGTERM to its child; reaps
 ```
 
 * **Non-root**: `uid 990 digup`, the same engine user as the engine-runtime stage.
-  `/data/{index,models,config,locks}` exist owned by it; bind mounts supply the data.
+  `/data/{index,models,config}` exist owned by it; bind mounts supply the data. There is
+  no `locks/` folder: the single-writer lock is a file beside the index
+  (`<index>/.digup-server.writer.lock`, `engine/index.py`).
 * **SIGTERM handling** (the §3 rule "the API process owns its child processes"):
   `docker stop` → tini forwards SIGTERM → uvicorn lifespan shutdown →
   `runner.shutdown()` (a running job is logged **interrupted**, never success) →
@@ -52,10 +57,21 @@ PID 1  tini            → forwards SIGTERM to its child; reaps
   missing") passes the engine's own `--prune` through the job (`IndexService`); plain
   syncs never delete rows. Pinned by a test that grows the scratch index, deletes
   the file, shows the ghost row survives a plain sync, and retires under prune.
-* **HEALTHCHECK** asks the API's own `/health` (`urllib`, no curl in the image): a
-  healthy container is one whose engine answers.
-* Port published `127.0.0.1:8787:8787` in Compose — localhost-only (§7). Inside, the
-  API binds `0.0.0.0` (container boundary = the isolation).
+* **HEALTHCHECK** asks the API's own `/health` through the image's
+  `server/docker/healthcheck.py` (`urllib`, no curl in the image): a healthy container is
+  one whose engine answers. **503 counts as alive** — `/health` answers 503 while the
+  searcher is respawning (the engine's own refusal), which is the server truthfully
+  saying "not right now", not a sick container; Docker must not restart a live server
+  over a respawn. The script catches `HTTPError` for exactly that (urlopen raises on
+  503); every other answer — 4xx/5xx, refused connection, timeout — is exit 1. The
+  build proves the script by asserting it exits non-zero with nothing listening, and
+  CI proves it by polling the live server with it (`docker exec … healthcheck.py`).
+* Port published `127.0.0.1:8787:8787` in Compose — localhost-only (§7);
+  `DIGUP_PUBLISH_PORT` moves the host side when 8787 is taken. `restart: unless-stopped`
+  brings the stack back with the daemon (a reboot, an upgrade) and stays down after a
+  manual `docker stop`. Inside, the API binds `0.0.0.0` (container boundary = the
+  isolation); the container's own binding is the CMD's `--host/--port`, not an env —
+  `DIGUP_SERVER_HOST/PORT` feed `python -m digup_server.api`, the bare-metal entry.
 * Config: the `server-runtime` ENV defaults are README §5's layout (`/data/index`,
   `/media/photos`, `/data/models`, `/data/config`); media roots and host folders come
   from Compose env, all documented in `server/.env.example`.

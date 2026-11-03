@@ -7,6 +7,8 @@ Companion documents:
 
 - [reconnaissance.md](reconnaissance.md) — what the existing repository is, verified by reading
   it and probing the environment. Start there.
+- [review-round.md](review-round.md) — the adversarial review before the PR: every finding that
+  was real, its fix, the test that pins it, and what was deliberately left alone with its reason.
 - `api.md`, `deployment.md`, `operations.md` — written as those parts are implemented.
 
 ---
@@ -124,24 +126,36 @@ Everything mutable lives on named volumes/bind mounts outside the image:
 ```
 /data/            index/            index.sqlite, code.sqlite, previews/, costs.json, worker logs
                   models/           embeddinggemma-2-Q8_0.gguf, mmproj-embeddinggemma-2-Q8_0.gguf
-                  config/           server settings, job state
-                  locks/            index lock file
+                  config/           server settings, job state (jobs.jsonl)
 /media/photos/    read-only mount of the original media
 ```
+
+- The single-writer lock is a file **beside the index** (`<index>/.digup-server.writer.lock`,
+  `server/digup_server/engine/index.py`), not a separate folder: it travels with the volume
+  that holds the index it protects, and a moved index folder carries its lock with it.
 
 - `--index /data/index` is always explicit. `/data/models` is published as `$DIGUP_MODELS`.
 - Media roots are mounted read-only, validated against an allowlist, and are never chosen by
   the browser. Original files are never modified.
 - Container recreation never destroys the index, model, config, or logs.
 - Indexing never starts automatically at container start.
-- One indexing job at a time, protected by an OS-level file lock in `/data/locks`, plus the
-  engine's SQLite locking. An interrupted job is recovered as *interrupted*, never as success.
+- One indexing job at a time, protected by an OS-level `flock` beside the index file (above),
+  plus the engine's SQLite locking. An interrupted job is recovered as *interrupted*, never
+  as success.
 
 ## 6. API surface (`/api/v1`)
 
 `GET /health`, `GET /status`, `POST /search`, `POST /index`, `GET /jobs/{id}`,
-`GET /media/{id}/preview`, `GET /media/{id}/open`, `GET /settings`, `PATCH /settings`.
-Pydantic models, OpenAPI documentation, versioned from the start.
+`POST /embed_ahead`, `GET /media/{id}/preview`, `GET /media/{id}/text`,
+`GET /media/{id}/file`. Pydantic models, OpenAPI documentation, versioned from the start.
+
+The plan's `GET /media/{id}/open` shipped as **`/file`** (the UI's Open + Download), and
+the plan's `GET /settings` + `PATCH /settings` shipped as **no settings endpoints**: the
+settings the UI offers (appearance, limit, kinds, code mode, prune) are browser-side
+state and request parameters, and the server-side knobs (encoder idle, prewarm, backfill,
+job-log size, roots) are container configuration in the environment — `server/.env.example`
+— not a remote-writeable surface. A single-user localhost server writes its own config
+through Compose, not through HTTP (§7: no settings endpoints to protect).
 
 - Search passes DigUp's ranking through untouched; media filters map onto DigUp's kinds
   (`image`/`screenshot` → photo, `video`, `audio`, `pdf`, `doc`).
@@ -149,12 +163,22 @@ Pydantic models, OpenAPI documentation, versioned from the start.
 - Errors are reported as the engine reported them.
 - Media endpoints accept only ids from the index, never paths from the client; they resolve
   inside configured roots and refuse symlink traversal.
+  As shipped: `/file`'s type, size and span come from **one open** (`os.fstat` +
+  `stat.S_ISREG`) so a replacement mid-request can't make the headers lie about the bytes;
+  root confinement is `Path.is_relative_to`, not a prefix string (which matched
+  `/media/photos_evil` as a child of `/media/photos`); ranged spans are capped
+  (8 MiB) and **streamed** in chunks — `Range: bytes=0-` is what every media element
+  sends first, and an uncapped open range buffered the whole file; every `/file` answer
+  carries `x-content-type-options: nosniff` as the belt behind magic-bytes typing.
 
 ## 7. Security and privacy
 
 - binds `127.0.0.1:8787` by default; LAN exposure only after authentication is implemented
   and enabled;
-- no plaintext passwords, settings endpoints protected, CORS restricted to the app origin;
+- no plaintext passwords and no settings endpoints to protect (§6): the server's own
+  configuration is container configuration, and there are no uploads, no remote writes to
+  settings, and no auth state to leak. CORS is same-origin by construction — the UI is
+  served by the API, so no cross-origin allowance is granted at all;
 - no shell interpolation of user input, no arbitrary path or URL acceptance, no cloud embedding
   APIs, no uploads of media anywhere;
 - filenames and metadata are escaped in the UI;

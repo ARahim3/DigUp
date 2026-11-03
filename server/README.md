@@ -35,10 +35,20 @@ docker run --rm --platform linux/arm64 \
   -v "$HOME/Projects/digup-data/models:/models:ro" \
   -v "$HOME/Projects/digup-data/index-suite:/index" \
   digup-server-test:local
+# Add `-rs` after the image name (with an explicit command, `… digup-server-test:local
+# /srv/server/.venv/bin/pytest -rs`) to see WHY anything skips.
 ```
 
 The suite skips itself when `DIGUP_SERVER_CORPUS` / `DIGUP_SERVER_MODELS` / `digup` are
-absent — there is no mock path. `pytest -m slow` adds the model timing (`speed --model`).
+absent — there is no mock path. `-m slow` runs **only** the slow marker's test (the
+`speed --model` timing, several minutes) — plain `uv run pytest` already includes it;
+CI deselects it (`-m "not slow"`) to keep the run under its ceiling.
+
+The test image's ENTRYPOINT is `tini` for a real reason: the suite's app spawns
+`search-service` as a child of the test process, and ParentWatch ends a helper whose parent
+is PID 1 (it means "the app is gone"). Run the image bare and pytest IS PID 1 — every helper
+dies at once, `exit 0`, no stderr (measured, this project's own suite did it). tini as PID 1
+makes the test process a live parent, the production shape, so no `--init` flag is needed.
 
 An index folder belongs to **one root layout** (rows carry the absolute paths they were
 crawled from): the suite/dev roots (`/corpus`) get `index-suite`, the Compose roots
@@ -87,11 +97,18 @@ Stage 9 for the box that has the card — README §11):
 
 ```sh
 cd deploy
+# A fresh host needs the bind folders to exist AND to be writable by uid 990 (the image's
+# user). Docker would create them as root on the first up, and the server then crashes on
+# a locked index (EACCES) — measured. On macOS Docker Desktop maps this transparently;
+# on a real Linux host, do it plainly:
+mkdir -p "$HOME/Projects/digup-data/"{index,models,config} && sudo chown -R 990:990 "$HOME/Projects/digup-data"
 DIGUP_INDEX_DIR="$HOME/Projects/digup-data/index" \
 DIGUP_MODELS_DIR="$HOME/Projects/digup-data/models" \
 DIGUP_MEDIA_DIR="$HOME/Projects/digup-data/media/photos" \
 docker compose up -d --build
 # → open http://127.0.0.1:8787/  (UI + /api/v1), index with "Index now"
+# The first searches wait on the startup prewarm (~20–30 s of model load); /health answers
+# 503 until the searcher is up — the container is healthy, the API is honest.
 ```
 
 The runtime image is `server-runtime`: engine payload + API + UI, `tini` as PID 1 (the
@@ -106,7 +123,11 @@ boot — never success. SQLite stays whole; the next job resumes the walk. CI as
 idle contract (exit ≠ 137 + shutdown-complete). Index/model/config/job-log live in
 bind-mounted volumes — container
 recreation never destroys them (§5). On Linux hosts, `chown -R 990` the bind folders so
-the image's user can write them. The Compose project has an explicit `name:` (`digup-server`)
+the image's user can write them. `restart: unless-stopped` brings the stack back with the
+daemon (a reboot, an upgrade) and stays down after a manual `docker stop`. The published
+port is `127.0.0.1:8787:8787` — localhost-only — and `DIGUP_PUBLISH_PORT=…` moves the host
+side when 8787 is taken (the container keeps binding 8787). The Compose project has an
+explicit `name:` (`digup-server`)
 so this stack never entangles with other stacks living in the same folder name.
 
 One engine semantic the compose proof pinned, worth knowing: **index rows carry the
@@ -161,6 +182,13 @@ material for live runs: mount it (`DIGUP_MEDIA_DIR`, README's corpus2 note) and 
 real gallery to search, preview, and open. See
 [tests/corpus2/README.md](tests/corpus2/README.md).
 
+Expect **fewer strong hits per query than a real library**: 61 files is a small gallery, and
+the engine publishes a hit only when it clears its own z-gate of 2.0 sigma over the indexed
+set (`Searcher.swift`'s `zGate`, identical on every platform: Mac app, shell, server). On a
+personal library of thousands of files the same engine answers many more ≥2σ matches — the
+server adds no cap of its own and the UI shows the engine's counts verbatim, so a 1-hit
+answer on corpus2 is the corpus' size, not a filter, a limit, or a bug.
+
 ## Merging and tracking upstream
 
 This directory is built to be a **clean additive PR** to [ARahim3/DigUp](https://github.com/ARahim3/DigUp):
@@ -179,8 +207,11 @@ This directory is built to be a **clean additive PR** to [ARahim3/DigUp](https:/
 * **The contract suite is the tripwire.** CI (`.github/workflows/server.yml`) runs on
   PRs touching `Sources/**`, `Package.swift`, `scripts/**`, and `server/**`, so a
   protocol rename, a field drop, or a CLI change shows up as failed tests quoting the
-  engine's own output — a loud CI red, not a silent runtime drift. 48 tests pin every
-  reply field, event, and exit path the server uses.
+  engine's own output — a loud CI red, not a silent runtime drift. 75 tests (76 collected,
+  CI deselects the slow model-timing test) pin every reply field, event, and exit path the
+  server uses — and **any SKIPPED line is red in CI**, because a suite that skips itself
+  (missing corpus, models, or clip) is green by construction, which is the opposite of a
+  tripwire.
 * **The pins to bump with upstream** (the complete list): `ARG SWIFT_VERSION` in
   `server/docker/Dockerfile` (Swift toolchain), and the model sha/revision in
   `server.yml`'s download step — the *drift-guard* step compares those against
@@ -195,14 +226,22 @@ This directory is built to be a **clean additive PR** to [ARahim3/DigUp](https:/
 ## Status
 
 [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) — what runs, what's proven, what's open.
-Stages 3–8 and 10 are **done: 57 tests green** in the container against the shipped engine
-payload (22 contract + 13 API + 6 index-job + 13 UI/media + 3 persistence), and the shipping
+Stages 3–8, 10, and the Stage-11 review round are **done: 75 tests green** (76 collected,
+1 slow deselected, **zero skipped**, 235.15 s on the final tree — reproduced 228.12 s two
+runs earlier) in the container against the shipped engine
+payload (17 search-contract + 19 API + 6 index-contract + 13 job/persistence + 17 UI/media
++ 4 CLI), and the shipping
 shape runs live: `docker compose up -d` in `deploy/` boots `digup-server:local` (engine + API
-+ UI, tini, non-root, healthy) on `http://127.0.0.1:8787/` with the desktop panel's behavior
++ UI, tini, non-root, healthy via its own `healthcheck.py`) on `http://127.0.0.1:8787/` with the desktop panel's behavior
 in the web UI (keyword-first typing, filters, code mode, preview pane, Open at the video's
 moment, Estimate, System/Light/Dark — the dark palette measured for WCAG contrast and the
-whole flow driven through a real browser, Playwright, in both themes), prewarm, index jobs,
+whole flow driven through a real browser, Playwright, in both themes — Space, Esc, focus,
+aria, the big look, the job line, the estimate, all verified on the live stack), prewarm, index jobs,
 prune, `stop_grace_period: 90s`,
 and a mid-job stop measured both ways — graceful *interrupted* with partial counts
-(8 + 7 = 15 resumed exactly), and SIGKILL recovered by replay to resume. The GPU override
+(8 + 7 = 15 resumed exactly), and SIGKILL recovered by replay to resume. The parity probe —
+the app's own adapter (`SearchService`) on a snapshot of the live index answering the same
+queries with the same hits, strong counts and z-scores as the HTTP API — is in
+[docs/implementation/stage-11-review-round.md](../docs/implementation/stage-11-review-round.md).
+The GPU override
 (Stage 9, on the prod box) comes next.

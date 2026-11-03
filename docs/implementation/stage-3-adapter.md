@@ -64,7 +64,8 @@ and says why in a comment).
 ## Test harness
 
 - **Dockerfile stage `server-test`** = `engine-payload` (the shipped binaries) +
-  `python:3.12-slim` (Debian 12, glibc forward of the payload's 2.35) + `uv sync --frozen`.
+  `python:3.12-slim` (measured: Debian 13 trixie, glibc 2.41 — newer than the payload's
+  build glibc 2.35, forward never back) + `uv sync --frozen`.
   The suite proves the *shipped payload*, so a green suite is a statement about the runtime
   image, not about a dev box. Image: **465 MB** (arm64).
 - `uv` project (`pyproject.toml` + `uv.lock`, repo convention from `worker/`); the adapter

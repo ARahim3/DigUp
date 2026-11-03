@@ -31,6 +31,13 @@ The suite does **not** run against corpus2: its assertions are the frozen corpus
 corpus is for live proofs, UI runs, and the manual sweep of every endpoint — a bigger,
 varied, licensed corpus with the same discipline (pinned bytes, honest source notes).
 
+**Expect fewer strong hits per query than a real library.** 61 files is a small gallery,
+and the engine publishes a hit only above its own z-gate of 2.0 sigma over the indexed
+set (`zGate` in `Sources/DigUpKit/Searcher.swift`, identical on Mac, shell and server).
+On a personal library of thousands of files the same engine answers many more matches
+above 2σ; the server adds no cap of its own, and the UI shows the engine's counts
+verbatim. A 1-hit answer here is the size of the corpus, not a filter, a limit, or a bug.
+
 ## Provenance and licenses
 
 Every file is a Wikimedia Commons file, fetched through

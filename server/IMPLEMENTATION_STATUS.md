@@ -2,6 +2,75 @@
 
 One document, kept current (docs/implementation/README.md §10). Newest first.
 
+## 2026-11-03 — Stage 11: the review round — parity proven, suite 75, CI that can't pass by luck
+
+Adversarial review of the whole PR (backend; UI + media; build/CI/docs), every real finding
+fixed **and pinned by a test** — the finding→fix→test table is
+[docs/implementation/review-round.md](../docs/implementation/review-round.md), the stage
+record with all measurements is
+[stage-11-review-round.md](../docs/implementation/stage-11-review-round.md).
+
+* **Suite: 75 passed, 1 deselected, 0 SKIPPED in 235.15 s (EXIT=0)** on the final committed
+  tree (`suite24.log`) — reproduced 75/1/0 in 228.12 s (`suite23.log`). Buckets 17
+  search-contract + 19 API + 6 index-contract + 13 job + 17 UI/media + 4 CLI = 76 collected,
+  CI deselects the slow model timing.
+* **The harness fact that changed the test image:** plain `docker run` makes pytest **PID 1**,
+  and ParentWatch ends every engine helper whose parent is PID 1 (`ParentWatch.swift:19`) —
+  measured `7 failed, 9 passed, 59 errors`, all helpers dead `exit 0, no stderr`. The test
+  image now carries `tini` as ENTRYPOINT, so the suite is PID-1-safe by construction and CI
+  needs no `--init`.
+* **Parity (the user's "100% like the app" question):** the app's own adapter (`SearchService`)
+  on a `sqlite3 .backup` snapshot of the live corpus2 index answers the same queries as the
+  live HTTP API with **identical hits/strong/z** — water 1 (2.09), harbor 2 (3.87/2.35),
+  "a sunset over water" 3 (3.51/3.37/2.28), wakeboarding 3 (4.15/4.06/3.09), fractal 1
+  (3.59) — plus the keyword-first path. Logs: `stage11-parity-direct.log`,
+  `parity_backup.log`. Probe lesson kept: a read-only mount of a **hot WAL index** (and a
+  plain `cp` of it) is not a snapshot — it answered 0 hits, a probe artifact, not a server bug.
+* **"Fewer responses" quantified:** `zGate = 2.0` (`Searcher.swift:116`) and the engine's
+  default limit 40 (`SearchService.swift:130`) are identical on Mac/shell/server; corpus2 is
+  61 files, so 1–3 ≥2σ hits per query is the corpus's size, not a cap (documented in
+  `server/README.md` + `server/tests/corpus2/README.md`).
+* **Live proof battery (`stage11-proof.sh`): PASSED, 11 gates, 0 fails** — compose config
+  valid; container healthy via the image's own `healthcheck.py` (503 = alive);
+  `restart: unless-stopped`; published `{127.0.0.1 8787}`; healthcheck proven both
+  directions (0 on live, non-zero with nothing listening); 12 health polls in 1 s (the
+  StatusCache TTL, no subprocess per poll); index job `done · 61/61 · vectors 65 · 0.1 s`;
+  searches with the engine's z verbatim (3-strong, to z 4.46); `nosniff` on 200 + 206;
+  `Range: bytes=0-` → `206 bytes 0-124176/124177` (8 MiB cap, streamed); 416; 404;
+  estimate `≈263.9 s · 61 files · calibrated true`; UI markers pinned present in served bytes.
+  Log: `stage11-proof.log`.
+* **UI verified in a live browser (Playwright, no vision model):** Space on the focused gear
+  opens Settings (aria `true`, focus into the panel), Esc closes (aria `false`, focus back to
+  the gear), Space on a focused row opens the big look with media, Space on a focused link is
+  native activation; 3 hits + preview fields verbatim; video `…/file#t=12.5` ("▶ at 0:12",
+  z 3.25); job line `done · searchable 61/61 · vectors 65 · 0.1 s`; estimate renders; dark
+  theme applies + persists; console clean (favicon silenced with a `data:` icon — no
+  external URL, the pin test stays green). Screenshot: `.playwright-mcp/stage11-dark-results.png`.
+* **Backend fixes (pinned by tests):** `shutdown()` self-deadlock; runner thread surviving a
+  `TimeoutError`; child reaped on a failed handshake; `ok:false` without `error` is a
+  refusal; render beside the read loop (2 slots, lock-free); `Range` capped + streamed +
+  `fstat` + `is_relative_to` + `nosniff`; `TimeoutExpired` → quoted 502; job-log rotation is
+  one rename (timestamp suffix) and replay skips non-records; `HitCache` is a true LRU;
+  `StatusCache` TTL; `SearchReply` `extra="allow"`.
+* **UI fixes (browser-proven):** Space keeps native activation for buttons/links (the
+  reviewer's blocker); a failed job poll answers honestly and stops (one loop per click);
+  FastAPI list-`detail` renders readably; one `closeSettings()` syncs aria + focus; estimate
+  generation token; roving tabindex + aria; chip contrast AA (4.54:1); `.badge.warn` cascade;
+  audio control selector; mobile footer wrap; `maxlength=512`.
+* **CI/images:** 180-min ceiling; vendor built host-side via the repo-pinned `actions/cache`
+  and seeded through `.ci-vendor/`; drift guard FIRST (revision + names + sha256s);
+  zero-skip gate + clip-exists gate; boot step polls with the image's own `healthcheck.py`;
+  `proof.sh` counts failures and gates the eval ALL row (R@1 ≥ 0.60, R@5 ≥ 0.85). Measured
+  honesty: base Debian 13 trixie, glibc 2.41-12+deb13u4 (newer than the payload's 2.35 —
+  forward, never back); no `/data/locks`; inert host/port ENVs gone.
+* **Commit shape (local, on `feat/server` — origin is upstream, nothing pushed):**
+  `6ac98a3` backend+tests · `431059c` UI · `5830e8d` images/CI · docs. Additive invariant
+  held: `git diff --name-status main..HEAD` = 61 A + 1 M (`.gitignore`); `Sources/`,
+  `shell/`, `website/`, root README, upstream workflows untouched.
+* **Open (honest):** CI's first green run is pending (no push to upstream per the git-safety
+  rule — the workflow is written and YAML-validated, 17 steps); Stage 9 (GPU override) and
+  Stage 10 (PhotoPrism comparison) remain.
+
 ## 2026-11-02 — UI reorganized around the search (the user's layout brief), in the browser
 
 * **The page is a search:** centered search box with the hit-limit select at its right
