@@ -165,3 +165,118 @@ def test_startup_prewarms_the_searcher(client):
     assert status["vectors"] > 0                 # vectors opened at startup, not lazily
     reply = client.post("/api/v1/search", json={"q": "wakeboarding", "limit": 3}).json()
     assert reply["meaning"] is True and reply["strong"] >= 3
+
+
+# ── review-round units (this file's fixtures stay real: app + engine, no mocks) ────────
+
+
+def test_open_and_huge_ranges_are_capped_at_the_served_span():
+    """`bytes=0-` is what every browser media element sends first. Uncapped, it read
+    the whole file into RAM (a 20 GB clip asked for a 20 GB buffer). Open ranges,
+    huge explicit ranges and huge suffix ranges all cap at MAX_RANGE_SPAN; the
+    200 (no-range) path is untouched — `save as` still gets the whole file."""
+    from digup_server.api import parse_range, MAX_RANGE_SPAN
+    big, huge = (1 << 30), (2 << 30)
+    assert parse_range("bytes=0-", huge) == (0, MAX_RANGE_SPAN - 1)
+    assert parse_range("bytes=-5000000000", big) == (big - MAX_RANGE_SPAN, big - 1)
+    assert parse_range("bytes=1000-9000000000", huge) == (1000, 1000 + MAX_RANGE_SPAN - 1)
+    assert parse_range("bytes=0-99", 500) == (0, 99)              # normal spans untouched
+    assert parse_range("bytes=-40", 500) == (460, 499)
+
+
+def test_hit_cache_is_a_true_lru_get_refreshes():
+    """The docstring promised LRU; eviction was insertion-order. The UI re-searches
+    per keystroke-pause (up to 40 handles per search): after ~26 searches the handles
+    of the rows on screen were evicted, and their thumbnails/preview/file 404'd with
+    no recovery path. `get()` must move_to_end."""
+    from digup_server.api import HitCache
+    cache = HitCache(capacity=3)
+    a = cache.put("/a.jpg", "image", 1, None, False)
+    b = cache.put("/b.jpg", "image", 2, None, False)
+    c = cache.put("/c.jpg", "image", 3, None, False)
+    assert cache.get(a) is not None                              # refresh a
+    d = cache.put("/d.jpg", "image", 4, None, False)              # evicts b, not a
+    assert cache.get(a) is not None and cache.get(c) is not None
+    assert cache.get(d) is not None
+    assert cache.get(b) is None                                  # the LRU victim: b
+
+
+def test_search_reply_publishes_fields_this_model_has_never_seen():
+    """`extra="allow"`: an engine field this model has never seen rides through to
+    the client, not dropped at the Pydantic boundary (hits already ride raw; the
+    top level must answer the engine's growth the same way)."""
+    from digup_server.api import SearchReply
+    reply = SearchReply(hits=[], strong=0, meaning=True, ms={}, fresh_engine_field={"a": 1})
+    assert reply.model_dump()["fresh_engine_field"] == {"a": 1}
+
+
+def test_a_slow_estimate_answers_busy_never_parallel(client, monkeypatch):
+    """`estimate` walks the whole tree (120 s timeout) as a sync endpoint: a second
+    UI tab, a user retry, a retry during a job all stacked full-tree crawls with no
+    mutual exclusion. Now the second click is a 409, the engine's one-crawl rule."""
+    import threading
+    import time
+    import digup_server.api as api_mod
+
+    def crawling(config, **kwargs):
+        time.sleep(3.0)                                          # a slow crawl, in flight
+        return [{"path": str(config.roots[0]), "files": 15}]
+
+    monkeypatch.setattr(api_mod, "estimate_lines", crawling)
+    box = []
+    first = threading.Thread(target=lambda: box.append(
+        client.post("/api/v1/estimate", json={})))
+    first.start()
+    time.sleep(0.3)                                              # crawl #1 running
+    second = client.post("/api/v1/estimate", json={})
+    assert second.status_code == 409
+    assert "already running" in second.json()["detail"]
+    first.join(30)
+    assert box[0].status_code == 200                             # crawl #1 finished honest
+    third = client.post("/api/v1/estimate", json={})
+    assert third.status_code == 200                              # the lock released
+
+
+def test_a_cli_timeout_surfaces_as_a_quoted_502_not_a_500(client, monkeypatch):
+    """`subprocess.TimeoutExpired` is a SubprocessError, not a TimeoutError — no
+    handler covered it, so a `digup status` stalling behind the writer's WAL, or an
+    estimate crossing its 120 s, died as a bare 500 traceback. This file's own rule
+    (api.py:6): quote the engine. The mapping lives in cli.run, where it covers
+    every one-shot call at once."""
+    import subprocess
+    import digup_server.engine.cli as cli_mod
+
+    def timed_out(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, 120)
+
+    monkeypatch.setattr(cli_mod.subprocess, "run", timed_out)
+    reply = client.post("/api/v1/estimate", json={})
+    assert reply.status_code == 502
+    assert "timed out" in reply.json()["detail"]
+
+
+def test_the_cli_identity_is_served_from_a_short_cache():
+    """The UI polls /status every 15 s and the container HEALTHCHECK hits /health
+    every 30 s — each one used to spawn a `digup status` doing real SQLite counting.
+    The identity fields move slowly, so they ride a TTL cache: a poll costs an
+    argument, not a subprocess. A TTL of 0 is the dev escape hatch (every poll
+    re-reads, e.g. while watching a job's counts land)."""
+    from digup_server.api import StatusCache
+
+    calls = []
+
+    def fetch(config):
+        calls.append(config)
+        return {"engine": {"fingerprints": "embeddinggemma-2@2188ac1d"}}
+
+    cache = StatusCache(fetch, ttl_s=60.0)
+    first = cache.get("cfg")
+    second = cache.get("cfg")
+    assert len(calls) == 1                      # the second poll: the cache, not a subprocess
+    assert first is second                      # the same identity dict, unchanged
+    assert first["engine"]["fingerprints"] == "embeddinggemma-2@2188ac1d"
+
+    live = StatusCache(fetch, ttl_s=0.0)        # TTL 0: every poll re-reads
+    live.get("cfg")
+    live.get("cfg")
+    assert len(calls) == 3                      # 1 + 2: nothing served stale

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import threading
 
+from .cli import CLIError
 from .config import EngineConfig
 from .protocol import DEFAULT_REQUEST_TIMEOUT, EngineExited, EngineRefused, JsonLinesProcess
 
@@ -29,6 +30,7 @@ class SearchService:
         self._timeout = request_timeout
         self._proc: JsonLinesProcess | None = None
         self._lock = threading.RLock()      # one query in flight; restarts are exclusive
+        self._render_slots = threading.Semaphore(2)   # the engine's own render concurrency
         self._folders_fields: dict | None = None   # last `folders` change, replayed after respawn
 
     # ── lifecycle ────────────────────────────────────────────────────────────────────────
@@ -75,7 +77,27 @@ class SearchService:
         fields = {"op": "render", "path": path, "kind": kind, "pixels": pixels}
         if loc is not None:
             fields["loc"] = loc
-        return self._call(fields, timeout=120.0)   # a render is engine work, not a lookup
+        with self._render_slots:
+            return self._render(fields)
+
+    def _render(self, fields: dict) -> dict:
+        """`render` is the engine's own concurrent work: it runs beside the read loop on two
+        slots and answers out-of-order, routed by `id` (SearchService.swift:52-56, 99-113 —
+        "typing never waits on one"). Taking the serialize-lock for the engine's 120 s of
+        ffmpeg work would undo that design, so this path holds the lock only for the
+        spawn check. The protocol routes replies by id, so out-of-order is safe here."""
+        timeout = 120.0
+        with self._lock:
+            if self._proc is None:
+                self._spawn_locked()
+            proc = self._proc
+        try:
+            return self._checked(proc.request(fields, timeout=timeout), fields)
+        except EngineExited:
+            with self._lock:
+                self._spawn_locked()
+                proc = self._proc
+            return self._checked(proc.request(fields, timeout=timeout), fields)
 
     def reload(self) -> dict:
         """After indexing ran: reopen the index. The engine answers `{ok, vectors, code_vectors}`."""
@@ -126,15 +148,26 @@ class SearchService:
     @staticmethod
     def _checked(reply: dict, fields: dict) -> dict:
         """A reply with `ok:false` is the engine refusing (its words, not ours) — raised,
-        never returned, so no endpoint reads `hits`/`files` out of an answer that has none."""
-        if reply.get("ok") is False and "error" in reply:
-            raise EngineRefused(str(fields.get("op", "")), str(reply["error"]))
+        never returned, so no endpoint reads `hits`/`files` out of an answer that has none.
+        `ok:false` ALONE is enough: a refusal shaped without `error` reaches the API's
+        `stripped["hits"]` otherwise — the KeyError this guard exists to prevent."""
+        if reply.get("ok") is False:
+            raise EngineRefused(str(fields.get("op", "")), str(reply.get("error", "no reason given")))
         return reply
 
     def _spawn_locked(self) -> dict:
         proc = JsonLinesProcess(self._config.search_argv(), name="search-service",
                                 env=self._config.env())
-        ready = proc.start()
+        try:
+            ready = proc.start()
+        except OSError as exc:       # binary missing/not executable: the 502-shaped answer
+            proc.close()
+            raise CLIError(f"cannot start the engine helper: {exc}") from exc
+        except BaseException:
+            # A handshake failure must not leak the child: its pipes and reader threads
+            # would outlive every reference to it until its own idle-exit (2×encoder-idle).
+            proc.close()
+            raise
         if self._proc is not None and not self._proc.alive:
             self._proc.close()   # join the reaped straggler before replacing it
         self._proc = proc

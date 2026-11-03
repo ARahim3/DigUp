@@ -28,7 +28,13 @@ class CLIError(RuntimeError):
 
 def run(argv: list[str], env: dict[str, str], *, timeout: float = 300.0) -> str:
     """One `digup` process to completion; stdout returned, engine errors raised verbatim."""
-    proc = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=timeout)
+    try:
+        proc = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        # `TimeoutExpired` is a SubprocessError, not a TimeoutError: unmapped it is a bare
+        # 500 traceback — this file's own rule (api.py:6) says quote the engine instead.
+        raise CLIError(f"digup {argv[1] if len(argv) > 1 else '?'} timed out "
+                       f"after {timeout:g} s") from exc
     if proc.returncode != 0:
         raise CLIError((proc.stderr or proc.stdout).strip() or f"digup exited {proc.returncode}")
     return proc.stdout

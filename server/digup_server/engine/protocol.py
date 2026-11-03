@@ -22,6 +22,7 @@ because the engine reports encoder failures there.
 from __future__ import annotations
 
 import collections
+import contextlib
 import json
 import subprocess
 import threading
@@ -64,8 +65,8 @@ class JsonLinesProcess:
         self._ids = iter(range(1, 1 << 30))
         self._lock = threading.Lock()
         self._cv = threading.Condition()
-        self._events: collections.deque = collections.deque()
-        self._replies: dict = {}
+        self._events: collections.deque = collections.deque(maxlen=256)   # bounded: a long-lived
+        self._replies: dict = {}      # searcher never drains events; timed-out replies are dropped
         self._exited: EngineExited | None = None
         self._stderr: collections.deque = collections.deque(maxlen=50)
         self._stdin_lock = threading.Lock()   # one writer at a time: lines must not interleave
@@ -115,7 +116,10 @@ class JsonLinesProcess:
                 proc.wait(timeout=graceful_s)
             except subprocess.TimeoutExpired:
                 proc.kill()
-                proc.wait(timeout=graceful_s)
+                # The last wait is bookkeeping on a process we just killed: it must not
+                # escape close() and fail the shutdown that called it.
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    proc.wait(timeout=graceful_s)
 
     @property
     def alive(self) -> bool:
@@ -150,6 +154,7 @@ class JsonLinesProcess:
                     raise self._exited
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
+                    self._replies.pop(rid, None)   # a late reply must not pile up
                     raise TimeoutError(f"{self._name}: no reply to {fields.get('op', fields)} "
                                        f"within {timeout:g} s")
                 self._cv.wait(remaining)

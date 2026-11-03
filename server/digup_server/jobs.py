@@ -133,9 +133,13 @@ class JobRunner:
                 pass                         # already gone: the join below handles the worker
         self._wake.set()
         self._worker.join(timeout=20.0)      # one file's embed at the safe point fits 15 s
+        # `_mark` takes `self._lock` for itself — calling it from inside `with self._lock:`
+        # self-deadlocks a plain Lock (docker stop mid-job hung the lifespan: the reviewer's
+        # repro showed `_mark` at jobs.py:248 waiting on line 138, forever).
         with self._lock:
-            if self._active is not None:
-                self._mark(self._active, STATE_INTERRUPTED, "server stopped")
+            active = self._active
+        if active is not None:
+            self._mark(active, STATE_INTERRUPTED, "server stopped")
 
     # ── the worker ─────────────────────────────────────────────────────────────────────
 
@@ -146,9 +150,18 @@ class JobRunner:
             self._wake.wait()
             self._wake.clear()
             while self._queue and not self._stopping:
-                self._run_one(self._queue.pop(0))
-                with self._lock:
-                    self._active = None
+                job_id = self._queue.pop(0)
+                try:
+                    self._run_one(job_id)
+                except Exception as exc:   # any escape from _run_one (TimeoutError from a
+                    # 60 s prewarm, OSError from spawn, …) would kill this thread silently,
+                    # leave `_active` set forever, and wedge all indexing behind a job that
+                    # can never run — every later request answering 409 until a restart.
+                    self._mark(job_id, STATE_INTERRUPTED, f"job runner: {exc}")
+                finally:
+                    self._service = None
+                    with self._lock:
+                        self._active = None
 
     def _run_one(self, job_id: str) -> None:
         with self._lock:
@@ -195,10 +208,11 @@ class JobRunner:
         if self._after_done is not None:
             try:
                 self._after_done()                  # reload → prewarm: searcher is current
-            except RuntimeError as exc:
+            except (RuntimeError, TimeoutError) as exc:
                 # The job is done and stays done — a refusal on the refresh (ok:false,
-                # EngineExited, restart races) must not kill the runner thread. The next
-                # search will get the searcher back through the adapter's own respawn.
+                # EngineExited, restart races, a prewarm that outlives its 60 s window)
+                # must not kill the runner thread. The next search will get the searcher
+                # back through the adapter's own respawn.
                 self._mark(job_id, STATE_DONE, f"searcher refresh deferred: {exc}",
                            ended=ended, seconds=round(ended - started, 1), **counts)
 
@@ -221,13 +235,19 @@ class JobRunner:
     # ── the log (append-only JSON-lines, rotated at size; replay reads ALL of it) ──────
 
     def _log_files(self) -> list[str]:
-        """Every job log, oldest first. Rotations chain `.N … .2 .1` (higher number is
-        older), the current log last — history survives rotation (Stage 8)."""
-        files, n = [], 1
-        while os.path.exists(f"{self._log_path}.{n}"):
-            files.append(f"{self._log_path}.{n}")
-            n += 1
-        files.reverse()
+        """Every job log, oldest first. Rotations are timestamp-suffixed (`jobs.jsonl.1730...`),
+        so a rotation is ONE rename and a replay order is a sort — the old `.k → .k+1` chain
+        was O(rotations) renames per rotation, and a kill mid-shift could leave the chain out
+        of order (a `running` line read after its `done` reported finished jobs as
+        *interrupted*). The live log (no suffix) is last, by construction the newest."""
+        try:
+            siblings = os.listdir(os.path.dirname(self._log_path) or ".")
+        except OSError:
+            siblings = []
+        rotated = sorted(name for name in siblings
+                         if name.startswith(os.path.basename(self._log_path) + ".")
+                         and name != os.path.basename(self._log_path))
+        files = [os.path.join(os.path.dirname(self._log_path) or ".", name) for name in rotated]
         if os.path.exists(self._log_path):
             files.append(self._log_path)
         return files
@@ -235,12 +255,11 @@ class JobRunner:
     def _append(self, record: dict) -> None:
         if self._rotate and os.path.exists(self._log_path) \
                 and os.path.getsize(self._log_path) > self._rotate:
-            rotated = 1
-            while os.path.exists(f"{self._log_path}.{rotated}"):
-                rotated += 1
-            for k in range(rotated - 1, 0, -1):        # shift .k → .k+1, oldest moved first
-                os.replace(f"{self._log_path}.{k}", f"{self._log_path}.{k + 1}")
-            os.replace(self._log_path, f"{self._log_path}.1")
+            stamp = f"{time.time_ns()}"           # ns-clock: two rotations in one second sort right
+            rotated = f"{self._log_path}.{stamp}"
+            while os.path.exists(rotated):        # same clock twice in one run: bump the suffix
+                rotated = f"{rotated}x"
+            os.replace(self._log_path, rotated)
         with open(self._log_path, "a", encoding="utf-8") as log:
             log.write(json.dumps(record, separators=(",", ":")) + "\n")
 
@@ -268,7 +287,9 @@ class JobRunner:
                     try:
                         record = json.loads(line)
                     except json.JSONDecodeError:
-                        continue
+                        continue   # a torn tail: half a line is not a record
+                    if not isinstance(record, dict) or "id" not in record:
+                        continue   # valid JSON that is not a job record (a hand-merged log)
                     seen[record["id"]] = record["state"]
                     self._jobs[record["id"]] = record
         for job_id, state in seen.items():

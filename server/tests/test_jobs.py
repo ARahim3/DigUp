@@ -274,3 +274,99 @@ def test_the_knobs_are_read_from_the_environment(scratch, scratch_index):
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+
+
+def test_shutdown_mid_job_finishes_and_marks_the_job_interrupted(scratch, scratch_index, tmp_path):
+    """The reviewer's repro of a self-deadlock: `shutdown()` called `_mark()` from inside
+    `with self._lock:` and `_mark` takes that same plain (non-reentrant) Lock — a docker
+    stop while a job was running hung the lifespan forever (job never logged *interrupted*,
+    `service.quit()` never ran, and every job poll consumed a threadpool thread until the
+    API stopped answering). The shape that hits it: a job whose remaining work outlives
+    the worker's join grace — one long file's embed on a 15 s stop."""
+    folder, _ = scratch_index
+    config_dir = tmp_path / "shutdown-cfg"
+    runner = JobRunner(_cfg(folder, (scratch,)), config_dir=str(config_dir))
+    runner._run_one = lambda job_id: time.sleep(25.0)     # outlives the 20 s join grace
+    job = runner.start()["id"]
+    time.sleep(0.5)                                       # the worker has picked it up
+    began = time.monotonic()
+    runner.shutdown()                                     # deadlocked: this never returns
+    assert time.monotonic() - began < 30.0, "shutdown self-deadlocked (jobs.py:136/248)"
+    assert runner.job(job)["state"] == "interrupted"      # README §5, on the stop path
+    assert runner.job(job).get("why") == "server stopped"
+
+
+def test_a_crashing_job_runner_leaves_indexing_alive(scratch, scratch_index, tmp_path):
+    """`prewarm` answers with a 60 s TimeoutError — a `TimeoutError` is NOT a
+    `RuntimeError`, and the old `except RuntimeError` let it (and any other escape from
+    `_run_one`, e.g. an OSError from spawn) kill the worker thread silently: `_active`
+    stayed set forever, every later `POST /index` answered 409 naming a job that could
+    never run, and the queued job never left `queued`. Recovery was a container restart."""
+    folder, _ = scratch_index
+    config_dir = tmp_path / "crash-cfg"
+    runner = JobRunner(_cfg(folder, (scratch,)), config_dir=str(config_dir))
+    state = {"first": True}
+
+    def crash_once(job_id):
+        if state["first"]:
+            state["first"] = False
+            raise TimeoutError("search-service: no reply to 'prewarm' within 60 s")
+        JobRunner._run_one(runner, job_id)                # the real path from here on
+
+    runner._run_one = crash_once
+    first = runner.start()["id"]
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline and runner.job(first)["state"] == "queued":
+        time.sleep(0.2)
+    assert runner.job(first)["state"] == "interrupted"    # honest, not wedged
+    assert "prewarm" in runner.job(first).get("why", "")
+    assert runner._worker.is_alive()                      # the thread SURVIVED the crash
+    second = runner.start()["id"]                         # old code: JobBusy forever here
+    deadline = time.monotonic() + 300.0
+    while time.monotonic() < deadline and runner.job(second)["state"] in ("queued", "running"):
+        time.sleep(0.5)
+    assert runner.job(second)["state"] == "done"          # indexing works after the crash
+    runner.shutdown()
+
+
+def test_a_prewarm_timeout_after_done_keeps_the_job_done(scratch, scratch_index, tmp_path):
+    """A job is *done* when the writer finished: the refresh behind it (reload →
+    prewarm) timing out is a note on a done job — never a dead runner thread, never a
+    state that claims more than happened."""
+    folder, _ = scratch_index
+    config_dir = tmp_path / "prewarm-cfg"
+
+    def after_done():
+        raise TimeoutError("search-service: no reply to 'prewarm' within 60 s")
+
+    runner = JobRunner(_cfg(folder, (scratch,)), config_dir=str(config_dir),
+                       after_done=after_done)
+    job = runner.start()["id"]
+    deadline = time.monotonic() + 300.0
+    while time.monotonic() < deadline and runner.job(job)["state"] in ("queued", "running"):
+        time.sleep(0.5)
+    done = runner.job(job)
+    assert done["state"] == "done"
+    assert "searcher refresh deferred" in done.get("why", "")
+    assert runner._worker.is_alive()
+    runner.shutdown()
+
+
+def test_replay_ignores_lines_that_are_not_job_records(scratch, scratch_index, tmp_path):
+    """A hand-edited/merged log must not brick the boot: the old replay did
+    `record["id"]` on any parsed JSON — a bare `5` raised, `__init__` propagated, and
+    the app refused to start. Torn tails and non-record lines are skipped; the one
+    real `running` record still recovers as *interrupted*."""
+    folder, _ = scratch_index
+    config_dir = tmp_path / "junk-cfg"
+    config_dir.mkdir()
+    (config_dir / "jobs.jsonl").write_text(
+        "[1, 2, 3]\n5\nnull\n\"a string\"\n{\"state\":\"running\"}\n"   # valid JSON, not records
+        '{"id":"abc123","state":"running","started":0}\n'
+        '{"id":"real", "state":"done", "ended":1}\n'
+        "truncat",                                                       # torn tail
+        encoding="utf-8")
+    runner = JobRunner(_cfg(folder, (scratch,)), config_dir=str(config_dir))
+    assert runner.job("abc123")["state"] == "interrupted"
+    assert runner.job("real")["state"] == "done"
+    runner.shutdown()

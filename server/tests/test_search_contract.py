@@ -140,3 +140,101 @@ def test_idle_exit_is_a_restart_not_a_failure(corpus, index):
         assert paths(again) == paths(first)
     finally:
         service.quit()
+
+
+# ── adapter supervision units: what a failed spawn must never leave behind ─────────────
+# (unit-level by design: these paths are about leaks and exception mapping, and a fake
+# proc makes them deterministic; the live protocol above stays mock-free.)
+
+
+def test_a_failed_handshake_reaps_the_child_it_spawned(monkeypatch, tmp_path):
+    """`_spawn_locked` assigned `self._proc` only AFTER a successful handshake — a
+    `start()` that raised (ready timeout on a huge index, a `ready` mismatch) left the
+    fresh child running with its 3 pipes and 2 reader threads unreferenced until its
+    own idle-exit (2 × `--encoder-idle` = 600 s), and every retried request spawned
+    another one."""
+    from digup_server.engine import search as search_mod
+    from digup_server.engine.protocol import EngineExited
+
+    closed = []
+
+    class LeakProc:
+        def __init__(self, argv, *, name, env=None):
+            self._name = name
+
+        def start(self):
+            raise EngineExited(self._name, 1, ["handshake boom"])
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(search_mod, "JsonLinesProcess", LeakProc)
+    service = SearchService(EngineConfig(index=str(tmp_path), roots=("/corpus",)))
+    with pytest.raises(EngineExited):
+        service.search("wakeboarding")
+    assert closed == [True]                          # the child was reaped, not orphaned
+    assert service._proc is None
+
+
+def test_a_missing_engine_binary_answers_clierror(tmp_path):
+    """FileNotFoundError from Popen must reach the API as a 502 quoting the spawn,
+    not a bare 500 traceback (api.py:6: quote the engine, invent nothing)."""
+    from digup_server.engine.cli import CLIError
+    service = SearchService(EngineConfig(index=str(tmp_path), roots=("/corpus",),
+                                         binary="/no/such/digup-binary"))
+    with pytest.raises(CLIError, match="cannot start the engine helper"):
+        service.search("wakeboarding")
+
+
+def test_a_refusal_without_an_error_field_is_still_a_refusal():
+    """`ok:false` ALONE: the old guard demanded `"error" in reply`, so a refusal
+    shaped `{"ok":false,"id":4}` sailed through `_checked` and then api.py's
+    `stripped["hits"]` raised KeyError — the exact 500 the Stage-10 battery hit.
+    The guard must fire on the shape, not on one field of it."""
+    from digup_server.engine.protocol import EngineRefused
+    with pytest.raises(EngineRefused):
+        SearchService._checked({"ok": False, "id": 4}, {"op": "search"})
+    ok = {"hits": [], "strong": 0, "meaning": True, "ms": {}, "id": 5}
+    assert SearchService._checked(ok, {"op": "search"})["hits"] == []
+
+
+def test_renders_run_beside_searching_not_ahead_of_it(tmp_path):
+    """The engine runs `render` beside its read loop on two slots, answers routed by
+    `id` — "made beside the requests (typing never waits on one)" (SearchService
+    .swift:52-56, 99-113). The adapter held the serialize-lock across the engine's
+    120 s of ffmpeg work, undoing that design: a 1024-px preview froze every
+    keystroke-search behind it, and a 40-hit gallery serialized 40 renders."""
+    import threading
+
+    class SlowRenderProc:
+        """The protocol allocates the request `id` itself (`protocol.py: request()` —
+        `fields` carries no id), routes the reply by it, and strips it before returning.
+        This fake answers with a fresh id, out of order, like the engine does."""
+
+        def __init__(self):
+            self._ids = iter(range(1, 10_000))
+
+        def request(self, fields, *, timeout):
+            rid = next(self._ids)
+            if fields["op"] == "render":
+                time.sleep(1.2)                        # a slow ffmpeg frame, engine-side
+                return {"id": rid, "image": "/index/previews/x.jpg"}
+            return {"id": rid, "hits": [], "strong": 0, "meaning": True, "ms": {}}
+
+    service = SearchService(EngineConfig(index=str(tmp_path), roots=("/corpus",)))
+    service._proc = SlowRenderProc()
+    box = {}
+
+    def do_render():
+        box["reply"] = service.render("/media/photos/x.jpg", pixels=1024)
+
+    thread = threading.Thread(target=do_render)
+    thread.start()
+    time.sleep(0.15)                                   # the render is in flight
+    began = time.monotonic()
+    reply = service.search("wakeboarding", limit=10)
+    typing_ms = time.monotonic() - began
+    thread.join(10)
+    assert reply["hits"] == []                         # answered — and answered FAST
+    assert typing_ms < 0.9, f"typing waited {typing_ms:.2f} s behind the render"
+    assert box["reply"]["image"].endswith("x.jpg")     # out-of-order id-routing intact

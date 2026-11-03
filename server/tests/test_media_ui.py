@@ -54,6 +54,31 @@ def test_root_serves_the_vanilla_ui(media_client):
     assert "↑↓" in html and "Space" in html
 
 
+def test_the_space_key_keeps_buttons_and_links_activated(media_client):
+    """The reviewer found the hijack: the document-level Space handler (Quick Look)
+    `preventDefault()`ed for every focused element except a few tags — and native
+    button activation fires on keyup, so the keydown kill disabled the gear, the ✕,
+    Index now, Estimate, "all", the Esc close, and the Open/Download links for every
+    keyboard user, while opening the big-look over the page. The guard is a closest()
+    over the activation targets, kept pinned here."""
+    appjs = media_client.get("/app.js").text
+    assert 'closest("button, a, [role=\'button\'], input, select, textarea")' in appjs
+
+
+def test_the_ui_survives_a_failed_job_poll(media_client):
+    """S1: the job poll loop died on its first failed fetch (server restart, engine
+    mid-respawn 503) — unhandled rejection, the job line froze at its last state,
+    and "indexing…" stayed in the footer forever. It now answers honestly and clears
+    the indexing state; repeated busy-clicks poll one loop, not N (the dedupe token),
+    and every settings-close path keeps aria-expanded true to the panel's state."""
+    appjs = media_client.get("/app.js").text
+    assert "job poll failed" in appjs
+    assert "state.jobPoll" in appjs                          # one poll loop per live job
+    html = media_client.get("/").text
+    assert 'id="settings-close"' in html
+    assert media_client.get("/style.css").text.count("color-mix(in srgb, var(--kc) 10%") == 1
+
+
 def test_search_issues_media_handles(media_client):
     reply = media_client.post("/api/v1/search", json={"q": "wakeboarding", "limit": 3}).json()
     ids = [h["media_id"] for h in reply["hits"]]
@@ -175,3 +200,37 @@ def test_ui_files_revalidate_never_go_stale(media_client):
         assert reply.status_code == 200
         assert reply.headers["cache-control"] == "no-cache"
         assert "etag" in reply.headers
+
+
+def test_open_range_streams_the_video_rather_than_buffering_it(media_client):
+    """`Range: bytes=0-` is what every browser media element sends first. The old
+    handler computed the full span and `read()` it — a whole-file RAM buffer (a 20 GB
+    clip asked for a 20 GB read) — and answered 206 with the ENTIRE file, so seeking
+    never streamed. Now: open ranges are capped at MAX_RANGE_SPAN and the span is
+    streamed in chunks from its own file handle."""
+    from digup_server.api import MAX_RANGE_SPAN
+    hit = media_client.post("/api/v1/search",
+                            json={"q": "wakeboarding", "kinds": ["video"], "limit": 1}
+                            ).json()["hits"][0]
+    full = media_client.get(f"/api/v1/media/{hit['media_id']}/file")
+    size = len(full.content)
+    open_range = media_client.get(f"/api/v1/media/{hit['media_id']}/file",
+                                  headers={"range": "bytes=0-"})
+    assert open_range.status_code == 206
+    expected_end = min(size - 1, MAX_RANGE_SPAN - 1)
+    assert open_range.headers["content-range"] == f"bytes 0-{expected_end}/{size}"
+    assert len(open_range.content) == expected_end + 1     # the span, streamed, complete
+
+
+def test_file_carries_nosniff(media_client):
+    """The magic-bytes typing above refuses to call script script; `nosniff` is the
+    cheap belt that says the browser must not guess a type on its own — including
+    for the text/plain path used by code/doc hits."""
+    hit = media_client.post("/api/v1/search",
+                            json={"q": "wakeboard photo", "kinds": ["image"], "limit": 1}
+                            ).json()["hits"][0]
+    reply = media_client.get(f"/api/v1/media/{hit['media_id']}/file")
+    assert reply.headers["x-content-type-options"] == "nosniff"
+    ranged = media_client.get(f"/api/v1/media/{hit['media_id']}/file",
+                              headers={"range": "bytes=0-2"})
+    assert ranged.headers["x-content-type-options"] == "nosniff"

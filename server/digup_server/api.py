@@ -22,7 +22,9 @@ from __future__ import annotations
 import contextlib
 import os
 import re
+import stat
 import threading
+import time
 import uuid
 from collections import OrderedDict
 from collections.abc import AsyncIterator
@@ -32,9 +34,9 @@ from urllib.parse import quote
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .engine import EngineConfig, SearchService
 from .engine.cli import CLIError, estimate_lines, status as cli_status
@@ -82,7 +84,10 @@ class SearchRequest(BaseModel):
 class SearchReply(BaseModel):
     """The engine's reply minus the request `id` (protocol bookkeeping, not the API's).
     Each hit carries `media_id` — the server's handle for `/media/{id}/…`, documented
-    here; every engine field passes through untouched."""
+    here; every engine field passes through untouched — `extra="allow"` says an engine
+    field this model has never seen is published, not dropped at the boundary."""
+
+    model_config = ConfigDict(extra="allow")
 
     hits: list[dict]          # exactly hitFields(): path, kind, segment, segment_id, score,
                               # modified, size, info (+ z, cosine, keyword_rank, loc, loc_end…)
@@ -147,6 +152,11 @@ _INLINE_KINDS = frozenset({"image", "screenshot", "video", "audio", "pdf"})
 
 _RANGE = re.compile(r"bytes=(\d*)-(\d*)\Z")
 
+# Hard cap on one served span: `Range: bytes=0-` is what every browser media element
+# sends first, and an uncapped open range reads the WHOLE file into RAM (a 20 GB clip
+# asks for a 20 GB buffer). Seeking only ever needs short spans; 8 MiB is generous.
+MAX_RANGE_SPAN = 8 << 20
+
 
 def sniff_type(path: Path) -> str:
     with open(path, "rb") as handle:
@@ -184,17 +194,45 @@ def parse_range(header: str | None, size: int) -> tuple[int, int] | None:
     if not start_s and not end_s:
         return None
     if not start_s:                              # suffix range: last N bytes
-        length = int(end_s)
+        length = min(int(end_s), MAX_RANGE_SPAN)
         if length == 0:
             return ("unsatisfiable", size)
         start, end = max(0, size - length), size - 1
     else:
         start = int(start_s)
         end = int(end_s) if end_s else size - 1
-        end = min(end, size - 1)
+        end = min(end, size - 1, start + MAX_RANGE_SPAN - 1)   # open + huge ranges capped
         if start >= size or start > end:
             return ("unsatisfiable", size)
     return (start, end)
+
+
+class StatusCache:
+    """The CLI's identity answers, served from a short TTL.
+
+    `digup status` per call is real SQLite counting work. The UI polls `/status` every
+    15 s and the container HEALTHCHECK hits `/health` every 30 s — each poll used to
+    spawn a `digup status`, on the writer's hot index. The identity fields (fingerprints,
+    build tag, per-kind table) move slowly, so the polls stop costing a subprocess each.
+
+    `fetch` is injectable (the unit test counts calls); the app wires the real
+    `cli_status`. TTL comes from `DIGUP_SERVER_STATUS_TTL_S`.
+    """
+
+    def __init__(self, fetch, ttl_s: float = 15.0):
+        self._fetch = fetch
+        self._ttl_s = ttl_s
+        self._lock = threading.Lock()
+        self._at = 0.0
+        self._data: dict | None = None
+
+    def get(self, config) -> dict:
+        with self._lock:
+            now = time.monotonic()
+            if self._data is None or now - self._at > self._ttl_s:
+                self._data = self._fetch(config)
+                self._at = now
+            return self._data
 
 
 class HitCache:
@@ -223,7 +261,13 @@ class HitCache:
     def get(self, media_id: str) -> dict | None:
         with self._lock:
             entry = self._items.get(media_id)
-            return dict(entry) if entry else None
+            if entry is None:
+                return None
+            self._items.move_to_end(media_id)   # a true LRU: get() refreshes. Without this
+            return dict(entry)                  # the eviction was insertion-order, and a
+                                              # browsing session (40 handles per search)
+                                              # evicted its own on-screen thumbnails after
+                                              # ~26 keystroke-searches — 404s with no recovery
 
 
 def config_from_env() -> EngineConfig:
@@ -251,6 +295,10 @@ def create_app(config: EngineConfig) -> FastAPI:
     client paths)."""
 
     hit_cache = HitCache()
+    estimate_busy = threading.Lock()      # one full-tree crawl at a time (the UI retry
+                                          # click and a second tab must not stack crawls)
+    status_cache = StatusCache(lambda cfg: cli_status(cfg),
+                               float(os.environ.get("DIGUP_SERVER_STATUS_TTL_S", "15")))
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -318,7 +366,7 @@ def create_app(config: EngineConfig) -> FastAPI:
     @app.get("/api/v1/health")
     def health() -> dict:
         live = _strip(service(app).status())
-        identity = cli_status(config)
+        identity = status_cache.get(config)
         return {
             "ok": True,
             "engine": {
@@ -336,7 +384,7 @@ def create_app(config: EngineConfig) -> FastAPI:
     @app.get("/api/v1/status")
     def status() -> dict:
         live = _strip(service(app).status())
-        cli = cli_status(config)
+        cli = status_cache.get(config)
         return {
             **live,
             "kinds": cli["kinds"],
@@ -371,7 +419,14 @@ def create_app(config: EngineConfig) -> FastAPI:
 
     @app.post("/api/v1/estimate")
     def estimate(_req: EstimateRequest) -> dict:
-        return {"folders": estimate_lines(config)}
+        if not estimate_busy.acquire(blocking=False):
+            raise HTTPException(status_code=409,
+                                detail="an estimate is already running — the engine walks "
+                                       "every folder once at a time")
+        try:
+            return {"folders": estimate_lines(config)}
+        finally:
+            estimate_busy.release()
 
     # ── POST /api/v1/index + GET /api/v1/jobs — one writer, honest states ─────────────
     # Indexing never starts by itself (README §5): a job arrives here, runs serialized
@@ -444,31 +499,48 @@ def create_app(config: EngineConfig) -> FastAPI:
             raise HTTPException(status_code=404, detail=f"no media handle {media_id}")
         path = Path(entry["path"]).resolve()
         roots = [Path(r).resolve() for r in config.roots]
-        if not any(str(path) == str(r) or str(path).startswith(str(r) + os.sep) for r in roots):
+        if not any(path == r or path.is_relative_to(r) for r in roots):
             raise HTTPException(status_code=404, detail="file is outside the server's media roots")
-        if not path.is_file():
+        try:                                    # the type, the size, the span — from one open
+            with open(path, "rb") as handle:    # (fstat of the live handle: a replacement
+                mode = os.fstat(handle.fileno()).st_mode      # mid-request cannot make the
+                if not stat.S_ISREG(mode):                    # headers lie about the bytes)
+                    raise HTTPException(status_code=404, detail="the file is gone (it left the folders)")
+                media_type = sniff_type(path)
+                size = os.fstat(handle.fileno()).st_size
+        except (FileNotFoundError, IsADirectoryError, PermissionError):
             raise HTTPException(status_code=404, detail="the file is gone (it left the folders)")
-        media_type = sniff_type(path)
         if media_type == "application/octet-stream":
             media_type = "text/plain; charset=utf-8" if entry["kind"] in ("code", "doc") \
                 else "application/octet-stream"
         name = quote(path.name)              # RFC 5987: names with any characters, escaped
         disposition = "inline" if entry["kind"] in _INLINE_KINDS else "attachment"
         headers = {"content-disposition": f"{disposition}; filename*=UTF-8''{name}",
-                   "accept-ranges": "bytes"}
-        size = path.stat().st_size
+                   "accept-ranges": "bytes",
+                   # Belt for the text/plain path: the magic-bytes typing above already
+                   # refuses to call script script; nosniff says the browser must not guess.
+                   "x-content-type-options": "nosniff"}
         span = parse_range(request.headers.get("range"), size)
         if span is not None and span[0] == "unsatisfiable":
             return Response(status_code=416, headers={
                 "content-range": f"bytes */{size}", "accept-ranges": "bytes"})
         if span is not None:
             start, end = span
-            with open(path, "rb") as handle:
-                handle.seek(start)
-                chunk = handle.read(end - start + 1)
             headers["content-range"] = f"bytes {start}-{end}/{size}"
-            return Response(content=chunk, status_code=206, media_type=media_type,
-                            headers=headers)
+
+            def ranged():                       # chunked: a 20 GB clip streams, never buffers
+                with open(path, "rb") as span_handle:
+                    span_handle.seek(start)
+                    remaining = end - start + 1
+                    while remaining > 0:
+                        chunk = span_handle.read(min(remaining, 1 << 20))
+                        if not chunk:
+                            break
+                        remaining -= len(chunk)
+                        yield chunk
+
+            return StreamingResponse(ranged(), status_code=206, media_type=media_type,
+                                     headers=headers)
         return FileResponse(path, media_type=media_type, headers=headers)
 
     # ── The UI, same origin (so CORS is not needed at all — Stage 6) ───────────────────
