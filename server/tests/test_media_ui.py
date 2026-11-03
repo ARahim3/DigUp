@@ -150,3 +150,28 @@ def test_open_serves_a_documents_text_as_plain_text(doc_client):
 
 def test_file_for_an_unissued_handle_is_404(media_client):
     assert media_client.get("/api/v1/media/deadbeefcafe/file").status_code == 404
+
+
+def test_video_file_arrives_with_a_playable_media_type(media_client):
+    """scenes.mp4 (H.264, browser-streamable): the magic sniff reads `ftyp` at offset 4
+    and the brand at 8-12. Measured lesson: reading the brand at 8 against `ftyp` sent
+    every real MP4 to octet-stream — Chrome sniffs past that, Safari is not obliged to."""
+    hit = media_client.post("/api/v1/search",
+                            json={"q": "color bars test pattern", "kinds": ["video"],
+                                  "limit": 3}).json()["hits"][0]
+    reply = media_client.get(f"/api/v1/media/{hit['media_id']}/file")
+    assert reply.status_code == 200
+    assert reply.headers["content-type"] in {"video/mp4", "video/x-matroska"}
+    assert reply.headers["accept-ranges"] == "bytes"
+
+
+def test_ui_files_revalidate_never_go_stale(media_client):
+    """Measured in a live browser during the Stage-10 proof: without a `cache-control`,
+    Chrome served a stylesheet the server no longer had for minutes — reload answered
+    from its memory cache, and a UI fix never reached the page. UIFiles answers every
+    UI byte `cache-control: no-cache` (the etag makes the revalidation a cheap 304)."""
+    for path in ("/", "/style.css", "/app.js"):
+        reply = media_client.get(path)
+        assert reply.status_code == 200
+        assert reply.headers["cache-control"] == "no-cache"
+        assert "etag" in reply.headers

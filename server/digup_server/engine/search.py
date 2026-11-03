@@ -18,7 +18,7 @@ from __future__ import annotations
 import threading
 
 from .config import EngineConfig
-from .protocol import DEFAULT_REQUEST_TIMEOUT, EngineExited, JsonLinesProcess
+from .protocol import DEFAULT_REQUEST_TIMEOUT, EngineExited, EngineRefused, JsonLinesProcess
 
 
 class SearchService:
@@ -103,22 +103,33 @@ class SearchService:
         return reply
 
     def raw(self, fields: dict) -> dict:
-        """An op this wrapper has no method for — passthrough, contract-tested by name."""
-        return self._call(dict(fields))
+        """An op this wrapper has no method for — passthrough, contract-tested by name,
+        refusal replies included: `ok:false` reaches the caller verbatim here (a Stage-3
+        contract test pins exactly that). Typed ops raise `EngineRefused` instead."""
+        return self._call(dict(fields), check=False)
 
     # ── the supervision ──────────────────────────────────────────────────────────────────
 
-    def _call(self, fields: dict, *, timeout: float | None = None) -> dict:
+    def _call(self, fields: dict, *, timeout: float | None = None, check: bool = True) -> dict:
         timeout = timeout or self._timeout
         with self._lock:
             if self._proc is None:
                 self._spawn_locked()
             try:
-                return self._proc.request(fields, timeout=timeout)
+                reply = self._proc.request(fields, timeout=timeout)
             except EngineExited:
                 # The engine idled out (or was killed): normal. Start it again, once.
                 self._spawn_locked()
-                return self._proc.request(fields, timeout=timeout)
+                reply = self._proc.request(fields, timeout=timeout)
+            return self._checked(reply, fields) if check else reply
+
+    @staticmethod
+    def _checked(reply: dict, fields: dict) -> dict:
+        """A reply with `ok:false` is the engine refusing (its words, not ours) — raised,
+        never returned, so no endpoint reads `hits`/`files` out of an answer that has none."""
+        if reply.get("ok") is False and "error" in reply:
+            raise EngineRefused(str(fields.get("op", "")), str(reply["error"]))
+        return reply
 
     def _spawn_locked(self) -> dict:
         proc = JsonLinesProcess(self._config.search_argv(), name="search-service",

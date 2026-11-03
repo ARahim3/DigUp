@@ -106,6 +106,51 @@ def test_openapi_is_the_versioned_public_surface(client):
     assert {"health", "status", "search", "estimate"} <= \
         {p.rsplit("/", 1)[1] for p in spec["paths"]}
 
+
+def test_engine_refusal_becomes_a_503_not_a_keyerror(corpus, index):
+    """A searcher mid-transition answers `{"ok":false,"error":…}` — the Stage-10 battery
+    hit exactly that as a 500 (`KeyError: 'hits'` in `api.py`). The refusal is the
+    engine's own words; they surface verbatim as a 503, and nothing reads `hits`/`files`
+    out of an answer that has none. No lifespan, no engine: the injected service refuses."""
+    from conftest import _cfg
+    from digup_server.engine.protocol import EngineRefused
+
+    app = create_app(_cfg(index, (corpus,)))
+
+    class RefusingSearch:
+        def search(self, *args, **kwargs):
+            raise EngineRefused("search", "index is reloading, try again")
+        def status(self):
+            raise EngineRefused("status", "index is reloading, try again")
+
+    app.state.search = RefusingSearch()
+    c = TestClient(app)                      # no `with`: no lifespan — the state stays
+    r = c.post("/api/v1/search", json={"q": "anything", "limit": 1})
+    assert r.status_code == 503
+    assert "index is reloading" in r.json()["detail"]
+    assert c.get("/api/v1/status").status_code == 503
+
+
+def test_a_refusal_reply_is_raised_in_the_adapter(index, corpus):
+    """The same fact one layer down: `SearchService` raises `EngineRefused` on an
+    `ok:false` reply (the engine's refusal, `SearchService.swift:106,115`) — stub proc,
+    no engine, the reply is the engine's refusal shape verbatim."""
+    from conftest import _cfg
+    from digup_server.engine.protocol import EngineRefused
+    from digup_server.engine.search import SearchService
+
+    svc = SearchService(_cfg(index, (corpus,)))
+
+    class StubProc:
+        alive = True
+        def request(self, fields, *, timeout=None):
+            return {"id": 1, "ok": False, "error": "index is reloading"}
+
+    svc._proc = StubProc()
+    with pytest.raises(EngineRefused) as raised:
+        svc.search("anything")
+    assert "index is reloading" in str(raised.value)
+
 def test_status_shows_the_servers_own_roots(client, corpus):
     """Stage 10: the UI shows *where this server looks*. These are the deployment's own
     configured paths (env) — publishing them is presentation, not path acceptance (§7)."""

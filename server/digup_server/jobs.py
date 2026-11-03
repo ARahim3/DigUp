@@ -193,7 +193,14 @@ class JobRunner:
         self._mark(job_id, STATE_DONE, None, ended=ended,
                    seconds=round(ended - started, 1), **counts)
         if self._after_done is not None:
-            self._after_done()                    # reload → prewarm: searcher is current
+            try:
+                self._after_done()                  # reload → prewarm: searcher is current
+            except RuntimeError as exc:
+                # The job is done and stays done — a refusal on the refresh (ok:false,
+                # EngineExited, restart races) must not kill the runner thread. The next
+                # search will get the searcher back through the adapter's own respawn.
+                self._mark(job_id, STATE_DONE, f"searcher refresh deferred: {exc}",
+                           ended=ended, seconds=round(ended - started, 1), **counts)
 
     # The engine's own totals: the last `idle` event's counts, the file events' `done`s.
     @staticmethod

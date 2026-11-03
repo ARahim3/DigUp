@@ -38,7 +38,7 @@ from pydantic import BaseModel, Field
 
 from .engine import EngineConfig, SearchService
 from .engine.cli import CLIError, estimate_lines, status as cli_status
-from .engine.protocol import EngineExited
+from .engine.protocol import EngineExited, EngineRefused
 from .jobs import JobBusy, JobRunner
 
 # The engine's FileKind rawValues (Sources/DigUpKit FileKind): the API refuses anything
@@ -47,6 +47,20 @@ Kind = Literal["screenshot", "image", "pdf", "doc", "audio", "video", "code"]
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8787
+
+
+class UIFiles(StaticFiles):
+    """The UI with `cache-control: no-cache` on every answer (etag in, 304 out — cheap).
+
+    UI files are small and they change with every deploy; a cached panel is the difference
+    between the fixed page and the broken one. Measured, not theorized: without the header,
+    Chrome answered reloads from its memory cache for minutes, serving a stylesheet the
+    server no longer had. Revalidation on every load is what makes an upgrade land."""
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        response.headers.setdefault("cache-control", "no-cache")
+        return response
 
 
 # ── the wire shape (the engine's fields, typed, not invented) ──────────────────────────
@@ -120,9 +134,6 @@ _MAGIC = [
     (b"%PDF", "application/pdf"),
     (b"ID3", "audio/mpeg"),
     (b"\x00\x00\x01\xb3", "audio/mpeg"),      # MPEG audio frame sync (mp1/mp2)
-    (b"\x00\x00\x00\x1a", "video/mp4"),       # ISO-BMFF: ftyp at offset 4 (ftyp brand at 8)
-    (b"\x00\x00\x00\x18", "video/mp4"),
-    (b"\x00\x00\x00\x20", "video/mp4"),
     (b"\x1a\x45\xdf\xa3", "video/x-matroska"),
     (b"OggS", "audio/ogg"),
     (b"fLaC", "audio/flac"),
@@ -140,12 +151,16 @@ _RANGE = re.compile(r"bytes=(\d*)-(\d*)\Z")
 def sniff_type(path: Path) -> str:
     with open(path, "rb") as handle:
         head = handle.read(16)
+    if head[4:8] == b"ftyp":                      # ISO-BMFF: box size 0-3, "ftyp" at 4-8 —
+        brand = head[8:12]                        # the brand at 8-12 is what it IS (mp4/m4a/…)
+        if brand in (b"M4A ", b"M4B ", b"M4P "):
+            return "audio/mp4"
+        if brand in (b"isom", b"iso2", b"iso4", b"iso6", b"avc1", b"mp41", b"mp42", b"qt  "):
+            return "video/mp4"
+        return "application/octet-stream"         # an ftyp we do not know: not a guess
     for magic, media_type in _MAGIC:
         if head.startswith(magic):
             if media_type.startswith(("audio/", "video/")):
-                brand = head[8:12]
-                if media_type == "video/mp4" and brand not in (b"ftyp",):
-                    return "application/octet-stream"
                 if media_type == "audio/wav" and head[8:12] != b"WAVE":
                     return "application/octet-stream"
                 if media_type == "video/avi" and head[8:12] != b"AVI ":
@@ -249,7 +264,7 @@ def create_app(config: EngineConfig) -> FastAPI:
         if os.environ.get("DIGUP_SERVER_PREWARM", "1") != "0":
             try:
                 service.prewarm()
-            except (EngineExited, TimeoutError):
+            except (EngineExited, EngineRefused, TimeoutError):
                 pass               # the searcher respawns on demand; startup must not die here
         # One writer, serialized; after a done job the searcher is brought current with
         # the sequence the contract suite proved: reload() → prewarm().
@@ -275,6 +290,12 @@ def create_app(config: EngineConfig) -> FastAPI:
     # Engine supervision facts become HTTP facts, quoted, not dressed up.
     @app.exception_handler(EngineExited)
     async def engine_exited(_request, exc: EngineExited):
+        raise HTTPException(status_code=503, detail=str(exc))
+
+    @app.exception_handler(EngineRefused)
+    async def engine_refused(_request, exc: EngineRefused):
+        # The engine's own refusal, quoted — a 503, not a 500: it answers "try again in a
+        # moment" when the searcher is mid-transition, and says so in the engine's words.
         raise HTTPException(status_code=503, detail=str(exc))
 
     @app.exception_handler(TimeoutError)
@@ -454,7 +475,7 @@ def create_app(config: EngineConfig) -> FastAPI:
 
     ui = Path(__file__).resolve().parent.parent / "ui"      # server/ui, vanilla, no build
     if ui.is_dir():
-        app.mount("/", StaticFiles(directory=ui, html=True), name="ui")
+        app.mount("/", UIFiles(directory=ui, html=True), name="ui")
 
     return app
 

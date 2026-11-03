@@ -43,6 +43,18 @@ class EngineExited(RuntimeError):
         super().__init__(f"{name} process ended (exit {code}): {tail}")
 
 
+class EngineRefused(RuntimeError):
+    """The helper ANSWERED, with its own refusal: `{"ok": false, "error": …}`
+    (`SearchService.swift:106,115`). Observed live: the searcher mid-transition right
+    after indexing (the Stage-10 proof battery hit this as a 500 — a reply without
+    `hits` is not a search result). The engine's words ride along quoted; the API
+    answers 503, and the client may retry once the searcher catches up."""
+
+    def __init__(self, op: str, error: str):
+        self.op, self.error = op, error
+        super().__init__(f"engine refused {op!r}: {error}")
+
+
 class JsonLinesProcess:
     """Spawned `digup` helper: `request()` for answers, `events()` for the engine's own lines."""
 
