@@ -5,7 +5,13 @@ description: Search and retrieve local source code, PDFs, documents, screenshots
 
 # DigUp CLI (`digup`)
 
-DigUp is a local multimodal semantic + keyword search engine for macOS. It maintains two indexes under `~/Library/Application Support/DigUp/index.noindex/`:
+DigUp is a local multimodal semantic + keyword search engine for macOS, Windows and Linux. It maintains two indexes in its index folder:
+
+- macOS: `~/Library/Application Support/DigUp/index.noindex/`
+- Windows: `%LOCALAPPDATA%\DigUp\index\`
+- Linux: `$XDG_DATA_HOME/digup/index/` (default `~/.local/share/digup/index/`)
+
+The indexes:
 
 1. **Main index (`index.sqlite`, default)**: Screenshots, images, PDFs (with page numbers), documents (`.md`, `.txt`, `.docx`, `.pptx`, `.xlsx`, `.rtf`, `.html`), audio recordings (Whisper transcripts with timestamps), and videos (frames + transcripts with timestamps).
 2. **Code index (`code.sqlite`, `--code`)**: Source code, configs, shell scripts, and Jupyter notebooks across indexed repositories, chunked at blank-line boundaries into ~45-line stretches (`loc`..`loc_end`) with automatic definition line detection (`focus`).
@@ -14,7 +20,13 @@ Every search blends **vector similarity** (768-d Matryoshka embeddings from Embe
 
 ## Binary Location
 
-Run `digup` directly (installed at `~/.local/bin/digup`). If `digup` is not on `$PATH`, invoke `/Applications/DigUp.app/Contents/Helpers/digup`.
+Run `digup` directly if it's on `PATH` (`scripts/install-cli.sh` puts it at `~/.local/bin/digup` on macOS and Linux; `scripts/install-cli.ps1` adds the app's helper folder to the user `PATH` on Windows). Otherwise invoke the copy inside the installed app:
+
+- macOS: `/Applications/DigUp.app/Contents/Helpers/digup`
+- Windows: `%LOCALAPPDATA%\DigUp\helper\digup.exe` (PowerShell: `& "$env:LOCALAPPDATA\DigUp\helper\digup.exe"`)
+- Linux (.deb): `/usr/lib/DigUp/helper/digup`
+
+On Windows, paths work in either form (`C:\src\repo` or `C:/src/repo`) and scopes ignore case, as Windows does.
 
 ## Quick Reference
 
@@ -22,7 +34,7 @@ Run `digup` directly (installed at `~/.local/bin/digup`). If `digup` is not on `
 # 1. Search code in the current repo (automatically maps git worktrees to the main repo)
 digup search --code --here "hybrid search score fusion" --text -n 5
 
-# 2. Search code across ALL indexed repositories on this Mac
+# 2. Search code across ALL indexed repositories on this computer
 digup search --code "exponential backoff retry" --text -n 5
 
 # 3. Fast keyword + symbol definition lookup (~10 ms, skips model & vector loading)
@@ -87,7 +99,7 @@ Reports vector counts, segment counts, file counts by kind and state (`done`, `p
 
 ### `digup index [--code] [--limit <n>] [<folder>...]`
 
-Incrementally syncs and indexes folders (defaults to the folders configured in the DigUp macOS app).
+Incrementally syncs and indexes folders (defaults to the folders configured in the DigUp app).
 
 ## Interpreting Results & JSON Fields
 

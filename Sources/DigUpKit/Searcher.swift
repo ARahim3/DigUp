@@ -138,12 +138,15 @@ public final class Searcher {
         if queryVector != nil, !vectorsLoaded { try reload() }
         let fileKind = self.fileKind
         let filePath = self.filePath
-        let targets = roots.map(FolderSelection.searchTargets(for:))
+        // Windows paths ignore case: the targets are lowered once here, each file's path as it's checked.
+        let ignoreCase = FolderSelection.isWindows
+        let targets = roots.map { FolderSelection.searchTargets(for: $0).map { ignoreCase ? $0.lowercased() : $0 } }
         var allowedIds: Set<Int64>?
         if let targets {
             let matching = Set(filePath.compactMap { id, path in
                 (kinds == nil || fileKind[id].map { kinds!.contains($0) } == true)
-                    && FolderSelection.matches(path, targets: targets) ? id : nil
+                    && FolderSelection.matches(ignoreCase ? path.lowercased() : path, targets: targets,
+                                               ignoringCase: false) ? id : nil
             })
             if matching.isEmpty { return [] }
             allowedIds = matching
@@ -439,7 +442,9 @@ public final class Searcher {
     /// All content segments (excluding the synthetic 'name' segment) of the file at `path`, ordered by location.
     public func segments(ofFile path: String) throws -> [SegmentDetail] {
         let targets = FolderSelection.searchTargets(for: [path])
-        guard let fileID = filePath.first(where: { targets.contains($0.value) })?.key else { return [] }
+        guard let fileID = filePath.first(where: { entry in
+            targets.contains { FolderSelection.samePath($0, entry.value) }
+        })?.key else { return [] }
         var ids: [Int64] = []
         try store.db.query("SELECT id FROM segments WHERE file = ? AND kind != 'name' ORDER BY loc, id",
                            [.int(fileID)]) { ids.append($0.int(0)) }

@@ -118,7 +118,7 @@ struct Arguments {
         if flags.contains("--here") || flags.contains("-C") {
             paths.append(URL(fileURLWithPath: FileManager.default.currentDirectoryPath).standardizedFileURL.path)
         }
-        return paths.isEmpty ? nil : paths
+        return paths.isEmpty ? nil : paths.map { FolderSelection.upperDrive($0) }
     }
 
     func store() throws -> IndexStore {
