@@ -42,6 +42,7 @@ from .engine import EngineConfig, SearchService
 from .engine.cli import CLIError, estimate_lines, status as cli_status
 from .engine.protocol import EngineExited, EngineRefused
 from .jobs import JobBusy, JobRunner
+from .security import HostOriginGuard, allowed_hosts_from_env
 
 # The engine's FileKind rawValues (Sources/DigUpKit FileKind): the API refuses anything
 # else with a 422 — the engine would silently drop it, and silence is not honesty.
@@ -337,6 +338,12 @@ def create_app(config: EngineConfig) -> FastAPI:
         openapi_url="/api/v1/openapi.json",
         lifespan=lifespan,
     )
+
+    # §7's explicit Host/Origin validation, installed always and engaged only when the
+    # operator names the hosts this deployment serves (DIGUP_SERVER_ALLOWED_HOSTS). The
+    # loopback default keeps passing everything through: nothing changes for a localhost
+    # server, and a Docker-network / reverse-proxy deployment opts in by naming its hosts.
+    app.add_middleware(HostOriginGuard, allowed_hosts=allowed_hosts_from_env(os.environ))
 
     # Engine supervision facts become HTTP facts, quoted, not dressed up.
     @app.exception_handler(EngineExited)

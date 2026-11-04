@@ -272,6 +272,14 @@ Retry it. A `500` means a server bug — report it, and it ships with a test.
   a container uvicorn binds `0.0.0.0` inside and the `127.0.0.1:8787:8787` publish line is what
   enforces localhost). LAN exposure needs authentication first — do not publish the port on a
   routable interface unauthenticated.
+* **Host and Origin validation is opt-in**: `DIGUP_SERVER_ALLOWED_HOSTS` names the URL hosts
+  this deployment serves. Unset (the default) validates nothing, so loopback behavior never
+  changes. When set: a request whose `Host` is not listed gets `400`, and a browser's
+  state-changing request (`POST`/`PUT`/`PATCH`/`DELETE`) whose `Origin` is not that same host
+  gets `403`. Non-browser clients send no `Origin` and pass; read-only `GET`s are not checked;
+  ports are not compared; there is no wildcard. Set it the moment the server is reachable from a
+  Docker network, a reverse proxy, or a LAN name — that is the setting that stops DNS-rebinding
+  against a localhost service. `tests/test_security.py` pins all of it.
 * No CORS allowance at all: the UI is served by the API on the same origin.
 * No settings endpoints: the server's configuration is container configuration
   ([`.env.example`](../.env.example)), not a remote-writeable surface. No uploads, no
