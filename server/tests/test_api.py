@@ -115,6 +115,18 @@ def test_error_bodies_are_one_detail_string(client):
     assert all({"type", "loc", "msg"} <= set(item) for item in detail)
 
 
+def test_media_ids_are_per_reply_across_the_http_surface(client):
+    """`docs/API.md`'s rule, pinned over HTTP: the same file in two replies carries two
+    handles, so a client may not cache a `media_id` across searches (and the engine's own
+    `path` + `kind` + `segment_id` + `loc` are what it should key on instead)."""
+    def top(c):
+        hit = c.post("/api/v1/search", json={"q": "wakeboarding", "limit": 1}).json()["hits"][0]
+        return Path(hit["path"]).name, hit["media_id"]
+    (name_a, id_a) = top(client)
+    (name_b, id_b) = top(client)
+    assert name_a == name_b and id_a != id_b
+
+
 def test_the_api_validates_what_the_engine_would_silently_drop(client):
     bad = client.post("/api/v1/search", json={"q": "x", "kinds": ["not-a-kind"]})
     assert bad.status_code == 422                      # engine drops; API says so
