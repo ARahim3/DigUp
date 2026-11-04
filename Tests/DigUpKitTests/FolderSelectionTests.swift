@@ -163,4 +163,38 @@ import Testing
         try store.insert(Candidate(path: "/D/Media/Courses/a.mp4", kind: .video, size: 1, mtime: 1, inode: 1, device: 1))
         #expect(try store.files(under: ["/D", "/D/Media/Courses"]).count == 1)
     }
+
+    // Git for Windows writes a worktree's gitdir as C:/Users/…: absolute, not relative to the worktree.
+    @Test func windowsDrivePathsAreAbsolute() {
+        #expect(FolderSelection.isAbsolutePath("/home/me/repo/.git/worktrees/wt", windows: false))
+        #expect(!FolderSelection.isAbsolutePath("C:/Users/me/repo/.git/worktrees/wt", windows: false))
+        #expect(FolderSelection.isAbsolutePath("C:/Users/me/repo/.git/worktrees/wt", windows: true))
+        #expect(FolderSelection.isAbsolutePath("d:\\src\\repo\\.git\\worktrees\\wt", windows: true))
+        #expect(FolderSelection.isAbsolutePath("\\\\server\\share\\repo", windows: true))
+        #expect(!FolderSelection.isAbsolutePath("../repo/.git/worktrees/wt", windows: true))
+        #expect(!FolderSelection.isAbsolutePath("C:relative", windows: true))
+    }
+
+    @Test func relativeGitDirResolvesAgainstTheWorktree() {
+        // Relative to the worktree folder: up out of feature/ and worktrees/, into billing/.
+        let main = FolderSelection.gitDirPath("../../billing/.git/worktrees/feature", worktree: "/src/worktrees/feature")
+        #expect(main == "/src/billing/.git/worktrees/feature")
+    }
+
+    // Windows file systems ignore case: a shell's c:\… is the index's C:/….
+    @Test func windowsScopesIgnoreCase() {
+        #expect(FolderSelection.matches("C:/Users/me/repo/a.swift", targets: ["c:/users/me/repo"], ignoringCase: true))
+        #expect(!FolderSelection.matches("C:/Users/me/repo/a.swift", targets: ["c:/users/me/repo"], ignoringCase: false))
+        #expect(!FolderSelection.matches("C:/Users/me/repo2/a.swift", targets: ["c:/users/me/repo"], ignoringCase: true))
+        #expect(FolderSelection.samePath("C:/A/b.txt", "c:/a/B.TXT", ignoringCase: true))
+        #expect(!FolderSelection.samePath("/A/b.txt", "/a/b.txt", ignoringCase: false))
+    }
+
+    @Test func driveLettersAreCapitalizedOnWindowsOnly() {
+        #expect(FolderSelection.upperDrive("c:/Users/me", windows: true) == "C:/Users/me")
+        #expect(FolderSelection.upperDrive("/d:/src", windows: true) == "/D:/src")
+        #expect(FolderSelection.upperDrive("C:/Users", windows: true) == "C:/Users")
+        #expect(FolderSelection.upperDrive("c:/Users/me", windows: false) == "c:/Users/me")
+        #expect(FolderSelection.upperDrive("/home/me", windows: true) == "/home/me")
+    }
 }

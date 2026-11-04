@@ -72,4 +72,46 @@ PATH="/c/Windows/System32:/c/Windows:/c/Windows/System32/Wbem" "$helper" status 
 grep -Eq '^vectors: 5 in 5 segments' "$work/status.txt" || { echo "not every file has a vector"; exit 1; }
 PATH="/c/Windows/System32:/c/Windows:/c/Windows/System32/Wbem" DIGUP_MODELS="$models" \
   "$helper" search "how long to bake the cake" --index "$(win "$work/index")" -n 3
+
+# The CLI's scoped search and show, as a coding agent calls them on Windows: a scope whose drive letter is in small
+# letters (Windows ignores case), a file named with backslashes, and --here inside a git worktree (Git for Windows
+# writes its gitdir as D:/…/.git/worktrees/<name>, which must map back to the main checkout's indexed paths).
+cli() { PATH="/c/Windows/System32:/c/Windows:/c/Windows/System32/Wbem" DIGUP_MODELS="$models" "$helper" "$@"; }
+echo "the CLI: a scope with a small drive letter"
+files=$(win "$work/files")
+small="$(printf %s "${files:0:1}" | tr '[:upper:]' '[:lower:]')${files:1}"
+cli search --keyword "lemon syrup" --in "$small" --index "$(win "$work/index")" --json | tee "$work/scoped.json"
+grep -q 'recipe.txt' "$work/scoped.json" || { echo "a search scoped to $small didn't find recipe.txt"; exit 1; }
+cli status --in "$small" --index "$(win "$work/index")" --json | tee "$work/scoped-status.json"
+grep -Eq '"vectors" *: *[1-9]' "$work/scoped-status.json" || { echo "status scoped to $small found nothing"; exit 1; }
+echo "the CLI: show a file named with backslashes"
+cli show "$(cygpath -w "$work/files/recipe.txt")" --index "$(win "$work/index")" | tee "$work/show.txt"
+grep -qi 'lemon syrup' "$work/show.txt" || { echo "show didn't print recipe.txt's text"; exit 1; }
+echo "the CLI: --here in a git worktree"
+repo=$work/project
+mkdir -p "$repo"
+cat > "$repo/retry.py" <<'PY'
+import time
+
+
+def retry_with_backoff(call, tries=5):
+    for attempt in range(tries):
+        try:
+            return call()
+        except OSError:
+            time.sleep(2 ** attempt)
+    return call()
+PY
+git -C "$repo" init -q
+git -C "$repo" add retry.py
+git -C "$repo" -c user.name=check -c user.email=check@example.invalid commit -qm "retry"
+git -C "$repo" worktree add -q "$work/project-feature"
+cli index --code "$(win "$repo")" --index "$(win "$work/index")"
+(cd "$work/project-feature" &&
+  cli search --code --here --keyword "retry_with_backoff" --index "$(win "$work/index")" --json) | tee "$work/here.json"
+grep -q 'retry.py' "$work/here.json" || { echo "--here in a worktree didn't find the main checkout's retry.py"; exit 1; }
+echo "the CLI's installer"
+powershell -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w scripts/install-cli.ps1)"
+powershell -NoProfile -Command '[Environment]::GetEnvironmentVariable("Path", "User")' | tr ';' '\n' |
+  grep -iq 'DigUp\\helper' || { echo "install-cli.ps1 didn't put the helper folder on the user PATH"; exit 1; }
 echo "ok"

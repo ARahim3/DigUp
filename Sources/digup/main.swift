@@ -14,9 +14,13 @@ let usage = """
       digup estimate <folder>... [--json]     what would be indexed, and how long the first pass takes
       digup index <folder>... [--limit N]     sync the index with these folders, embed what's new, then the rest
                                               of long PDFs and documents
-      digup search <words>... [--kind K,K] [-n 10] [--json]
-                                              "code: <words>" searches the code index
-      digup status                            what's in the index
+      digup search <words>... [--code | --all] [--in DIR]... [--here] [--kind K,K] [--keyword] [--strong]
+                              [--text] [-n 10] [--json]
+                                              "code: <words>" or --code searches the code index; --all searches both
+      digup show <segment-id | file>... [--code | --all] [--json]
+                                              read the full indexed text of a matched segment or file
+      digup status [--code | --all] [--in DIR]... [--here] [--json]
+                                              what's in the index
       digup speed [--model [--if-needed] [--when-quiet S] [--tries N]] [--json]
                                               this machine's speed next to the M4 Pro behind the estimates, and
                                               what indexing has measured here (costs.json in the index folder);
@@ -35,9 +39,15 @@ let usage = """
 
     Options:
       --index DIR          index folder (default: DigUp's Application Support folder; see `digup status`)
-      --code               estimate, index or show the code index of these folders (code.sqlite in the index
-                           folder): source files, their repos' docs and notebooks, minus what git ignores
-      --kind K,K           screenshot, image, pdf, doc, audio, video
+      --code               estimate, index, search or show the code index (code.sqlite in the index folder):
+                           source files, their repos' docs and notebooks, minus what git ignores
+      --all                search, show or inspect both the main index and the code index together
+      --in DIR             scope search or status to files inside this folder or file path (repeatable)
+      --here, -C           scope search or status to the current working directory (resolves git worktrees)
+      --text               include the full matched segment text (page, passage, OCR or code lines) in search output
+      --keyword            keyword-only search (FTS5 + symbol definition lookup, skips loading the embedding model)
+      --strong             omit weaker tail matches (below 0.5× the top hit's score)
+      --kind K,K           screenshot, image, pdf, doc, audio, video, code
       --include-code       also index loose source code and data files as documents (outside code projects)
       --include-datasets   don't skip folders that look like datasets
       --exclude DIR        don't index this folder (repeatable)
@@ -63,10 +73,10 @@ struct Arguments {
     var values: [String: String] = [:]
     var lists: [String: [String]] = [:]
     var flags: Set<String> = []
-    static let valued: Set<String> = ["--index", "--limit", "--kind", "-n", "--zgate", "--word-weight", "--new-limit",
-                                      "--linger", "--shot-tokens", "--code-stretch", "--encoder-idle", "--to",
-                                      "--memory-limit", "--time-limit", "--tries", "--when-quiet"]
-    static let repeated: Set<String> = ["--exclude", "--exclude-ext", "--code-root", "--code-exclude"]
+    static let valued: Set<String> = ["--index", "--limit", "--kind", "-n", "--zgate", "--z-gate", "--word-weight",
+                                      "--new-limit", "--linger", "--shot-tokens", "--code-stretch", "--encoder-idle",
+                                      "--to", "--memory-limit", "--time-limit", "--tries", "--when-quiet"]
+    static let repeated: Set<String> = ["--exclude", "--exclude-ext", "--code-root", "--code-exclude", "--in"]
 
     init(_ raw: ArraySlice<String>) throws {
         var index = raw.startIndex
@@ -80,7 +90,7 @@ struct Arguments {
                     values[argument] = raw[index + 1]
                 }
                 index += 2
-            } else if argument.hasPrefix("--") || argument == "-h" {
+            } else if argument.hasPrefix("--") || argument == "-h" || argument == "-C" {
                 flags.insert(argument)
                 index += 1
             } else {
@@ -97,6 +107,19 @@ struct Arguments {
 
     /// `--code`: the code index, not the main one.
     var code: Bool { flags.contains("--code") }
+    var all: Bool { flags.contains("--all") }
+    var keyword: Bool { flags.contains("--keyword") }
+    var wantText: Bool { flags.contains("--text") }
+    var strongOnly: Bool { flags.contains("--strong") }
+
+    /// Folder or file paths to scope `search` or `status` to (`--in DIR`, `--here`, `-C`). Nil when unscoped.
+    var scopePaths: [String]? {
+        var paths = (lists["--in"] ?? []).map { Self.folderURL($0).path }
+        if flags.contains("--here") || flags.contains("-C") {
+            paths.append(URL(fileURLWithPath: FileManager.default.currentDirectoryPath).standardizedFileURL.path)
+        }
+        return paths.isEmpty ? nil : paths.map { FolderSelection.upperDrive($0) }
+    }
 
     func store() throws -> IndexStore {
         try IndexStore(directory: indexFolder, file: code ? IndexStore.codeFile : IndexStore.mainFile)
@@ -139,14 +162,16 @@ struct Arguments {
     static func isReadable(_ url: URL) -> Bool { Crawler.canList(url) }
 
     /// Dev knobs for A/B runs in evals/.
-    var zGate: Double { values["--zgate"].flatMap(Double.init) ?? 2.0 }
+    var zGate: Double { (values["--zgate"] ?? values["--z-gate"]).flatMap(Double.init) ?? 2.0 }
     var wordWeight: Double? { values["--word-weight"].flatMap(Double.init) }   // nil: the index's own (`Searcher`)
 
     func kinds() throws -> Set<FileKind>? {
         guard let list = values["--kind"] else { return nil }
         return Set(try list.split(separator: ",").map {
-            guard let kind = FileKind(rawValue: $0.trimmingCharacters(in: .whitespaces)) else {
-                throw CLIError("unknown kind \($0); use screenshot, image, pdf, doc, audio, video")
+            let raw = $0.trimmingCharacters(in: .whitespaces).lowercased()
+            let mapped = raw == "document" || raw == "documents" || raw == "docs" ? "doc" : raw
+            guard let kind = FileKind(rawValue: mapped) else {
+                throw CLIError("unknown kind \($0); use screenshot, image, pdf, doc, audio, video, code")
             }
             return kind
         })
@@ -175,15 +200,34 @@ func clock(_ seconds: Double) -> String {
                          : String(format: "%d:%02d", total / 60, total % 60)
 }
 
-func location(_ hit: SearchHit) -> String {
-    switch hit.segment {
-    case .page, .pageImage: hit.loc.map { "p. \(Int($0))" } ?? ""
-    case .audio, .frame: hit.loc.map { "at \(clock($0))" + (hit.segment == .audio ? " (sound)" : "") } ?? ""
-    case .chunk: hit.loc.map { "part \(Int($0))" } ?? ""
-    case .lines: hit.loc.map { "lines \(Int($0))–\(Int(hit.locEnd ?? $0))" + (hit.focus.map { ", opens at \(Int($0))" } ?? "") } ?? ""
-    case .cells: hit.loc.map { $0 == hit.locEnd ? "cell \(Int($0))" : "cells \(Int($0))–\(Int(hit.locEnd ?? $0))" } ?? ""
+func location(_ segment: SegmentKind, loc: Double?, locEnd: Double?, focus: Double? = nil) -> String {
+    switch segment {
+    case .page, .pageImage: loc.map { "p. \(Int($0))" } ?? ""
+    case .audio, .frame: loc.map { "at \(clock($0))" + (segment == .audio ? " (sound)" : "") } ?? ""
+    case .chunk: loc.map { "part \(Int($0))" } ?? ""
+    case .lines: loc.map { "lines \(Int($0))–\(Int(locEnd ?? $0))" + (focus.map { ", opens at \(Int($0))" } ?? "") } ?? ""
+    case .cells: loc.map { $0 == locEnd ? "cell \(Int($0))" : "cells \(Int($0))–\(Int(locEnd ?? $0))" } ?? ""
     case .ocr: "text in image"
     default: ""
+    }
+}
+
+func location(_ hit: SearchHit) -> String {
+    location(hit.segment, loc: hit.loc, locEnd: hit.locEnd, focus: hit.focus)
+}
+
+func printSegmentText(_ text: String, segment: SegmentKind, loc: Double?, indent: String) {
+    let lines = text.split(omittingEmptySubsequences: false, whereSeparator: { $0 == "\n" || $0 == "\r\n" })
+    if segment == .lines {
+        let first = Int(loc ?? 1)
+        let width = String(first + max(lines.count - 1, 0)).count
+        for (offset, line) in lines.enumerated() {
+            print("\(indent)\(lpad("\(first + offset)", width)) | \(line)")
+        }
+    } else {
+        for line in lines {
+            print("\(indent)\(line)")
+        }
     }
 }
 
@@ -362,43 +406,225 @@ func queryVectors(_ queries: [String], store: IndexStore, searcher: Searcher,
 func search(_ args: Arguments) throws {
     var query = args.positional.joined(separator: " ")
     guard !query.isEmpty else { throw CLIError("search for what?") }
-    let code = CodeQuery.text(of: query)
-    if let code { query = code }
+    let prefixedCode = CodeQuery.text(of: query)
+    if let prefixedCode { query = prefixedCode }
+    let useCode = args.code || prefixedCode != nil
     guard !query.isEmpty else { throw CLIError("search the code for what?") }
-    let store = try IndexStore(directory: args.indexFolder, file: code == nil ? IndexStore.mainFile : IndexStore.codeFile)
-    let searcher = try Searcher(store: store)
+
+    let limit = args.values["-n"].flatMap(Int.init) ?? 10
+    let kinds = try args.kinds()
+    let scope = args.scopePaths
     let started = Date()
-    let vector = try queryVectors([query], store: store, searcher: searcher,
-                                  prompt: code == nil ? Prompts.query : Prompts.codeQuery)?.first
-    let encoded = Date()
-    let hits = try searcher.search(query, queryVector: vector, kinds: try args.kinds(),
-                                   limit: args.values["-n"].flatMap(Int.init) ?? 10, zGate: args.zGate,
-                                   wordWeight: args.wordWeight)
+    let encoded: Date
+    var totalVectors = 0
+    var pairedHits: [(hit: SearchHit, searcher: Searcher)] = []
+
+    if args.all && !useCode {
+        let mainStore = try IndexStore(directory: args.indexFolder, file: IndexStore.mainFile)
+        let mainSearcher = try Searcher(store: mainStore, loadVectors: !args.keyword)
+        let codeURL = args.indexFolder.appendingPathComponent(IndexStore.codeFile)
+        let codeStore = FileManager.default.fileExists(atPath: codeURL.path)
+            ? try IndexStore(directory: args.indexFolder, file: IndexStore.codeFile) : nil
+        let codeSearcher = try codeStore.map { try Searcher(store: $0, loadVectors: !args.keyword) }
+        totalVectors = mainSearcher.vectorCount + (codeSearcher?.vectorCount ?? 0)
+
+        var mainVector: [Float]?
+        var codeVector: [Float]?
+        if !args.keyword && totalVectors > 0 {
+            let worker = try makeEmbedder(
+                textOnly: true, log: mainStore.directory.appendingPathComponent("worker-query.log"))
+            defer { worker.close() }
+            for searcher in [mainSearcher, codeSearcher].compactMap({ $0 }) where searcher.vectorCount > 0 {
+                if let source = searcher.vectorSource, source != worker.info.vectorSource {
+                    throw CLIError("index vectors come from \(source) but the query encoder is \(worker.info.vectorSource)")
+                }
+            }
+            let pair = try worker.embedTexts([Prompts.query(query), Prompts.codeQuery(query)])
+            if mainSearcher.vectorCount > 0 { mainVector = pair.first }
+            if (codeSearcher?.vectorCount ?? 0) > 0, pair.count > 1 { codeVector = pair[1] }
+        }
+        encoded = Date()
+
+        let mainHits = try mainSearcher.search(
+            query, queryVector: mainVector, kinds: kinds, under: scope,
+            limit: limit, zGate: args.zGate, wordWeight: args.wordWeight)
+        pairedHits.append(contentsOf: mainHits.map { ($0, mainSearcher) })
+
+        if let codeSearcher {
+            let codeHits = try codeSearcher.search(
+                query, queryVector: codeVector, kinds: kinds, under: scope,
+                limit: limit, zGate: args.zGate, wordWeight: args.wordWeight)
+            pairedHits.append(contentsOf: codeHits.map { ($0, codeSearcher) })
+        }
+        pairedHits.sort { a, b in
+            a.hit.score != b.hit.score ? a.hit.score > b.hit.score : a.hit.segmentID < b.hit.segmentID
+        }
+        if pairedHits.count > limit {
+            pairedHits = Array(pairedHits.prefix(limit))
+        }
+    } else {
+        let store = try IndexStore(
+            directory: args.indexFolder, file: useCode ? IndexStore.codeFile : IndexStore.mainFile)
+        let searcher = try Searcher(store: store, loadVectors: !args.keyword)
+        totalVectors = searcher.vectorCount
+        let vector = args.keyword
+            ? nil
+            : try queryVectors(
+                [query], store: store, searcher: searcher,
+                prompt: useCode ? Prompts.codeQuery : Prompts.query)?.first
+        encoded = Date()
+        let hits = try searcher.search(
+            query, queryVector: vector, kinds: kinds, under: scope,
+            limit: limit, zGate: args.zGate, wordWeight: args.wordWeight)
+        pairedHits = hits.map { ($0, searcher) }
+    }
     let searched = Date()
+
+    let strongCutoff = Searcher.strongCount(pairedHits.map(\.hit))
+    if args.strongOnly {
+        pairedHits = Array(pairedHits.prefix(strongCutoff))
+    }
+
     if args.flags.contains("--json") {
-        let rows = hits.map(hitFields)
+        let rows = pairedHits.enumerated().map { index, entry in
+            let fullText = args.wantText ? (try? entry.searcher.text(ofSegment: entry.hit.segmentID)) : nil
+            return hitFields(entry.hit, strong: index < strongCutoff, text: fullText)
+        }
         let data = try JSONSerialization.data(withJSONObject: rows, options: [.prettyPrinted, .sortedKeys])
         print(String(data: data, encoding: .utf8) ?? "[]")
         return
     }
-    if hits.isEmpty { print("no good matches") }
-    for (rank, hit) in hits.enumerated() {
-        let why = [hit.z.map { String(format: "z %.1f", $0) }, hit.keywordRank.map { "words #\($0)" }]
-            .compactMap { $0 }.joined(separator: ", ")
+    if pairedHits.isEmpty { print("no good matches") }
+    for (rank, entry) in pairedHits.enumerated() {
+        let hit = entry.hit
+        let why = [
+            hit.z.map { String(format: "z %.1f", $0) },
+            hit.keywordRank.map { "words #\($0)" },
+            "seg \(hit.segmentID)",
+        ].compactMap { $0 }.joined(separator: ", ")
         let place = location(hit)
         print("\(lpad("\(rank + 1)", 2)). \(pad(hit.kind.rawValue, 10)) \((hit.path as NSString).lastPathComponent)"
               + (place.isEmpty ? "" : "  [\(place)]") + "   (\(why))")
         print("      \(tilde((hit.path as NSString).deletingLastPathComponent))")
-        if let excerpt = hit.excerpt, !excerpt.isEmpty { print("      “\(excerpt.prefix(160))”") }
+        if args.wantText, let text = try? entry.searcher.text(ofSegment: hit.segmentID), !text.isEmpty {
+            printSegmentText(text, segment: hit.segment, loc: hit.loc, indent: "      ")
+        } else if let excerpt = hit.excerpt, !excerpt.isEmpty {
+            print("      “\(excerpt.prefix(160))”")
+        }
     }
-    print(String(format: "(%d vectors · query encoder %.2f s incl. start-up · search %.0f ms)", searcher.vectorCount,
-                 encoded.timeIntervalSince(started), searched.timeIntervalSince(encoded) * 1000))
+    if args.keyword {
+        print(String(format: "(keyword search · %.0f ms)", searched.timeIntervalSince(encoded) * 1000))
+    } else {
+        print(String(format: "(%d vectors · query encoder %.2f s incl. start-up · search %.0f ms)", totalVectors,
+                     encoded.timeIntervalSince(started), searched.timeIntervalSince(encoded) * 1000))
+    }
 }
 
-func status(_ args: Arguments) throws {
-    let store = try args.store()
+func show(_ args: Arguments) throws {
+    guard !args.positional.isEmpty else { throw CLIError("show which segment ID or file path?") }
+    let mainURL = args.indexFolder.appendingPathComponent(IndexStore.mainFile)
+    let codeURL = args.indexFolder.appendingPathComponent(IndexStore.codeFile)
+
+    var searchers: [Searcher] = []
+    if args.code {
+        let store = try IndexStore(directory: args.indexFolder, file: IndexStore.codeFile)
+        searchers.append(try Searcher(store: store, loadVectors: false))
+    } else {
+        if FileManager.default.fileExists(atPath: mainURL.path) {
+            let store = try IndexStore(directory: args.indexFolder, file: IndexStore.mainFile)
+            searchers.append(try Searcher(store: store, loadVectors: false))
+        }
+        if FileManager.default.fileExists(atPath: codeURL.path) {
+            let store = try IndexStore(directory: args.indexFolder, file: IndexStore.codeFile)
+            searchers.append(try Searcher(store: store, loadVectors: false))
+        }
+        if searchers.isEmpty {
+            let store = try IndexStore(directory: args.indexFolder, file: IndexStore.mainFile)
+            searchers.append(try Searcher(store: store, loadVectors: false))
+        }
+    }
+
+    var results: [SegmentDetail] = []
+    for raw in args.positional {
+        let expanded = (raw as NSString).expandingTildeInPath
+        if let id = Int64(raw), !FileManager.default.fileExists(atPath: expanded) {
+            var matched = false
+            for searcher in searchers {
+                if let detail = try searcher.segment(id: id) {
+                    results.append(detail)
+                    matched = true
+                    if !args.all { break }
+                }
+            }
+            if !matched {
+                throw CLIError("no segment \(id)")
+            }
+        } else {
+            let absPath = URL(fileURLWithPath: expanded).standardizedFileURL.path
+            let candidates = FolderSelection.searchTargets(for: [absPath])
+            var matched = false
+            for searcher in searchers {
+                for candidate in candidates {
+                    let segs = try searcher.segments(ofFile: candidate)
+                    if !segs.isEmpty {
+                        results.append(contentsOf: segs)
+                        matched = true
+                        break
+                    }
+                }
+                if matched && !args.all { break }
+            }
+            if !matched {
+                throw CLIError("file not in index: \(raw)")
+            }
+        }
+    }
+
+    if args.flags.contains("--json") {
+        let rows = results.map(segmentFields)
+        let data = try JSONSerialization.data(withJSONObject: rows, options: [.prettyPrinted, .sortedKeys])
+        print(String(data: data, encoding: .utf8) ?? "[]")
+        return
+    }
+
+    for (idx, detail) in results.enumerated() {
+        if idx > 0 { print("") }
+        let place = location(detail.segment, loc: detail.loc, locEnd: detail.locEnd)
+        print("\(detail.kind.rawValue)  \(tilde(detail.path))"
+              + (place.isEmpty ? "" : "  [\(place)]")
+              + "   (seg \(detail.segmentID), \(detail.segment.rawValue))")
+        if let text = detail.text, !text.isEmpty {
+            printSegmentText(text, segment: detail.segment, loc: detail.loc, indent: "  ")
+        } else {
+            print("  (no stored text)")
+        }
+    }
+}
+
+func statusFields(_ store: IndexStore) throws -> [String: Any] {
+    let counts = try store.counts()
+    var dict: [String: Any] = [
+        "index": store.file.path,
+        "vectors": counts.vectors,
+        "segments": counts.segments,
+        "by_kind": counts.byKindAndState,
+        "unfinished_files": counts.unfinished,
+        "unfinished_units": counts.left,
+        "size_bytes": IndexStore.size(of: store.file),
+        "build_tag": LlamaEmbedder.buildTag,
+        "vector_version": LlamaEmbedder.vectorVersion,
+    ]
+    if let scope = store.scope { dict["scope"] = scope }
+    if let fingerprint = try store.meta("fingerprint") { dict["fingerprint"] = fingerprint }
+    return dict
+}
+
+func printStoreStatus(_ store: IndexStore) throws {
     let counts = try store.counts()
     print("index: \(tilde(store.file.path))")
+    if let scope = store.scope {
+        print("scope: " + scope.map(tilde).joined(separator: ", "))
+    }
     print("vectors: \(number(counts.vectors)) in \(number(counts.segments)) segments")
     for kind in FileKind.allCases {
         guard let states = counts.byKindAndState[kind.rawValue] else { continue }
@@ -411,6 +637,39 @@ func status(_ args: Arguments) throws {
     if let fingerprint = try store.meta("fingerprint") { print("built with: \(fingerprint)") }
     print("this digup: llama.cpp \(LlamaEmbedder.buildTag), vectors \(LlamaEmbedder.vectorVersion)")
     print("size: \(ByteCountFormatter.string(fromByteCount: IndexStore.size(of: store.file), countStyle: .file))")
+}
+
+func status(_ args: Arguments) throws {
+    let resolvedScope = args.scopePaths.map(FolderSelection.searchTargets(for:))
+    if args.all {
+        var stores: [IndexStore] = [try IndexStore(directory: args.indexFolder, file: IndexStore.mainFile)]
+        let codeURL = args.indexFolder.appendingPathComponent(IndexStore.codeFile)
+        if FileManager.default.fileExists(atPath: codeURL.path) {
+            stores.append(try IndexStore(directory: args.indexFolder, file: IndexStore.codeFile))
+        }
+        for store in stores { store.scope = resolvedScope }
+        if args.flags.contains("--json") {
+            let rows = try stores.map(statusFields)
+            let data = try JSONSerialization.data(withJSONObject: rows, options: [.prettyPrinted, .sortedKeys])
+            print(String(data: data, encoding: .utf8) ?? "[]")
+            return
+        }
+        for (idx, store) in stores.enumerated() {
+            if idx > 0 { print("") }
+            try printStoreStatus(store)
+        }
+        return
+    }
+
+    let store = try args.store()
+    store.scope = resolvedScope
+    if args.flags.contains("--json") {
+        let dict = try statusFields(store)
+        let data = try JSONSerialization.data(withJSONObject: dict, options: [.prettyPrinted, .sortedKeys])
+        print(String(data: data, encoding: .utf8) ?? "{}")
+        return
+    }
+    try printStoreStatus(store)
 }
 
 /// The app's indexing helper: sync + index on request, JSON events out (IndexService.swift).
@@ -715,6 +974,7 @@ do {
     case "estimate": try estimate(args)
     case "index": try index(args)
     case "search": try search(args)
+    case "show": try show(args)
     case "status": try status(args)
     case "speed": try speed(args)
     case "eval": try evaluate(args)

@@ -23,6 +23,21 @@ public struct SearchHit: Sendable {
     public var focus: Double? = nil
 }
 
+/// Metadata and full stored text of a single indexed segment (`Searcher.segment(id:)`).
+public struct SegmentDetail: Sendable, Equatable {
+    public let segmentID: Int64
+    public let path: String
+    public let kind: FileKind
+    public let segment: SegmentKind
+    public let loc: Double?
+    public let locEnd: Double?
+    public let excerpt: String?
+    public let text: String?
+    public let modified: Double
+    public let size: Int64
+    public let info: [String: String]
+}
+
 /// Hybrid search: meaning (EmbeddingGemma's vectors) + words (FTS5).
 ///
 /// Meaning is the model's cosine similarity, put on one scale per query (`meaning`): every vector is scored anyway, so
@@ -37,6 +52,7 @@ public final class Searcher {
     /// False for the vectors the later pass adds (`Indexer.finishLongFiles`): scored, but they don't set the scale.
     private var rowSetsScale: [Bool] = []
     private var fileKind: [Int64: FileKind] = [:]
+    private var filePath: [Int64: String] = [:]
     public private(set) var vectorSource: String?
     /// False after `releaseVectors()` (or `loadVectors: false`): keyword search still works, and the next search with
     /// a query vector loads them again.
@@ -99,8 +115,11 @@ public final class Searcher {
 
     private func reloadFiles() throws {
         fileKind.removeAll(keepingCapacity: true)
-        try store.db.query("SELECT id, kind FROM files") { row in
-            fileKind[row.int(0)] = FileKind(rawValue: row.text(1) ?? "")
+        filePath.removeAll(keepingCapacity: true)
+        try store.db.query("SELECT id, kind, path FROM files") { row in
+            let id = row.int(0)
+            fileKind[id] = FileKind(rawValue: row.text(1) ?? "")
+            filePath[id] = row.text(2) ?? ""
         }
         vectorSource = try store.meta("vector_source")
     }
@@ -112,12 +131,30 @@ public final class Searcher {
     public static let wordWeight = 2.0
     public static let codeWordWeight = 1.0
 
-    public func search(_ text: String, queryVector: [Float]?, kinds: Set<FileKind>? = nil, limit: Int = 20,
-                       zGate: Double = 2.0, wordWeight: Double? = nil, prefixLast: Bool = false) throws -> [SearchHit] {
+    public func search(_ text: String, queryVector: [Float]?, kinds: Set<FileKind>? = nil, under roots: [String]? = nil,
+                       limit: Int = 20, zGate: Double = 2.0, wordWeight: Double? = nil,
+                       prefixLast: Bool = false) throws -> [SearchHit] {
         let wordWeight = wordWeight ?? (isCode ? Self.codeWordWeight : Self.wordWeight)
         if queryVector != nil, !vectorsLoaded { try reload() }
         let fileKind = self.fileKind
-        let allowed = { (file: Int64) -> Bool in kinds == nil || fileKind[file].map { kinds!.contains($0) } ?? false }
+        let filePath = self.filePath
+        // Windows paths ignore case: the targets are lowered once here, each file's path as it's checked.
+        let ignoreCase = FolderSelection.isWindows
+        let targets = roots.map { FolderSelection.searchTargets(for: $0).map { ignoreCase ? $0.lowercased() : $0 } }
+        var allowedIds: Set<Int64>?
+        if let targets {
+            let matching = Set(filePath.compactMap { id, path in
+                (kinds == nil || fileKind[id].map { kinds!.contains($0) } == true)
+                    && FolderSelection.matches(ignoreCase ? path.lowercased() : path, targets: targets,
+                                               ignoringCase: false) ? id : nil
+            })
+            if matching.isEmpty { return [] }
+            allowedIds = matching
+        }
+        let allowed = { (file: Int64) -> Bool in
+            if let allowedIds { return allowedIds.contains(file) }
+            return kinds == nil || fileKind[file].map { kinds!.contains($0) } ?? false
+        }
 
         // Meaning: score every vector on this query's scale (`meaning`), keep each file's best segment.
         var best: [Int64: (z: Double, cosine: Double, row: Int)] = [:]
@@ -149,10 +186,11 @@ public final class Searcher {
         }
         if !patterns.isEmpty {
             var seen = Set<Int64>()
+            let fileFilter = allowedIds.map { " AND s.file IN (\($0.map(String.init).joined(separator: ",")))" } ?? ""
             try store.db.query("""
                 SELECT s.file, s.id, snippet(fts, 1, '«', '»', '…', 12), fts.original FROM fts
                 JOIN segments s ON s.id = fts.rowid
-                WHERE fts MATCH ? ORDER BY bm25(fts, 3.0, 1.0) LIMIT 1000
+                WHERE fts MATCH ?\(fileFilter) ORDER BY bm25(fts, 3.0, 1.0) LIMIT 1000
                 """, [.text(patterns.joined(separator: " OR "))]) { row in
                 let file = row.int(0)
                 guard words.count < 100, allowed(file), seen.insert(file).inserted else { return }
@@ -190,8 +228,11 @@ public final class Searcher {
         let wordRank = Dictionary(words.enumerated().map { ($0.element.file, ($0.offset + 1, $0.element)) },
                                   uniquingKeysWith: { first, _ in first })
         var hits: [SearchHit] = []
-        for (file, score) in scored.sorted(by: { $0.value > $1.value || ($0.value == $1.value && $0.key < $1.key) })
-            .prefix(limit) {
+        for (file, score) in scored.sorted(by: {
+            if $0.value != $1.value { return $0.value > $1.value }
+            let r0 = wordRank[$0.key]?.0 ?? .max, r1 = wordRank[$1.key]?.0 ?? .max
+            return r0 != r1 ? r0 < r1 : $0.key < $1.key
+        }).prefix(limit) {
             let rank = hits.count
             let semantic = best[file]
             let keyword = wordRank[file]
@@ -364,6 +405,50 @@ public final class Searcher {
         var text: String?
         try store.db.query("SELECT coalesce(original, body) FROM fts WHERE rowid = ?", [.int(id)]) { text = $0.text(0) }
         return text
+    }
+
+    /// Metadata and full stored text of segment `id`, or nil when no segment has that id.
+    public func segment(id: Int64) throws -> SegmentDetail? {
+        var detail: SegmentDetail?
+        try store.db.query("""
+            SELECT s.id, f.path, f.kind, s.kind, s.loc, s.loc_end, s.excerpt, f.mtime, f.size, f.info,
+                   coalesce(fts.original, fts.body)
+            FROM segments s
+            JOIN files f ON f.id = s.file
+            LEFT JOIN fts ON fts.rowid = s.id
+            WHERE s.id = ?
+            """, [.int(id)]) { row in
+            var info: [String: String] = [:]
+            if let json = row.text(9)?.data(using: .utf8) {
+                info = (try? JSONSerialization.jsonObject(with: json) as? [String: String]) ?? [:]
+            }
+            detail = SegmentDetail(
+                segmentID: row.int(0),
+                path: row.text(1) ?? "",
+                kind: FileKind(rawValue: row.text(2) ?? "") ?? .doc,
+                segment: SegmentKind(rawValue: row.text(3) ?? "") ?? .name,
+                loc: row.isNull(4) ? nil : row.double(4),
+                locEnd: row.isNull(5) ? nil : row.double(5),
+                excerpt: row.text(6),
+                text: row.text(10),
+                modified: row.double(7),
+                size: row.int(8),
+                info: info
+            )
+        }
+        return detail
+    }
+
+    /// All content segments (excluding the synthetic 'name' segment) of the file at `path`, ordered by location.
+    public func segments(ofFile path: String) throws -> [SegmentDetail] {
+        let targets = FolderSelection.searchTargets(for: [path])
+        guard let fileID = filePath.first(where: { entry in
+            targets.contains { FolderSelection.samePath($0, entry.value) }
+        })?.key else { return [] }
+        var ids: [Int64] = []
+        try store.db.query("SELECT id FROM segments WHERE file = ? AND kind != 'name' ORDER BY loc, id",
+                           [.int(fileID)]) { ids.append($0.int(0)) }
+        return try ids.compactMap { try segment(id: $0) }
     }
 
     /// (The Windows and Linux app's previews keep the same list in shell/ui/results.js.)

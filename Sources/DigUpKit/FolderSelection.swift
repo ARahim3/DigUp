@@ -123,6 +123,108 @@ public struct FolderSelection: Equatable, Sendable {
         #endif
     }
 
+    /// When `path` is inside a git worktree (where `.git` is a file pointing at `<main>/.git/worktrees/<name>`),
+    /// returns the corresponding path inside the main repository. The code crawler skips worktrees because they
+    /// duplicate the main repository (`Rules.codeSkipReason`), so scoping a search to a worktree (`--here`) must
+    /// match the main repository's indexed paths too.
+    public static func worktreeMainPath(_ path: String) -> String? {
+        var current = path
+        while current.count > 1 {
+            let dotGit = current + "/.git"
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: dotGit, isDirectory: &isDir) {
+                guard !isDir.boolValue,
+                      let contents = try? String(contentsOfFile: dotGit, encoding: .utf8) else { return nil }
+                let firstLine = contents.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
+                guard firstLine.hasPrefix("gitdir:") else { return nil }
+                let rawGitDir = firstLine.dropFirst("gitdir:".count).trimmingCharacters(in: .whitespaces)
+                let gitDir = gitDirPath(rawGitDir, worktree: current)
+                guard let range = gitDir.range(of: "/.git/worktrees/") else { return nil }
+                let mainRepo = String(gitDir[..<range.lowerBound])
+                let suffix = String(path.dropFirst(current.count))
+                return mainRepo + suffix
+            }
+            let parent = (current as NSString).deletingLastPathComponent
+            if parent == current { break }
+            current = parent
+        }
+        return nil
+    }
+
+    /// All canonical path spellings for `paths` (folders or files), including symlink/realPath resolutions and
+    /// git worktree → main repository mappings.
+    public static func searchTargets(for paths: [String]) -> [String] {
+        var out: [String] = []
+        for raw in paths where !raw.isEmpty {
+            let trimmed = raw.count > 1 && raw.hasSuffix("/") ? String(raw.dropLast()) : raw
+            let real = realPath(trimmed)
+            out.append(trimmed)
+            out.append(real)
+            for candidate in [trimmed, real] {
+                if let main = worktreeMainPath(candidate) {
+                    out.append(main)
+                    out.append(realPath(main))
+                }
+            }
+        }
+        return unique(out)
+    }
+
+    #if os(Windows)
+    public static let isWindows = true
+    #else
+    public static let isWindows = false
+    #endif
+
+    /// Whether a path as git or a shell writes it is absolute: `/…`, and on Windows also `C:/…`, `C:\…` and
+    /// `\\server\share\…` (Git for Windows writes a worktree's `gitdir:` as `C:/Users/…/.git/worktrees/<name>`).
+    static func isAbsolutePath(_ path: String, windows: Bool = isWindows) -> Bool {
+        if path.hasPrefix("/") { return true }
+        guard windows else { return false }
+        if path.hasPrefix("\\\\") { return true }
+        let chars = Array(path.prefix(3))
+        return chars.count == 3 && chars[0].isASCII && chars[0].isLetter && chars[1] == ":"
+            && (chars[2] == "/" || chars[2] == "\\")
+    }
+
+    /// A worktree's `gitdir:` value as a path in the same form the index stores, resolved against the worktree
+    /// folder when it's relative (`git worktree add --relative-paths`).
+    static func gitDirPath(_ raw: String, worktree: String) -> String {
+        if isAbsolutePath(raw) {
+            // Windows: through URL, so `C:\…` and `C:/…` come out the way the crawler's paths do.
+            return isWindows ? URL(fileURLWithPath: raw).standardizedFileURL.path : raw
+        }
+        return URL(fileURLWithPath: worktree).appendingPathComponent(raw).standardizedFileURL.path
+    }
+
+    /// The path with its drive letter in capitals (`c:/x` → `C:/x`, `/c:/x` → `/C:/x`) on Windows, as the crawler's
+    /// paths have it, so a scope from a shell that reports `c:\…` still finds the index's rows; unchanged elsewhere.
+    public static func upperDrive(_ path: String, windows: Bool = isWindows) -> String {
+        guard windows else { return path }
+        let chars = Array(path.prefix(3))
+        let at = chars.first == "/" ? 1 : 0
+        guard chars.count > at + 1, chars[at].isASCII, chars[at].isLetter, chars[at + 1] == ":" else { return path }
+        var out = path
+        let index = out.index(out.startIndex, offsetBy: at)
+        out.replaceSubrange(index...index, with: chars[at].uppercased())
+        return out
+    }
+
+    /// Whether two paths name the same file: case-insensitively on Windows, whose file systems ignore case (a shell
+    /// can report the working folder as `c:\…` while the index holds `C:/…`).
+    public static func samePath(_ a: String, _ b: String, ignoringCase: Bool = isWindows) -> Bool {
+        ignoringCase ? a.lowercased() == b.lowercased() : a == b
+    }
+
+    /// Whether `path` is equal to or inside any of `targets` (case-insensitively on Windows, as `samePath`).
+    public static func matches(_ path: String, targets: [String], ignoringCase: Bool = isWindows) -> Bool {
+        let path = ignoringCase ? path.lowercased() : path
+        return targets.contains { target in
+            let target = ignoringCase ? target.lowercased() : target
+            return path == target || isInside(path, target)
+        }
+    }
+
     private static func unique(_ paths: [String]) -> [String] {
         var seen = Set<String>()
         return paths.filter { seen.insert($0).inserted }
