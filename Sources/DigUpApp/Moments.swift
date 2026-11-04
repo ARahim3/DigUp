@@ -102,16 +102,19 @@ extension Engine {
 /// - a moment in QuickTime Player: it's asked to go there (macOS asks once whether DigUp may control it; without
 ///   that, the recording opens at the start)
 /// - a moment in IINA: its URL scheme takes a start time
+/// - a moment in VLC: VLC's own binary takes `--start-time`, the argument the Windows and Linux app gives it
+///   (`shell/src-tauri/moments.rs`)
 enum Opener {
     static let quickTime = "com.apple.QuickTimePlayerX"
     static let iina = "com.colliderli.iina"
+    static let vlc = "org.videolan.vlc"
     /// Debug runs (`-debugOpen dry`): say how it would open, and don't.
     static var dryRun = false
 
     /// The file's app can be told where in a recording to start.
     static func jumpsToMoments(_ url: URL) -> Bool {
         guard let app = NSWorkspace.shared.urlForApplication(toOpen: url) else { return false }
-        return [quickTime, iina].contains(Bundle(url: app)?.bundleIdentifier)
+        return [quickTime, iina, vlc].contains(Bundle(url: app)?.bundleIdentifier)
     }
 
     /// `words`: what to search for in a PDF (`Landmark.find`).
@@ -125,7 +128,7 @@ enum Opener {
         let moment = row.moment.flatMap { $0 >= 1 ? $0 : nil }
         if dryRun {
             let how = if let words { "searching “\(words)”" }
-                else if let moment, appID == iina || appID == quickTime { "at \(ResultRow.clock(moment))" }
+                else if let moment, appID == iina || appID == quickTime || appID == vlc { "at \(ResultRow.clock(moment))" }
                 else { "at the start" }
             log("open (dry run): \(row.name) in \(appName) \(how)")
             return
@@ -143,6 +146,9 @@ enum Opener {
         } else if let moment, appID == quickTime {
             log("open: \(row.name) at \(ResultRow.clock(moment)) in QuickTime Player")
             openInQuickTime(row.url, at: moment)
+        } else if let moment, appID == vlc {
+            log("open: \(row.name) at \(ResultRow.clock(moment)) in VLC")
+            openInVLC(app, row.url, at: moment)
         } else {
             log("open: \(row.name)")
             NSWorkspace.shared.open(row.url)
@@ -167,6 +173,24 @@ enum Opener {
         components?.queryItems = [URLQueryItem(name: "url", value: url.absoluteString),
                                   URLQueryItem(name: "mpv_start", value: String(format: "%.1f", seconds))]
         return components?.url
+    }
+
+    /// VLC's own binary takes `--start-time`, the argument the Windows and Linux app gives it
+    /// (`shell/src-tauri/moments.rs`). It's run as the binary, not through `open`: the arguments of a launch of
+    /// an app that's already open are dropped, and a second VLC opens its recording at the moment.
+    private static func openInVLC(_ vlc: URL, _ url: URL, at seconds: Double) {
+        let process = Process()
+        process.executableURL = vlc.appendingPathComponent("Contents/MacOS/VLC")
+        process.arguments = ["--start-time=\(Int(seconds))", url.path]
+        process.standardOutput = Pipe()   // the player's chatter stays out of the app's log
+        process.standardError = Pipe()
+        do {
+            try process.run()
+        } catch {
+            // No VLC binary at the usual place, or it wouldn't start: open the recording the plain way.
+            log("open: VLC didn't take the moment (\(error.localizedDescription))")
+            NSWorkspace.shared.open(url)
+        }
     }
 
     /// osascript rather than NSAppleScript: macOS's "control QuickTime Player?" question would otherwise block the
