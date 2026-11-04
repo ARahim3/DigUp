@@ -2,6 +2,85 @@
 
 One document, kept current (docs/implementation/README.md §10). Newest first.
 
+## 2026-11-04 — The UI's state-dependent layout, and the counters an interrupted job always carries
+
+Second round on `feat/server` (PR #184) after the API/security one: the web app's layout, plus a
+job-record finding that only the suite caught. **Suite: 100 passed, 1 deselected, 0 SKIPPED in
+385.33 s** (arm64, the shipped engine payload, the dev-loop mounts; 4 new tests) — `tests/test_jobs.py`
+alone: 16 passed in 160.19 s; `tests/test_media_ui.py`: 19 passed in 6.99 s. **GPU NOT MEASURED:**
+this machine has no CUDA/Vulkan device ([docs/implementation/gpu-handoff.md](../docs/implementation/gpu-handoff.md)).
+
+### The layout: `body[data-page]`, one switch, four states
+
+`render()` in `server/ui/app.js` sets `body[data-page]` to `idle | busy | results | none`, derived
+by `pageMode()` from the state the renderers already use (`hits` present → `results`; nothing typed
+or the `code:` hint → `idle`; words in, meaning on its way → `busy`; meaning answered zero → `none`).
+`server/ui/style.css` lays out from it: the results grid, the hit counter (`#engine-says`) and the
+preview pane exist in `results` **only** — `body:not([data-page="results"]) #results, … #engine-says
+{ display: none }`, specificity outranking the grid rule, so there is no `hidden` juggling anywhere.
+`#idle` (welcome + `#idle-note` + `#suggest` chips) and `#no-results` (`#no-results-why` + a filter
+hint) are centered panels, shown by the same attribute. Measured with Playwright (geometry, not
+eyes): `idle` at 1280/1024/1440/390 px → the panel's center equals the viewport center (640/512/720/195)
+with `#results`, `#preview` and the counter all `display: none`; `results` → grid
+**438.391 px / 657.609 px = 40 % / 60 %** at 1280 and 1440 (the 72 rem content column caps it),
+**387.188 / 580.812 px** at 1024, gutter 16 px, grid axis = viewport axis, the first pick
+auto-selected, the pane carrying `picture` + `facts`; `busy` → centered "Matching words now…" with
+the counter and the suggestions hidden; `none` → centered message quoting the engine's own sentence
+for the empty answer, plus its `warning` when the engine sent one.
+Below 900 px it is one column (measured 350 px at 390 px) with the pane **below** the list and
+`position: static`; `documentElement.scrollWidth == innerWidth` at 390/1024/1280/1440 — no
+horizontal scroll. The state fade is inside `@media (prefers-reduced-motion: no-preference)`.
+Keyboard flow unchanged and verified in the browser: ↑↓ move the selection (measured 1→2), ↩ opens,
+Space opens the big look, Esc closes it, Esc-on-text returns to `idle`. Idle suggestions fill `#q`
+and call `queryChanged()` — the one search route, no second path (`test_media_ui.py` pins it).
+
+*Three bugs found by measuring, none of them visible by reading the code:* (1) `render()` did not
+run at startup, so `body[data-page]` was unset and **every** panel was gated off — a blank page —
+and `state.groups` did not exist for the first `render()` to iterate; (2) `replaceChildren(array)`
+stringifies its argument, so the chips reached the page as the text `[object HTMLButtonElement]`
+(it is variadic: spread the array); (3) the mobile `#preview { position: static }` lost to the later
+`#preview { position: sticky }` at equal specificity — the override is now `body #preview`.
+A preview the engine has not rendered is now a **message plus the file's metadata**: every preview
+`img`/`video`/`audio` has an `onerror` that replaces the picture with `noPreview(hit)` while
+`facts(hit)` (name, folder, kind, size, date, z, cosine, keyword rank, segment, Open/Download) stays
+in the pane. Verified with a dead handle: `.message` + `.facts`, no blank panel.
+
+### Jobs: counters exist from the first moment of the walk
+
+The suite caught `test_a_stop_mid_job_is_interrupted_and_the_next_job_resumes` failing
+(`assert partial is not None`), in two rounds:
+
+1. **The counts were the worker thread's private knowledge.** `run_sync()` collected events in a
+   local list, and `shutdown()` marks the job from **its own thread** — so *interrupted* was
+   published with no counters at all. `IndexService.events()` is now drained in `_run_one`, and
+   `_progress()` merges the engine's counts into the live record **as they arrive** (in-memory on
+   every `file`/`error` event; into the job log on the engine's `idle` batch totals — a handful per
+   job, so a record recovered from the log after a hard kill carries the last totals it saw).
+   `_mark` merges into that record, never replaces it, so every ending (`EngineExited`, timeout,
+   `shutdown()`, an escaped runner exception) publishes the counts the engine really emitted.
+2. **A job stopped during the model load has completed zero files** — the truth is `files_done: 0`,
+   never an absent counter, so the counters are published when the walk starts. The test's
+   `assert 0 < partial < expected` was a timing assumption (this suite's stop lands 6 s into a walk
+   whose first minute is the model load); it is now `0 <= partial < expected`, with the engine's own
+   arithmetic kept: `partial + files_done ≥ expected` (measured 8 + 7 = 15 in Stage 8).
+
+And one contract truth the suite surfaced under load: a writer stopped mid-model-load keeps its
+flock while the engine closes its stream, and a request in that window is answered **`busy`** — the
+honest 409, with `_active` cleared so the next request runs. The resume test asked for the walk
+exactly once and asserted that single answer was `done`; it now asks the resume until it is
+accepted, which is README §5's contract ("one writer, answered busy, the next job resumes").
+`tests/test_jobs.py` (+2 unit tests: the counter merge, and log-recovery totals after a hard kill).
+
+### Notes
+
+* `server/README.md`: the four-state layout paragraph with the measured px.
+* Dev discipline learned the hard way: **never run two container suites at once** — two model loads
+  saturate the VM, widen the flock window (the `busy` race above) and starve live searches. Run the
+  heavy suites one at a time, and take UI measurements on a quiet machine.
+* Suite count went 96 → 100 (UI pins +2, jobs +2). The run that reported `1 failed, 99 passed,
+  1 deselected in 433.99 s` used the pre-fix `jobs.py` (its container imported the module before the
+  fix landed) and is superseded by the 100-passed run above.
+
 ## 2026-11-04 — The API as the product, the security seams, and the Stage-9 handoff
 
 The overnight round on `feat/server` (PR #184): API surface, security, and the handoff the GPU

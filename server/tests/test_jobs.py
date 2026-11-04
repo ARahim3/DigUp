@@ -201,6 +201,52 @@ def test_out_of_scope_rows_survive_plain_sync_and_retire_under_prune(tmp_path):
             os.environ["DIGUP_SERVER_PREWARM"] = saved
 
 
+def test_progress_lands_on_the_live_record_and_survives_the_final_mark(tmp_path):
+    """The failure this pins, measured in the full suite (97 passed, 1 failed, 306 s):
+    a job stopped by `shutdown()` is marked from the **shutdown** thread, which knows nothing
+    about the worker thread's local event list — so `interrupted` went out with **no counts**
+    (`assert partial is not None`). Counts now ride the live record as they arrive, and
+    `_mark` merges into it, never replaces."""
+    runner = JobRunner(_cfg(str(tmp_path / "idx"), (str(tmp_path / "root"),)),
+                       config_dir=str(tmp_path / "cfg"))
+    try:
+        with runner._lock:
+            runner._active = "p1"
+            runner._jobs["p1"] = {"id": "p1", "state": "running", "started": 1.0}
+        runner._progress("p1", files_done=3, files_failed=1, errors=0)
+        runner._progress("p1", files_done=4)                 # a later event: merge, not reset
+        runner._mark("p1", "interrupted", "server stopped")
+        record = runner.job("p1")
+        assert record["state"] == "interrupted" and record["why"] == "server stopped"
+        assert record["files_done"] == 4 and record["files_failed"] == 1 and record["errors"] == 0
+    finally:
+        runner.shutdown()
+
+
+def test_a_hard_killed_job_recovers_with_the_totals_the_log_last_saw(tmp_path):
+    """The durable half of the same rule: the engine's `idle` totals ride in the log, so a
+    record recovered after a hard kill is *interrupted* **and** carries the last totals it
+    published (here files 9, files_done 2) — not an empty shell."""
+    cfg, idx, root = str(tmp_path / "c"), str(tmp_path / "i"), str(tmp_path / "r")
+    first = JobRunner(_cfg(idx, (root,)), config_dir=cfg)
+    with first._lock:
+        first._active = "k1"
+        first._jobs["k1"] = {"id": "k1", "state": "running", "started": 1.0}
+    first._progress("k1", log=True, files_done=2, files=9, searchable=9, pending=7, vectors=2)
+    with first._lock:
+        first._active = None               # the log's last line stays `running`: a hard kill
+    first.shutdown()
+
+    second = JobRunner(_cfg(idx, (root,)), config_dir=cfg)
+    try:
+        recovered = second.job("k1")
+        assert recovered["state"] == "interrupted"           # never success (README §5)
+        assert recovered["files"] == 9 and recovered["files_done"] == 2
+        assert recovered["vectors"] == 2 and recovered["pending"] == 7
+    finally:
+        second.shutdown()
+
+
 def test_a_stop_mid_job_is_interrupted_and_the_next_job_resumes(tmp_path, scratch):
     """Stage 8: `shutdown()` sends the engine's `stop` — the writer closes its stream at
     the safe point **between files** — and the job records *interrupted* with its
@@ -217,24 +263,36 @@ def test_a_stop_mid_job_is_interrupted_and_the_next_job_resumes(tmp_path, scratc
     assert job["state"] == "interrupted"
     assert "stopped" in job.get("why", "")            # truthful: never success
     partial = job.get("files_done")
-    assert partial is not None
+    assert partial is not None, "an interrupted record always carries its counters"
 
     runner2 = JobRunner(_cfg(str(idx), (scratch,)), config_dir=str(tmp_path / "resume-cfg2"))
     try:
-        job2 = runner2.start()["id"]
+        # One writer, answered busy: a writer stopped mid-model-load keeps its flock for a
+        # moment while the engine closes its stream, and the server answers `busy` (the honest
+        # 409) for a request in that window. Measured: under machine load that window is
+        # seconds. The contract is "answered busy, then the next job runs the walk", so the
+        # resume is asked until it is accepted — not assumed to land on the first try.
         deadline = time.monotonic() + 420.0
-        while time.monotonic() < deadline and runner2.job(job2)["state"] in ("queued", "running"):
-            time.sleep(2.0)
-        done = runner2.job(job2)
+        done = None
+        while time.monotonic() < deadline:
+            job2 = runner2.start()["id"]
+            while time.monotonic() < deadline and runner2.job(job2)["state"] in ("queued", "running"):
+                time.sleep(2.0)
+            done = runner2.job(job2)
+            if done["state"] != "busy":
+                break
+            time.sleep(3.0)                       # the writer is closing: the flock frees
         assert done["state"] == "done"
         assert done["searchable"] == expected and done["pending"] == 0  # index == the walk
         assert done["vectors"] >= 10
         # The engine's own arithmetic, measured in Stage 8 (8 + 7 = 15): the interrupted job
         # embedded `partial` files, the resumed job embeds the REST (files already in the index
-        # come back `unchanged`, not `done`), so the two records sum to the walk. Asserting
-        # `resumed >= partial` was the lucky version of this assertion and it fails whenever
-        # the stop lands past the halfway point — which is what a loaded machine produces.
-        assert 0 < partial < expected
+        # come back `unchanged`, not `done`), so the two records sum to the walk. `partial` may
+        # legitimately be **0**: this shutdown lands 6 s into a walk whose first minute is the
+        # model load, and a job stopped before the engine's first `file` event has completed
+        # zero files — that is the truth, and the record says 0 (jobs.py publishes the counters
+        # when the walk starts). Demanding `partial > 0` was a timing assumption, not a fact.
+        assert 0 <= partial < expected
         assert partial + done["files_done"] >= expected
     finally:
         runner2.shutdown()

@@ -167,6 +167,11 @@ class JobRunner:
         with self._lock:
             job = self._jobs[job_id]
             job["state"] = STATE_RUNNING   # the worker has picked it up: GET /jobs says so
+        # Counters exist from the first moment of the walk, at zero. `shutdown()` can land
+        # during the model load — before the engine has emitted a single `file` event — and
+        # then the honest answer is "0 done", never an absent counter. Measured: that exact
+        # timing made the suite's stop-mid-job test read a record with no counts at all.
+        self._progress(job_id, files_done=0, files_failed=0, errors=0)
         service = IndexService(self._config, backfill=self._backfill,
                                prune=bool(job.get("prune")), linger_s=self._linger)
         self._service = service               # live writer: shutdown() can ask it to stop
@@ -178,16 +183,35 @@ class JobRunner:
             self._service = None
             self._mark(job_id, "busy", str(exc))  # answered, not queued blind
             return
-        # Events are collected as they arrive, so an interrupted job carries the counts the
-        # engine really emitted. `run_sync()` raises `EngineExited` on EOF-without-exit and
-        # its local list is lost with it — measured: a stop landing during the model load
-        # produced `interrupted` with NO counts, and the test that asserts partial counts
-        # (`tests/test_jobs.py`) failed on exactly that timing under load.
+        # Progress is published AS IT ARRIVES, onto the live job record: whichever path ends
+        # the job (`EngineExited`, a timeout, `shutdown()`'s "server stopped", an escaped
+        # exception) then answers with the counts the engine really emitted. Measured: a job
+        # stopped by `shutdown()` published *interrupted* with NO counts, because the counts
+        # lived only in this thread's local list and `shutdown()` marks from its own thread.
         events: list[dict] = []
+        done = failed = errors = 0
         try:
             service.sync()
             for event in service.events(timeout=self._timeout):
                 events.append(event)
+                kind = event.get("event")
+                if kind == "file":
+                    if event.get("state") == "done":
+                        done += 1
+                    elif event.get("state") is not None:
+                        failed += 1
+                    self._progress(job_id, files_done=done, files_failed=failed)
+                elif kind == "error":
+                    errors += 1
+                    self._progress(job_id, errors=errors)
+                elif kind == "idle":
+                    # The engine's own batch totals, a handful per job: these ride into the log
+                    # too (see `_progress`), so a record recovered after a hard kill carries the
+                    # last totals the engine published.
+                    self._progress(job_id, log=True, files_done=done, files_failed=failed,
+                                   errors=errors,
+                                   **{k: event.get(k)
+                                      for k in ("files", "searchable", "pending", "vectors")})
         except (EngineExited, TimeoutError) as exc:
             with self._lock:
                 self._active = None   # the writer is done; a new job may queue
@@ -271,6 +295,21 @@ class JobRunner:
             os.replace(self._log_path, rotated)
         with open(self._log_path, "a", encoding="utf-8") as log:
             log.write(json.dumps(record, separators=(",", ":")) + "\n")
+
+    def _progress(self, job_id: str, *, log: bool = False, **counts) -> None:
+        """Merge the engine's counts into the live record while the job runs, so every ending
+        publishes them (interrupted by shutdown, by the writer exiting, by a timeout, by an
+        escaped exception — the counts are never only this thread's local knowledge).
+
+        In-memory by default: a per-file log line is not worth a 50 k-line log. `log=True`
+        rides the engine's own `idle` events (its batch totals, a handful per job), so a
+        record recovered from the log after a hard kill carries the last totals it saw."""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is not None:
+                job.update(counts)
+        if log:
+            self._append({"id": job_id, "state": STATE_RUNNING, **counts})
 
     def _mark(self, job_id: str, state: str, why: str | None, **extra) -> None:
         with self._lock:
