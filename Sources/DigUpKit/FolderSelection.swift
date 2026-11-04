@@ -171,9 +171,9 @@ public struct FolderSelection: Equatable, Sendable {
     }
 
     #if os(Windows)
-    static let isWindows = true
+    public static let isWindows = true
     #else
-    static let isWindows = false
+    public static let isWindows = false
     #endif
 
     /// Whether a path as git or a shell writes it is absolute: `/…`, and on Windows also `C:/…`, `C:\…` and
