@@ -33,17 +33,30 @@ public final class IndexStore {
 
     /// When set, `pending`, `pendingCount` and `counts` see only files under these folders: the app's helper sets the
     /// folders that are connected right now, so files on an unplugged drive neither fail nor count as waiting.
-    public var scope: [String]? {
-        didSet {
-            guard let scope else { (scopeSQL, scopeValues) = ("", []); return }
-            let ranges = scope.flatMap(Self.pathRanges(under:))
-            scopeSQL = ranges.isEmpty ? " AND 0"
-                : " AND (" + ranges.map { _ in "(path >= ? AND path < ?)" }.joined(separator: " OR ") + ")"
-            scopeValues = ranges.flatMap { [SQLValue.text($0.from), .text($0.to)] }
+    /// The ranges live in a temp table and the scoped queries test them with a correlated `EXISTS`: one
+    /// `(path >= ? AND path < ?)` per folder, ORed into a single expression, hits SQLite's expression-depth cap of
+    /// 1,000 around 500 folders (#166: 1,179 folders, the indexer died at every startup), while the table grows
+    /// with the folder list for free.
+    public private(set) var scope: [String]?
+    private var scopeSQL = ""
+
+    public func setScope(_ folders: [String]?) throws {
+        scope = folders
+        guard let folders else { scopeSQL = ""; return }
+        let ranges = folders.flatMap(Self.pathRanges(under:))
+        scopeSQL = ranges.isEmpty ? " AND 0"
+            : " AND EXISTS (SELECT 1 FROM scope s WHERE files.path >= s.lo AND files.path < s.hi)"
+        try db.run("CREATE TEMP TABLE IF NOT EXISTS scope(lo TEXT NOT NULL, hi TEXT NOT NULL)")
+        try db.run("DELETE FROM scope")
+        var start = 0
+        while start < ranges.count {   // multi-row INSERTs, kept under SQLite's cap on a compound select
+            let chunk = ranges[start..<min(start + 200, ranges.count)]
+            try db.run("INSERT INTO scope(lo, hi) VALUES"
+                       + Array(repeating: "(?, ?)", count: chunk.count).joined(separator: ","),
+                       chunk.flatMap { [.text($0.from), .text($0.to)] })
+            start += 200
         }
     }
-    private var scopeSQL = ""
-    private var scopeValues: [SQLValue] = []
 
     /// The ranges of the UNIQUE path index that hold the files under `folder`. Paths are stored as a walk reports them,
     /// which isn't always how the folder is spelled here: `standardizedFileURL` says /var where the walk says
@@ -334,13 +347,13 @@ public final class IndexStore {
         try db.query("""
             SELECT \(Self.fileColumns) FROM files WHERE state = 'pending'\(filter)\(scopeSQL)
             ORDER BY \(FileKind.indexingOrderSQL), mtime DESC LIMIT ?
-            """, scopeValues + [.int(Int64(limit ?? -1))]) { out.append(Self.record($0)) }
+            """, [.int(Int64(limit ?? -1))]) { out.append(Self.record($0)) }
         return out
     }
 
     public func pendingCount() throws -> Int {
         var count = 0
-        try db.query("SELECT COUNT(*) FROM files WHERE state = 'pending'\(scopeSQL)", scopeValues) {
+        try db.query("SELECT COUNT(*) FROM files WHERE state = 'pending'\(scopeSQL)") {
             count = Int($0.int(0))
         }
         return count
@@ -352,7 +365,7 @@ public final class IndexStore {
         try db.query("""
             SELECT \(Self.fileColumns) FROM files WHERE state = 'partial'\(scopeSQL)
             ORDER BY \(FileKind.indexingOrderSQL), mtime DESC
-            """, scopeValues) { out.append(Self.record($0)) }
+            """) { out.append(Self.record($0)) }
         return out
     }
 
@@ -363,7 +376,7 @@ public final class IndexStore {
             SELECT COUNT(*), SUM(MAX(0, CAST(json_extract(info, '$.read_end') AS INTEGER)
                                       - CAST(json_extract(info, '$.read_to') AS INTEGER)))
             FROM files WHERE state = 'partial'\(scopeSQL)
-            """, scopeValues) { count = (Int($0.int(0)), Int($0.int(1))) }
+            """) { count = (Int($0.int(0)), Int($0.int(1))) }
         return count
     }
 
@@ -494,12 +507,12 @@ public final class IndexStore {
 
     public func counts() throws -> Counts {
         var counts = Counts()
-        try db.query("SELECT kind, state, COUNT(*) FROM files WHERE 1\(scopeSQL) GROUP BY kind, state", scopeValues) {
+        try db.query("SELECT kind, state, COUNT(*) FROM files WHERE 1\(scopeSQL) GROUP BY kind, state") {
             counts.byKindAndState[$0.text(0) ?? "?", default: [:]][$0.text(1) ?? "?"] = Int($0.int(2))
         }
         (counts.unfinished, counts.left) = try unfinishedCount()
         let inScope = scope == nil ? "" : " AND file IN (SELECT id FROM files WHERE 1\(scopeSQL))"
-        try db.query("SELECT COUNT(*), COUNT(vec) FROM segments WHERE kind != 'name'\(inScope)", scopeValues) {
+        try db.query("SELECT COUNT(*), COUNT(vec) FROM segments WHERE kind != 'name'\(inScope)") {
             counts.segments = Int($0.int(0))
             counts.vectors = Int($0.int(1))
         }

@@ -55,13 +55,30 @@ import WinSDK
         let store = try IndexStore(directory: folder)
         try store.insert(file("/a/x.png", inode: 1))
         try store.insert(file("/drive/y.png", inode: 2))   // on a drive that's unplugged
-        store.scope = ["/a"]
+        try store.setScope(["/a"])
         #expect(try store.pendingCount() == 1)
         #expect(try store.pending(limit: nil).map(\.path) == ["/a/x.png"])
         #expect(try store.counts().byKindAndState["image"]?["pending"] == 1)
-        store.scope = []
+        try store.setScope([])
         #expect(try store.pendingCount() == 0)
-        store.scope = nil
+        try store.setScope(nil)
+        #expect(try store.pendingCount() == 2)
+    }
+
+    @Test func aThousandFoldersFitTheScopedQueries() throws {
+        // #166: 1,179 chosen folders broke every scoped query at startup — one `(path >= ? AND path < ?)`
+        // range per folder, all ORed into one expression, past SQLite's expression-depth cap of 1,000.
+        let store = try IndexStore(directory: folder)
+        try store.insert(file("/a/x.png", inode: 1))
+        try store.insert(file("/b/y.png", inode: 2))
+        let folders = (0..<1_200).map { "/root-\($0)" }
+        try store.setScope(["/a"] + folders)
+        #expect(try store.pendingCount() == 1)
+        #expect(try store.pending(limit: nil).map(\.path) == ["/a/x.png"])
+        #expect(try store.counts().byKindAndState["image"]?["pending"] == 1)
+        try store.setScope(folders)   // no chosen folder has its files in this index
+        #expect(try store.pendingCount() == 0)
+        try store.setScope(nil)
         #expect(try store.pendingCount() == 2)
     }
 
@@ -170,7 +187,7 @@ import WinSDK
         let again = try indexer.sync(chosen)
         #expect(again.added == 0 && again.unchanged == 2)
         #expect(try store.files(under: chosen.map(\.path)).count == 2)
-        store.scope = chosen.map(\.path)
+        try store.setScope(chosen.map(\.path))
         #expect(try store.pendingCount() == 2)
         #expect(try store.prune(keepingUnder: chosen.map(\.path)) == 0)
     }

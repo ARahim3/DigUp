@@ -199,7 +199,7 @@ final class IndexService: @unchecked Sendable {
     }
 
     /// A part's chosen folders that are there and readable right now; also what `pending` and the counts look at.
-    private func availableRoots(_ part: Part) -> [URL] {
+    private func availableRoots(_ part: Part) throws -> [URL] {
         let missing = part.roots.filter { !Arguments.isFolder($0) }
         let unreadable = part.roots.filter { !missing.contains($0) && !Arguments.isReadable($0) }
         let report = (missing.map(\.path), unreadable.map(\.path))
@@ -208,7 +208,7 @@ final class IndexService: @unchecked Sendable {
         }
         unavailable[part.code] = report
         let available = part.roots.filter { !missing.contains($0) && !unreadable.contains($0) }
-        part.store.scope = available.map(\.path)
+        try part.store.setScope(available.map(\.path))
         return available
     }
 
@@ -219,7 +219,7 @@ final class IndexService: @unchecked Sendable {
             lock.withLock { yieldAt = Date() + max(took, 2) }
         }
         do {
-            let roots = availableRoots(part)
+            let roots = try availableRoots(part)
             emit(["event": "scanning", "checked": 0, "code": part.code])
             let summary = try part.indexer.sync(roots) { progress in
                 var event: [String: Any] = ["event": "scanning", "checked": progress.checked, "code": part.code]
