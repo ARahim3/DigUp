@@ -11,6 +11,7 @@ the current results are in [`../docs/implementation/`](../docs/implementation/RE
 |---|---|
 | `digup_server/engine/` | the adapter: config, JSON-lines supervision, `search-service` + `index-service` clients, the read-only CLI calls |
 | `digup_server/api.py` | the FastAPI app on `/api/v1` (`health`, `status`, `search`, `estimate`, `index`, `jobs`) — on top of the adapter, never around it; localhost by default |
+| `docs/API.md` | **the API reference** — schemas, media identifiers, limits and pagination, errors, curl examples, versioning and security: the compatibility promise clients code against (`tests/test_api_docs.py` fails if an endpoint is not in it) |
 | `digup_server/jobs.py` | the index-job runner: one writer (adapter flock), `queued/running/done/interrupted/busy`, append-only job log **rotated at size** (history replays from all rotations), stop-at-safe-point on shutdown, `reload → prewarm` after a done job |
 | `ui/` | the web app: vanilla HTML/CSS/JS (no build step), served same-origin at `/`, `fetch()` to `/api/v1` only |
 | `.env.example` | every setting as an environment variable (index, roots, models, excludes, bind) — no secrets, no client-chosen paths |
