@@ -75,7 +75,10 @@ class SearchRequest(BaseModel):
 
     q: str = Field(max_length=512)
     kinds: list[Kind] | None = None
-    limit: int = Field(default=10, ge=1, le=100)   # the engine's own default is 40
+    # 40 is the engine's own default (`SearchService.swift:130`): a client that names no
+    # limit gets the engine's answer, not a shorter one — the server adds no cap of its own.
+    # The UI's own default is 40 too (the desktop panel's row count), sent explicitly.
+    limit: int = Field(default=40, ge=1, le=100)
     code: bool = False
     meaning: bool = True
     prefix_last: bool = False

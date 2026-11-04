@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from digup_server.api import create_app
+from digup_server.api import SearchRequest, create_app
 
 WAKEBOARD_TOP3 = ["wakeboarding-vienna.webm", "wakeboard-logan.jpg", "wakeboarding-aarhus-04.jpg"]
 
@@ -82,6 +82,18 @@ def test_kind_filter_is_the_engines(client):
     reply = client.post("/api/v1/search",
                         json={"q": "wakeboarding", "kinds": ["video"]}).json()
     assert reply["hits"] and all(h["kind"] == "video" for h in reply["hits"])
+
+
+def test_the_default_limit_is_the_engines_default(client):
+    """The API's default `limit` equals the engine's own (40, `SearchService.swift:130`): a
+    client that names no limit gets the engine's answer, not a shorter one — the server
+    invents no cap of its own. Pinned twice: the typed default, and the reply on the same
+    query against an explicit 40 (the UI sends 40 explicitly, so nothing client-side moves)."""
+    assert SearchRequest.model_fields["limit"].default == 40
+    quiet = client.post("/api/v1/search", json={"q": "wakeboarding"}).json()
+    explicit = client.post("/api/v1/search", json={"q": "wakeboarding", "limit": 40}).json()
+    assert paths(quiet["hits"]) == paths(explicit["hits"])
+    assert quiet["strong"] == explicit["strong"]
 
 
 def test_the_api_validates_what_the_engine_would_silently_drop(client):
