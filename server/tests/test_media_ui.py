@@ -65,6 +65,53 @@ def test_the_space_key_keeps_buttons_and_links_activated(media_client):
     assert 'closest("button, a, [role=\'button\'], input, select, textarea")' in appjs
 
 
+def test_the_layout_is_gated_on_the_pages_own_state(media_client):
+    """The preview pane takes space only when it has something to show.
+
+    `body[data-page]` — set by app.js render(), read by style.css — is the ONE switch:
+    the results grid, the hit counter and the preview pane exist in `results` only; idle,
+    busy and none center a panel and reserve nothing. Pinned on the source, because a
+    stylesheet edit is exactly what quietly puts the empty panel back (measured before this
+    change: a 574×192 px empty preview box with nothing typed, at 1280 px)."""
+    html = media_client.get("/").text
+    css = media_client.get("/style.css").text
+    appjs = media_client.get("/app.js").text
+    for panel in ('id="idle"', 'id="idle-note"', 'id="no-results"', 'id="no-results-why"',
+                  'id="suggest"'):
+        assert panel in html, f"the state panel {panel} is gone from index.html"
+    assert 'id="no-results" hidden' not in html        # CSS gates it: one mechanism, not two
+    assert 'body:not([data-page="results"]) #results' in css
+    assert 'body:not([data-page="results"]) #engine-says' in css   # "0 hits" waits for a search
+    assert 'body[data-page="idle"] #idle' in css and 'body[data-page="none"] #no-results' in css
+    assert 'body[data-page="busy"] #suggest' in css                # busy is not a shopping list
+    assert "document.body.dataset.page = mode" in appjs
+    assert "grid-template-columns: minmax(0, 2fr) minmax(0, 3fr)" in css    # 40 % list, 60 % preview
+    assert "grid-template-columns: minmax(0, 1fr)" in css                   # narrow screens: one column
+    assert "body #preview { position: static; }" in css   # a sticky pane on one column covers the list
+    assert "@media (prefers-reduced-motion: no-preference)" in css          # the state fade is guarded
+
+
+def test_the_first_paint_is_a_state_and_a_missing_preview_says_so(media_client):
+    """Two failures this pins, both found by measuring the page rather than reading it:
+    `render()` must run at startup (without it `body[data-page]` is unset and EVERY panel is
+    gated off — the blank page), and a preview the engine has not rendered is a message plus
+    the file's metadata, never an empty pane."""
+    appjs = media_client.get("/app.js").text
+    assert re.search(r"^render\(\);", appjs, re.M), "render() must run at startup: the first paint is a state"
+    assert re.search(r"groups: \[\]", appjs), "the initial state needs groups: the first render() iterates it"
+    assert "noPreview" in appjs
+    assert appjs.count("image.onerror = () => frame.replaceChildren(noPreview(hit)") >= 2, "photo and PDF previews must announce a missing preview"
+    assert "video.onerror = () => frame.replaceChildren(noPreview(hit), moment)" in appjs
+    assert "pane.append(picture(hit), facts(hit))" in appjs, "the metadata sits beside the preview, not behind it"
+    # the centered "no results" panel quotes the engine's own sentence, the same string the
+    # counter line uses — one definition, both publishers
+    assert appjs.count("emptyAnswer(") == 2
+    # suggestions take the ONE search route (queryChanged), and replaceChildren is variadic:
+    # passing an array arrives as a text node (measured: "[object HTMLButtonElement]" on screen)
+    assert "replaceChildren(...SUGGESTIONS.map" in appjs
+    assert appjs.count('chip.onclick = () => { $("q").value = phrase; queryChanged();') == 1
+
+
 def test_the_ui_survives_a_failed_job_poll(media_client):
     """S1: the job poll loop died on its first failed fetch (server restart, engine
     mid-respawn 503) — unhandled rejection, the job line froze at its last state,

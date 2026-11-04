@@ -104,6 +104,25 @@
     <p id="engine-says"></p>
     <div id="estimate" hidden></div>
 
+    <!-- State panels. `body[data-page]` (app.js render() sets it: idle | busy | results |
+         none) is the ONE switch that shows a panel: the preview pane never reserves space for
+         a state with nothing to show, and the idle/busy/no-results messages sit centered on
+         the page's own axis. No `hidden` attributes here: one mechanism, not two. -->
+    <section id="idle">
+      <h2>Describe it. Dig it up.</h2>
+      <p id="idle-note">Say what you'd see, hear, or read in a file — the meaning, not only the
+         words. Results appear as you type.</p>
+      <div id="suggest" role="group" aria-label="Search suggestions"></div>
+    </section>
+
+    <section id="no-results" role="status">
+      <h2>No results found</h2>
+      <p id="no-results-why">Try describing what you'd see or hear in it — a scene, an object,
+         a moment, words you remember from it.</p>
+      <p class="hint">Widening the kind filters, or turning off <code>code</code>, asks the
+         engine to look in more of your files.</p>
+    </section>
+
     <section id="results">
       <ul id="hits" role="listbox" aria-label="Results"></ul>
       <div id="preview" aria-live="polite"></div>

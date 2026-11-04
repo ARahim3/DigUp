@@ -87,6 +87,7 @@ const state = {
   text: "",
   strong: [],
   weaker: [],
+  groups: [],             // renderList draws this; the first paint needs it to exist
   hits: new Map(),        // media_id → hit, the rows and the preview pane speak through it
   selection: null,
   showWeaker: false,
@@ -264,7 +265,39 @@ function toggleWeaker() {
 }
 
 // ── drawing ──────────────────────────────────────────────────────────────────────────
+const IDLE_NOTE = "Say what you'd see, hear, or read in a file — the meaning, not only the "
+                + "words. Results appear as you type.";
+const BUSY_NOTE = "Matching words now — the meaning results follow when you stop typing.";
+const CODE_HINT = "Searching your code — say what the code does, or type a name that's in it.";
+
+// The layout's state, read off the state the renderers already use: no second store, no
+// second notion of "what page am I on". Hits → the two columns; nothing typed (or the
+// code-prefix hint) → the centered welcome; words in, meaning on its way → busy; meaning
+// answered zero → none. `body[data-page]` is what style.css lays out the states with.
+const pageMode = () => (state.strong.length + state.weaker.length ? "results"
+  : (state.phase === "empty" || state.phase === "codeHint") ? "idle"
+  : state.phase === "words" ? "busy" : "none");
+
+// The engine's own sentence for an empty answer, verbatim. One string, both places that
+// publish it: the counter line (results) and the centered panel (none).
+const emptyAnswer = (reply) => (reply.meaning
+  ? "the engine found no good matches for this and refused to guess — that is its answer"
+  : "no keyword hits (meaning search is warming up)");
+
+function setLayout() {
+  const mode = pageMode();
+  document.body.dataset.page = mode;
+  $("idle-note").textContent = mode === "busy" ? BUSY_NOTE
+    : (state.phase === "codeHint" ? CODE_HINT : IDLE_NOTE);
+  if (mode === "none" && state.lastReply) {     // the engine's own words, verbatim, in the panel
+    const reply = state.lastReply;
+    $("no-results-why").textContent = emptyAnswer(reply)
+      + (reply.warning ? ` (${reply.warning})` : "");
+  }
+}
+
 function render() {
+  setLayout();
   renderList();
   renderPreview();
   renderFooter();
@@ -302,9 +335,7 @@ function renderList() {
     + (ms.search !== undefined ? ` · search ${(ms.search / 1000).toFixed(2)} s` : "")));
   if (reply.warning) says.append(" · ", el("span", "warn", reply.warning));
   if (!reply.hits.length && state.phase !== "empty" && state.phase !== "codeHint") {
-    says.append(" — ", el("em", null, reply.meaning
-      ? "the engine found no good matches for this and refused to guess — that is its answer"
-      : "no keyword hits (meaning search is warming up)"));
+    says.append(" — ", el("em", null, emptyAnswer(reply)));
   }
   list.querySelector(".selected")?.scrollIntoView({block: "nearest"});
 }
@@ -362,21 +393,12 @@ function thumbnail(hit) {
 }
 
 // ── the preview pane: what the desktop shows for the selection (panel.js `picture`) ──
+// The pane is laid out only in the `results` state (style.css gates `#results` on
+// `body[data-page]`), so the old "no hits yet" messages live in the centered idle/busy/
+// none panels now — this function draws the selection, and nothing else.
 function renderPreview() {
   const pane = $("preview");
   pane.replaceChildren();
-  if (!state.strong.length && !state.weaker.length) {
-    const messages = {
-      empty: ["DigUp", "Describe what you'd see, hear, or read in a file — meaning, not just words."],
-      codeHint: ["Search your code", "Say what the code does, or type a name that's in it."],
-      words: ["Searching…", "Words are matched; the meaning results are on their way."],
-      wordsOnly: ["Words only", "Meaning search isn't available right now — the encoder is warming up."],
-    };
-    const [title, body] = messages[state.phase] || ["No good matches",
-      "Try what you'd see or hear in it, or words you remember from it."];
-    pane.replaceChildren(el("div", "message", el("strong", null, title), el("span", null, body)));
-    return;
-  }
   if (state.selection === WEAKER) {
     const count = state.weaker.length;
     pane.replaceChildren(el("div", "message",
@@ -386,9 +408,16 @@ function renderPreview() {
     return;
   }
   const hit = selectedHit();
-  if (!hit) return;
+  if (!hit) return;                       // defensive: no reply backs this selection
   pane.append(picture(hit), facts(hit));
 }
+
+// A preview that is not there (the engine's render has no JPEG for this segment, the index
+// moved, the file left the folders): say so plainly, and keep the file's own metadata and
+// its Open/Download — `facts(hit)` is a sibling of the picture, so the pane is never blank.
+const noPreview = (hit) => el("div", "message",
+  el("strong", null, "No preview of this file"),
+  el("span", null, `The engine has no rendered image for this ${hit.kind} segment. Its details, Open and Download are below.`));
 
 function picture(hit) {
   const frame = el("div", "picture");
@@ -401,6 +430,7 @@ function picture(hit) {
       const image = el("img");
       image.alt = "";
       image.src = previewURL(1024);
+      image.onerror = () => frame.replaceChildren(noPreview(hit));
       frame.append(image);
       return frame;
     }
@@ -408,25 +438,31 @@ function picture(hit) {
       const image = el("img");
       image.alt = "";
       image.src = previewURL(1024);          // the page the hit was found on
-      frame.append(image, el("div", "moment",
-        el("span", "at", hit.loc ? `page ${Math.round(hit.loc)}` : "first page")));
+      const moment = el("div", "moment", el("span", "at",
+        hit.loc ? `page ${Math.round(hit.loc)}` : "first page"));
+      image.onerror = () => frame.replaceChildren(noPreview(hit), moment);
+      frame.append(image, moment);
       return frame;
     }
     case "video": {
       const at = hit.loc ?? 0;
+      const moment = el("div", "moment", el("span", "at", `▶ at ${clock(at)}`));
       if (STREAMABLE_VIDEO.has(suffix)) {
         const video = el("video");
         video.src = `${fileURL}#t=${at}`;    // Range requests on /file make seeking work
         video.controls = true;
         video.poster = previewURL(1024);     // the engine's frame at the moment, first
         video.preload = "metadata";
-        frame.append(video, el("div", "moment", el("span", "at", `▶ at ${clock(at)}`)));
+        video.onerror = () => frame.replaceChildren(noPreview(hit), moment);
+        frame.append(video, moment);
       } else {
         const image = el("img");
         image.alt = "";
         image.src = previewURL(1024);
-        frame.append(image, el("div", "moment", el("span", "at", `▶ at ${clock(at)}`)),
-          el("p", "note", `This browser can't stream .${suffix} — ↩ Open plays it in your own player.`));
+        const note = el("p", "note",
+          `This browser can't stream .${suffix} — ↩ Open plays it in your own player.`);
+        image.onerror = () => frame.replaceChildren(noPreview(hit), moment, note);
+        frame.append(image, moment, note);
       }
       return frame;
     }
@@ -437,6 +473,8 @@ function picture(hit) {
         player.src = `${fileURL}#t=${hit.loc ?? 0}`;
         player.controls = true;
         player.preload = "metadata";
+        player.onerror = () => player.replaceWith(
+          el("p", "note", `This browser can't stream .${suffix} — ↩ Open plays it in your own player.`));
         box.append(player);
       } else {
         box.append(el("p", "note", `This browser can't stream .${suffix} — ↩ Open plays it in your own player.`));
@@ -609,6 +647,19 @@ $("kinds-all").onclick = () => {
 $("code").onchange = () => { if ($("q").value.trim()) queryChanged(); else state.isCode = $("code").checked; };
 $("limit").onchange = () => { if (state.text) queryChanged(); };
 
+// ── idle suggestions: a click puts the phrase in the field and searches it — the exact
+// path a typed query takes (queryChanged is the one search route; nothing here duplicates
+// it). These are examples of *how to describe* a file, not promises about a library: they
+// describe scenes, which is what the engine's meaning search answers.
+const SUGGESTIONS = ["a dog running on the beach", "people gathered around a campfire",
+                     "a cat sitting on a sofa", "wakeboarding on a lake"];
+$("suggest").replaceChildren(...SUGGESTIONS.map((phrase) => {   // spread: replaceChildren is
+  const chip = el("button", "suggest", phrase);                  // variadic — an array would
+  chip.type = "button";                                          // arrive as a text node
+  chip.onclick = () => { $("q").value = phrase; queryChanged(); $("q").focus(); };
+  return chip;
+}));
+
 // ── Estimate: the engine's own forecast for the server's folders (POST /estimate).
 // The button lives in settings; the forecast appears in the page, one honest line.
 // Generation token (like searches have): a second click during a slow crawl must not
@@ -721,6 +772,7 @@ $("index-btn").onclick = async () => {
   }
 };
 
+render();               // the first paint is a state too: idle, with the centered welcome
 refreshStatus();
 setInterval(refreshStatus, 15000);
 $("q").focus();

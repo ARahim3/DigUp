@@ -176,8 +176,20 @@ is the reference, `Sources/DigUpApp/SearchPanel.swift` the Mac one):
 | appearance (the desktop follows the OS) | **choice: System / Light / Dark** | a server has no OS to follow; a select in the settings panel (the gear), `data-theme` + CSS variables, kept in `localStorage` |
 | roots shown (Settings → Folders) | shown | `GET /status` publishes the server's own configured roots (env-configured; the settings panel prints them with the engine's counts) — display, not path acceptance (§7) |
 
-*Settings that don't apply, honestly:* login item, tray, global shortcut, window centering,
-auto-updates, index hours, folder pickers, pause-indexing, the code editor, licenses — these
+**The layout has four states and one switch.** `render()` in `app.js` sets `body[data-page]`
+(`idle | busy | results | none`) and `style.css` lays out from it: the results grid, the hit
+counter and the preview pane exist in `results` **only** — nothing typed (`idle`), words
+matching while the meaning pass is on its way (`busy`), and a zero-hit answer (`none`) center a
+message and reserve no space for a panel with nothing to show. `results` is the two columns,
+40 % list / 60 % preview (`minmax(0, 2fr) minmax(0, 3fr)`; measured 438 px / 658 px at a
+1280 px viewport), and below 900 px it is one column with the pane below the list and
+`position: static` (measured at 390 px: 350 px track, no horizontal scroll). The no-results
+panel quotes the engine's own sentence for an empty answer (and its `warning` when there is
+one); a preview the engine has not rendered says so plainly and keeps the file's metadata and
+its Open/Download, so the pane is never a blank box. `tests/test_media_ui.py` pins the gate,
+the ratio, the mobile override and that the first paint is a state.
+
+*Settings that don't apply, honestly:* login item, tray, global shortcut, window centering,auto-updates, index hours, folder pickers, pause-indexing, the code editor, licenses — these
 are OS/desktop concerns (a container has a deployment, not a desktop). Their server
 equivalents are **deployment configuration**: roots, exclusions, model folder, prewarm,
 backfill, rotation — the env knobs of [`.env.example`](.env.example) and Compose, with

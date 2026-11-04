@@ -6,6 +6,11 @@
    Appearance is a choice (system / light / dark): the `data-theme` attribute app.js sets,
    kept in localStorage. "system" follows prefers-color-scheme; light and dark force it.
 
+   The page has four states, and `body[data-page]` is the only switch (app.js render() sets it:
+   idle | busy | results | none): the results grid, the hit counter and the preview pane are
+   shown in `results` only — every other state centers a message and reserves NO space for a
+   panel with nothing to show. That block is the layout's whole state machine.
+
    The palettes below are EXPLICIT per theme — no system colors, no OS dependence — and the
    text pairs were picked by measured WCAG contrast, not by eye: on dark (#202124) the
    text reaches 13.4:1, the muted text 8.4:1, the accent 7.6:1, and the kind colors 6.4:1
@@ -152,11 +157,52 @@ button:hover, a.button-like:hover { border-color: var(--accent); }
 #engine-says { color: var(--soft); font-size: 0.85rem; min-height: 1.2em; text-align: center; margin: 0.3rem 0; }
 .warn { color: var(--warn); }
 
+/* ── the page's states: `body[data-page]`, set by app.js render() (idle | busy | results |
+   none). This is the layout's whole state machine, and it is the reason the preview pane
+   reserves no space when it has nothing to show:
+     idle    nothing typed → centered welcome + suggestions; no list, no preview, no counter
+     busy    words matching, meaning on its way → same centered block, its note says so
+     results the two columns, list ~40 % / preview ~60 %
+     none    meaning answered zero hits → centered message carrying the engine's own sentence
+   Specificity: `body:not([data-page="results"]) #results` (id + attribute + element) outranks
+   the plain `#results` grid rule below, so no `hidden` juggling is needed anywhere. */
+#idle, #no-results { display: none; }
+body[data-page="idle"] #idle, body[data-page="busy"] #idle,
+body[data-page="none"] #no-results { display: block; }
+body:not([data-page="results"]) #results,
+body:not([data-page="results"]) #engine-says { display: none; }
+body[data-page="busy"] #suggest { display: none; }   /* suggestions are an idle affordance */
+body:has(#code:checked) #suggest { display: none; }   /* …and they are not code-search hints */
+
+#idle, #no-results { max-width: 34rem; margin: 3rem auto 3.5rem; padding: 0 1rem; text-align: center; }
+#idle h2, #no-results h2 { font-size: 1.18rem; font-weight: 600; margin: 0 0 0.4rem; }
+#idle p, #no-results p { color: var(--soft); margin: 0 auto; max-width: 30rem; }
+#no-results .hint { margin-top: 0.7rem; font-size: 0.85rem; }
+#no-results code { font: 0.85rem ui-monospace, SFMono-Regular, Menlo, monospace; }
+#suggest { display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: center; margin-top: 1rem; }
+#suggest .suggest { border-radius: 999px; padding: 0.3rem 0.8rem; font-size: 0.85rem; }
+
+/* A state change is a layout change, so the panel that arrives fades in: `display` cannot be
+   transitioned, and an animation starts when an element gains it. Guarded for motion. */
+@media (prefers-reduced-motion: no-preference) {
+  #idle, #no-results, #results { animation: rise 0.18s ease-out; }
+}
+@keyframes rise { from { opacity: 0; transform: translateY(4px); } }
+
 /* Results list + preview pane, like the desktop panel: the list carries the ranking, the
-   pane shows the selection the way panel.js shows it. */
-#results { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 1rem;
+   pane shows the selection the way panel.js shows it. 2fr/3fr is the 40/60 the preview
+   wants; minmax(0, …) keeps a long file name from widening a track past its share. */
+#results { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 1rem;
   align-items: start; margin: 0.4rem 0 1rem; }
-@media (max-width: 900px) { #results { grid-template-columns: 1fr; } }
+/* Narrow screens: one column, and the sticky pane becomes an ordinary block below the list
+   (a sticky panel on a single-column page sticks over the list it is meant to follow).
+   `body #preview` outranks the plain `#preview` rule below it — the layout block comes first
+   in the file, and equal specificity would lose to it. */
+@media (max-width: 900px) {
+  #results { grid-template-columns: minmax(0, 1fr); }
+  body #preview { position: static; }
+  #idle, #no-results { margin-top: 1.8rem; }
+}
 
 ul#hits { list-style: none; padding: 0; margin: 0; }
 ul#hits > li.group-title { color: var(--soft); font-size: 0.75rem; text-transform: uppercase;
