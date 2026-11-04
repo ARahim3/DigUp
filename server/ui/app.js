@@ -13,8 +13,23 @@
 const TYPING_PAUSE = 120;              // ms after the last keystroke until meaning results
 const $ = (id) => document.getElementById(id);
 
-const api = async (path, options = {}) => {
-  const reply = await fetch(path, {headers: {"content-type": "application/json"}, ...options});
+const api = async (path, options = {}, retried = false) => {
+  // Bearer token, when this deployment asks for one (DIGUP_SERVER_TOKEN /
+  // DIGUP_SERVER_ADMIN_TOKEN, docs/API.md "Authentication"): kept in localStorage, sent on
+  // every call. A 401 asks for it once, stores it, and retries this call once — a second 401
+  // is reported, not re-prompted, so a wrong token cannot loop the page.
+  const token = localStorage.getItem("digupBearer");
+  const headers = {"content-type": "application/json",
+                   ...(token ? {authorization: `Bearer ${token}`} : {}),
+                   ...(options.headers || {})};
+  const reply = await fetch(path, {...options, headers});
+  if (reply.status === 401 && !retried) {
+    const asked = window.prompt("This DigUp server asks for its access token:");
+    if (asked && asked.trim()) {
+      localStorage.setItem("digupBearer", asked.trim());
+      return api(path, options, true);
+    }
+  }
   const body = await reply.json().catch(() => ({}));
   if (!reply.ok) {
     // FastAPI validation answers a LIST of dicts in `detail` (`new Error(list)` is

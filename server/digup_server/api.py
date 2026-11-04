@@ -42,7 +42,8 @@ from .engine import EngineConfig, SearchService
 from .engine.cli import CLIError, estimate_lines, status as cli_status
 from .engine.protocol import EngineExited, EngineRefused
 from .jobs import JobBusy, JobRunner
-from .security import HostOriginGuard, allowed_hosts_from_env
+from .security import (Auth, HostOriginGuard, allowed_hosts_from_env, auth_from_env,
+                       BearerAuth)
 
 # The engine's FileKind rawValues (Sources/DigUpKit FileKind): the API refuses anything
 # else with a 422 — the engine would silently drop it, and silence is not honesty.
@@ -343,6 +344,9 @@ def create_app(config: EngineConfig) -> FastAPI:
     # operator names the hosts this deployment serves (DIGUP_SERVER_ALLOWED_HOSTS). The
     # loopback default keeps passing everything through: nothing changes for a localhost
     # server, and a Docker-network / reverse-proxy deployment opts in by naming its hosts.
+    # The bearer gate (below) is installed first so the Host guard runs outside it: refuse a
+    # wrong host before authenticating against it.
+    app.add_middleware(BearerAuth, auth=auth_from_env(os.environ))
     app.add_middleware(HostOriginGuard, allowed_hosts=allowed_hosts_from_env(os.environ))
 
     # Engine supervision facts become HTTP facts, quoted, not dressed up.

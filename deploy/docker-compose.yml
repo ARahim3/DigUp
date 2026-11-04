@@ -62,6 +62,12 @@ services:
       DIGUP_SERVER_PREWARM: ${DIGUP_SERVER_PREWARM:-1}
       DIGUP_SERVER_BACKFILL: ${DIGUP_SERVER_BACKFILL:-1}
       DIGUP_SERVER_JOB_LOG_SIZE: ${DIGUP_SERVER_JOB_LOG_SIZE:-1048576}
+      # Off by default, like the Compose file itself: host validation and bearer tokens guard
+      # a Docker-network / reverse-proxy / LAN deployment (docs/API.md "Authentication"). A
+      # localhost-only box leaves all three unset.
+      DIGUP_SERVER_ALLOWED_HOSTS: ${DIGUP_SERVER_ALLOWED_HOSTS:-}
+      DIGUP_SERVER_TOKEN: ${DIGUP_SERVER_TOKEN:-}
+      DIGUP_SERVER_ADMIN_TOKEN: ${DIGUP_SERVER_ADMIN_TOKEN:-}
     volumes:
       - ${DIGUP_INDEX_DIR:-./data/index}:/data/index
       - ${DIGUP_MODELS_DIR:-./data/models}:/data/models

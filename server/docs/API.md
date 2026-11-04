@@ -284,12 +284,46 @@ Retry it. A `500` means a server bug — report it, and it ships with a test.
 * No settings endpoints: the server's configuration is container configuration
   ([`.env.example`](../.env.example)), not a remote-writeable surface. No uploads, no
   client-chosen paths, no shell interpolation of input.
-* Search is a read-only operation. Indexing and pruning are administrative
-  (`POST /api/v1/index`) — treat them as admin scope when you add a proxy, a token, or a
-  network. When token auth lands here, read-only search clients must not be able to start a
-  job.
+* Search is a read-only operation. Indexing, pruning and the full-tree estimate are
+  administrative — see [Authentication](#authentication): the deployment splits them onto the
+  admin token, so a search-only client cannot start a job.
 * HTTPS is the reverse proxy's job (`nginx`/`caddy` terminating TLS in front of
   `127.0.0.1:8787`), not the API's: keep the API on loopback and proxy from there.
+
+## Authentication
+
+Off by default: a loopback-only server has no auth state to leak, and nothing here changes its
+behavior. The deployment turns it on with environment variables
+([`.env.example`](../.env.example)) — tokens are never in the repo, never in the image:
+
+| variable | scope | what it guards |
+|---|---|---|
+| `DIGUP_SERVER_TOKEN` | read | every `/api/v1` endpoint except `health`, `docs`, `openapi.json` |
+| `DIGUP_SERVER_ADMIN_TOKEN` | admin | `POST /api/v1/index` and `POST /api/v1/estimate`, on top of the read scope |
+
+* No credential on a guarded endpoint → `401` with `WWW-Authenticate: Bearer`. A token that is
+  not this server's → `401`. The **read** token on an admin endpoint → `403` saying so.
+* Send it as `Authorization: Bearer <token>`. Clients that must not mutate the index (search
+  apps, agents, dashboards) get the read token and nothing else; keep the admin token with the
+  operator. An **admin-only** deployment (no `DIGUP_SERVER_TOKEN`) guards the mutating endpoints
+  and leaves the read side open for every client on the machine.
+* `GET /api/v1/health`, `/api/v1/docs` and `/api/v1/openapi.json` are deliberately unguarded:
+  the container's `HEALTHCHECK` calls `/health` with no credential (a guarded health endpoint
+  would mark a live container unhealthy), and the API's own documentation page is documentation,
+  not media data.
+* The web UI prompts for the token on the first `401`, keeps it in `localStorage`
+  (`digupBearer`), and sends it on every request. A second `401` is reported, not re-prompted.
+* Tokens are compared with `hmac.compare_digest`. `tests/test_security.py` pins the whole table
+  above, including the open health/docs/UI paths.
+
+```sh
+curl -s -X POST http://127.0.0.1:8787/api/v1/search \
+  -H 'content-type: application/json' -H "Authorization: Bearer $DIGUP_READ_TOKEN" \
+  -d '{"q": "wakeboarding"}'
+curl -s -X POST http://127.0.0.1:8787/api/v1/index \
+  -H 'content-type: application/json' -H "Authorization: Bearer $DIGUP_ADMIN_TOKEN" \
+  -d '{"prune": true}'
+```
 
 ## Multiple clients on one index
 
