@@ -44,3 +44,7 @@ server/tests/corpus2/media/
 # .gitkeep is tracked (the Dockerfile's COPY needs the folder); a copied Vendor never is.
 .ci-vendor/*
 !.ci-vendor/.gitkeep
+
+# Local agent working notes (see the file itself): a dev aid, not part of the PR
+AGENTS.md
+.agent-journal.md

@@ -40,3 +40,8 @@ docs/*.gif
 
 # Compose bind-mount folders: runtime media/index/model data is never build context
 deploy/data/
+
+# Local agent working notes: git-ignored, and git-ignored files are not build context
+# (the builder's `COPY . .` must see only what a clean clone contains)
+AGENTS.md
+.agent-journal.md
