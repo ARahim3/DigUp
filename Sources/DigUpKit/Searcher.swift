@@ -115,6 +115,13 @@ public final class Searcher {
     public func search(_ text: String, queryVector: [Float]?, kinds: Set<FileKind>? = nil, limit: Int = 20,
                        zGate: Double = 2.0, wordWeight: Double? = nil, prefixLast: Bool = false) throws -> [SearchHit] {
         let wordWeight = wordWeight ?? (isCode ? Self.codeWordWeight : Self.wordWeight)
+        // "name: …": file and folder names only — keyword search, no query vector, the model never runs for it
+        // and the app's unloaded vectors stay unloaded. Parsed here so every client gets it through the one path.
+        var text = text, queryVector = queryVector
+        var namesOnly = false
+        if let names = NameQuery.text(of: text) {
+            (text, queryVector, namesOnly) = (names, nil, true)
+        }
         if queryVector != nil, !vectorsLoaded { try reload() }
         let fileKind = self.fileKind
         let allowed = { (file: Int64) -> Bool in kinds == nil || fileKind[file].map { kinds!.contains($0) } ?? false }
@@ -131,7 +138,9 @@ public final class Searcher {
         }
 
         // Words: FTS5 with Porter stemming over file names, folder names, OCR, page and document text. A name from code
-        // ("quantize_row_q8_0_ref") is matched as one phrase, as it's written.
+        // ("quantize_row_q8_0_ref") is matched as one phrase, as it's written. A "name:" search goes through the
+        // name segments only (kind 'name': the file's own words in `name`, the folders it sits in in `body`, at
+        // their 3-to-1 bm25 weights — the name leads, the folders follow).
         let terms = Self.terms(text)
         let identifier = isCode ? CodeLookup.identifier(text) : nil
         var words: [(file: Int64, segment: Int64, snippet: String?)] = []
@@ -144,15 +153,15 @@ public final class Searcher {
         // many words to stand for one.
         if identifier == nil {
             for index in terms.indices where terms[index].count >= 3 && !patterns[index].hasSuffix("*") {
-                if try !isIndexed(patterns[index]) { patterns[index] += "*" }
+                if try !isIndexed(patterns[index], namesOnly: namesOnly) { patterns[index] += "*" }
             }
         }
         if !patterns.isEmpty {
             var seen = Set<Int64>()
             try store.db.query("""
-                SELECT s.file, s.id, snippet(fts, 1, '«', '»', '…', 12), fts.original FROM fts
+                SELECT s.file, s.id, snippet(fts, \(namesOnly ? 0 : 1), '«', '»', '…', 12), fts.original FROM fts
                 JOIN segments s ON s.id = fts.rowid
-                WHERE fts MATCH ? ORDER BY bm25(fts, 3.0, 1.0) LIMIT 1000
+                WHERE fts MATCH ?\(namesOnly ? " AND s.kind = 'name'" : "") ORDER BY bm25(fts, 3.0, 1.0) LIMIT 1000
                 """, [.text(patterns.joined(separator: " OR "))]) { row in
                 let file = row.int(0)
                 guard words.count < 100, allowed(file), seen.insert(file).inserted else { return }
@@ -165,7 +174,7 @@ public final class Searcher {
                 for pattern in patterns {
                     try store.db.query("""
                         SELECT DISTINCT s.file FROM fts JOIN segments s ON s.id = fts.rowid
-                        WHERE fts MATCH ? AND s.file IN (\(files))
+                        WHERE fts MATCH ? AND s.file IN (\(files))\(namesOnly ? " AND s.kind = 'name'" : "")
                         """, [.text(pattern)]) { coverage[$0.int(0), default: 0] += 1 / Double(patterns.count) }
                 }
             }
@@ -399,10 +408,13 @@ public final class Searcher {
         }
     }
 
-    /// Whether keyword search finds `pattern` in any file.
-    private func isIndexed(_ pattern: String) throws -> Bool {
+    /// Whether keyword search finds `pattern` in any file — in a "name:" search, in any file's name segments.
+    private func isIndexed(_ pattern: String, namesOnly: Bool = false) throws -> Bool {
         var found = false
-        try store.db.query("SELECT 1 FROM fts WHERE fts MATCH ? LIMIT 1", [.text(pattern)]) { _ in found = true }
+        try store.db.query("""
+            SELECT 1 FROM fts\(namesOnly ? " JOIN segments s ON s.id = fts.rowid" : "")
+            WHERE fts MATCH ?\(namesOnly ? " AND s.kind = 'name'" : "") LIMIT 1
+            """, [.text(pattern)]) { _ in found = true }
         return found
     }
 

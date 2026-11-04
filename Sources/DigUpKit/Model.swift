@@ -111,3 +111,17 @@ public enum CodeQuery {
         return trimmed.dropFirst(prefix.count).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
+
+/// "name: invoice": a search of file and folder names only — keyword search, no query vector, the model never
+/// runs. Parsed the way "code:" is (`CodeQuery`), by `Searcher.search` itself: the panel, the window and the
+/// Windows and Linux app all get it by sending what's typed through.
+public enum NameQuery {
+    public static let prefix = "name:"
+
+    /// What's typed after "name:" ("" for "name:" alone), or nil for a search that isn't one of names.
+    public static func text(of query: String) -> String? {
+        let trimmed = query.drop { $0.isWhitespace }
+        guard trimmed.count >= prefix.count, trimmed.prefix(prefix.count).lowercased() == prefix else { return nil }
+        return trimmed.dropFirst(prefix.count).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}

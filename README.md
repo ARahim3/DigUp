@@ -42,6 +42,7 @@ words, and it finds the match, whatever kind of file it is.
 
 Exact words count too. Invoice numbers, error codes and names are matched as written, in file names and document text,
 so a search gets both the meaning and the exact string. On a Mac that includes the text inside screenshots.
+Start a search with `name:` and only file and folder names are searched — the exact words, with the model staying out.
 
 ## Private
 
