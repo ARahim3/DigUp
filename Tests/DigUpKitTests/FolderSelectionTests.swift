@@ -176,7 +176,8 @@ import Testing
     }
 
     @Test func relativeGitDirResolvesAgainstTheWorktree() {
-        let main = FolderSelection.gitDirPath("../billing/.git/worktrees/feature", worktree: "/src/worktrees/feature")
+        // Relative to the worktree folder: up out of feature/ and worktrees/, into billing/.
+        let main = FolderSelection.gitDirPath("../../billing/.git/worktrees/feature", worktree: "/src/worktrees/feature")
         #expect(main == "/src/billing/.git/worktrees/feature")
     }
 
