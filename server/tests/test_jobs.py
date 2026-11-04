@@ -30,6 +30,17 @@ from conftest import _cfg
 NEW_SENTENCE = "A lighthouse stands above a stormy sea at dusk, its beam sweeping the waves.\n"
 
 
+def test_an_interrupted_record_always_carries_the_counts_it_saw():
+    """The rule the stop-mid-job test and README §5 both promise: an interrupted job reports
+    the counts the engine really emitted. `_counts` never leaves `files_done` absent — a job
+    stopped before any file finished says **0**, not nothing (measured: a stop landing during
+    the model load took the `EngineExited` path and published an interrupted record with no
+    counts at all, which is why the runner drains events as they arrive, not at the end)."""
+    counts = JobRunner._counts([])
+    assert counts["files_done"] == 0 and counts["files_failed"] == 0 and counts["errors"] == 0
+    assert counts["files"] is None and counts["vectors"] is None    # no `idle` totals yet
+
+
 @pytest.fixture(scope="module")
 def jobs_client(scratch, scratch_index, tmp_path_factory):
     """The app over the scratch corpus, with its own job log folder."""
@@ -218,7 +229,13 @@ def test_a_stop_mid_job_is_interrupted_and_the_next_job_resumes(tmp_path, scratc
         assert done["state"] == "done"
         assert done["searchable"] == expected and done["pending"] == 0  # index == the walk
         assert done["vectors"] >= 10
-        assert done["files_done"] >= partial                     # the resumed part, engine's
+        # The engine's own arithmetic, measured in Stage 8 (8 + 7 = 15): the interrupted job
+        # embedded `partial` files, the resumed job embeds the REST (files already in the index
+        # come back `unchanged`, not `done`), so the two records sum to the walk. Asserting
+        # `resumed >= partial` was the lucky version of this assertion and it fails whenever
+        # the stop lands past the halfway point — which is what a loaded machine produces.
+        assert 0 < partial < expected
+        assert partial + done["files_done"] >= expected
     finally:
         runner2.shutdown()
 

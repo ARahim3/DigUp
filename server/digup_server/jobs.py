@@ -178,13 +178,22 @@ class JobRunner:
             self._service = None
             self._mark(job_id, "busy", str(exc))  # answered, not queued blind
             return
+        # Events are collected as they arrive, so an interrupted job carries the counts the
+        # engine really emitted. `run_sync()` raises `EngineExited` on EOF-without-exit and
+        # its local list is lost with it — measured: a stop landing during the model load
+        # produced `interrupted` with NO counts, and the test that asserts partial counts
+        # (`tests/test_jobs.py`) failed on exactly that timing under load.
+        events: list[dict] = []
         try:
-            events = service.run_sync(timeout=self._timeout)
+            service.sync()
+            for event in service.events(timeout=self._timeout):
+                events.append(event)
         except (EngineExited, TimeoutError) as exc:
             with self._lock:
                 self._active = None   # the writer is done; a new job may queue
             self._service = None
-            self._mark(job_id, STATE_INTERRUPTED, str(exc))
+            service.finish()
+            self._mark(job_id, STATE_INTERRUPTED, str(exc), **self._counts(events))
             return
         finally:
             service.finish()          # idempotent: releases the writer lock
