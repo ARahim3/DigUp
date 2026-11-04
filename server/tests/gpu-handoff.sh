@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stage 9 handoff proof — run this on the x86_64 box with the RTX 4070 (docs/implementation/
+# Stage 9 handoff proof — run this on an x86_64 host with an NVIDIA GPU (docs/implementation/
 # gpu-handoff.md is the prose version; this is the executable version).
 #
 # It counts failures and exits non-zero. A run that prints encouraging sentences and exits 0

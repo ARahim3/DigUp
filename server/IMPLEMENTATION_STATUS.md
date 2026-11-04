@@ -132,7 +132,7 @@ payload. **GPU NOT MEASURED: this machine has no CUDA/Vulkan device; see
   healthcheck, a search, a non-137 stop with `Application shutdown complete`) and Gate B (the
   card: toolkit test, CUDA payload `ldd`, `speed --model --json`'s measured `device`, and
   **GPU utilization sampled during a real index job** — "detected the device, embedded on CPU"
-  is a failing gate). Gate A ran green here on arm64 twice; Gate B runs on the RTX 4070 box.
+  is a failing gate). Gate A ran green here on arm64 twice; Gate B runs on the x86_64 NVIDIA box.
   The script prints `GPU NOT MEASURED` in those words whenever Gate B did not prove it.
 
 ## 2026-11-03 — Stage 11: the review round — parity proven, suite 75, CI that can't pass by luck

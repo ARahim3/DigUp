@@ -1,6 +1,6 @@
-# Stage 9 handoff — the NVIDIA box (RTX 4070, x86_64)
+# Stage 9 handoff — run it on an x86_64 host with an NVIDIA GPU
 
-This file exists because the development machine (Apple Silicon Mac) has **no CUDA device and
+This file exists because the development machine (an arm64 Mac) has **no CUDA device and
 no Vulkan device**, and building an x86_64 image under emulation is forbidden by
 [README §11](README.md) ("never ship an image that was built under emulation"). So the GPU work
 is *authored* here and *measured* there. Nothing in this repository claims GPU acceleration was
@@ -45,30 +45,34 @@ and `Sources/LlamaRuntime/LlamaEmbedder.swift` are the code to read first.
 
 ## Gate A — the CPU baseline, on this box (this part must pass)
 
-`gpu-handoff.sh --cpu-only` runs exactly this:
+```sh
+server/tests/gpu-handoff.sh --cpu-only
+```
+
+The gates, in order, each a PASS/FAIL line in the log: build the corpus fixtures
+(`server/tests/corpus/build.sh`, `server/tests/corpus2/build.sh`); create
+`$HOME/digup-data/{index,models,config}` owned by uid/gid 990; fetch the two pinned model files —
+the URLs carry the pinned revision from `Sources/DigUpKit/ModelFiles.swift`, and the hashes must
+equal the pins duplicated in `.github/workflows/server.yml`:
 
 ```sh
-git clone https://github.com/Ocean572/DigUp.git && cd DigUp && git checkout feat/server
-server/tests/corpus/build.sh && server/tests/corpus2/build.sh
-mkdir -p "$HOME/digup-data/"{index,models,config} && sudo chown -R 990:990 "$HOME/digup-data"
 curl -fL -o "$HOME/digup-data/models/embeddinggemma-2-Q8_0.gguf" \
   https://huggingface.co/ggml-org/embeddinggemma-2-GGUF/resolve/bfcd298762cc34d0357ece5ebdd31791a3a374d8/embeddinggemma-2-Q8_0.gguf
 curl -fL -o "$HOME/digup-data/models/mmproj-embeddinggemma-2-Q8_0.gguf" \
   https://huggingface.co/ggml-org/embeddinggemma-2-GGUF/resolve/bfcd298762cc34d0357ece5ebdd31791a3a374d8/mmproj-embeddinggemma-2-Q8_0.gguf
-sha256sum "$HOME/digup-data/models"/*.gguf     # must equal the pins in server/.github/workflows/server.yml
-DOCKER_BUILDKIT=1 docker build --target server-test -f server/docker/Dockerfile -t digup-server-test:x86 .
-# …the contract suite (the script mounts corpus / corpus-root / models / index and runs
-#   /srv/server/.venv/bin/pytest -rs: every test RUNS, any SKIPPED line is a FAIL)
-(cd deploy && docker compose up -d --build && sleep 40 \
-  && docker compose exec -T server python /opt/digup/healthcheck.py \
-  && curl -sf -X POST localhost:8787/api/v1/search -H 'content-type: application/json' \
-       -d '{"q":"wakeboarding"}' | head -c 400)
+sha256sum "$HOME/digup-data/models"/*.gguf
 ```
+
+Then build the `server-test` target **natively**; run the contract suite with the four required
+mounts (corpus, corpus-root, models, index) via `/srv/server/.venv/bin/pytest -rs` — every test
+RUNS and any SKIPPED line is a FAIL; then `docker compose up -d --build`, the healthcheck, a real
+search, and a `docker stop` that must end the container **not** 137, with
+`Application shutdown complete` last in the log. The script echoes every command it runs; read it
+for the exact invocations.
 
 Expected on x86_64: the same suite counts as CI (all green, zero skips), `/health` answering
 (the engine's fingerprints, `build_tag` b11461), a search with real `z`, a 206 on a `Range`
-request, and `docker stop` ending the container **not** 137 with `Application shutdown complete`
-in the log. If Gate A does not pass, the GPU work is not the problem — fix this first.
+request. If Gate A does not pass, the GPU work is not the problem — fix this first.
 
 ## Gate B — the GPU build, measured where the card is
 
