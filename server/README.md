@@ -91,6 +91,15 @@ gives uvicorn a non-PID-1 parent, so the API *is* a parent the helpers accept, a
 stopped API takes its helpers with it. Inside the container uvicorn binds `0.0.0.0`
 because the publish line (`127.0.0.1:8787:8787`) is what enforces localhost-only (§7).
 
+**One API process, on purpose.** The media handles (`media_id`) live in this process's LRU
+cache and the index-job runner is a thread inside it, so the deployment is exactly one uvicorn
+process: `--workers >1`, replicas, or a load balancer in front of two containers sharing the
+index volume 404s media ids issued by another process's searches and lets two job runners race
+the flock. Scale by giving the machine more cores. Concurrency is fine — searches are
+concurrent in this one process, the engine keeps one hot `search-service` and the adapter
+restarts it transparently; only *process count* is fixed. `docs/API.md` states the same
+promise to clients.
+
 ## Running the server (Compose)
 
 The shipping shape (`deploy/docker-compose.yml`, CPU-only base; the GPU override arrives at

@@ -96,6 +96,25 @@ def test_the_default_limit_is_the_engines_default(client):
     assert quiet["strong"] == explicit["strong"]
 
 
+def test_error_bodies_are_one_detail_string(client):
+    """API.md's error table is a promise: every documented error is one JSON object whose
+    `detail` is safe to show a user verbatim. Pinned on the cheap ones — an unknown job id,
+    a dead media handle on all three media endpoints, and the validation case whose `detail`
+    is a **list of objects** (the UI renders each item; a page that prints the raw array is
+    the bug this pins against)."""
+    unknown = client.get("/api/v1/jobs/deadbeefdeadbe")
+    assert unknown.status_code == 404 and isinstance(unknown.json()["detail"], str)
+    for suffix in ("preview", "text", "file"):
+        dead = client.get(f"/api/v1/media/deadbeefdeadbe/{suffix}")
+        assert dead.status_code == 404 and isinstance(dead.json()["detail"], str)
+    invalid = client.post("/api/v1/search", json={"q": "x", "kinds": ["not-a-kind"]})
+    assert invalid.status_code == 422
+    assert invalid.headers["content-type"].startswith("application/json")
+    detail = invalid.json()["detail"]
+    assert isinstance(detail, list) and detail
+    assert all({"type", "loc", "msg"} <= set(item) for item in detail)
+
+
 def test_the_api_validates_what_the_engine_would_silently_drop(client):
     bad = client.post("/api/v1/search", json={"q": "x", "kinds": ["not-a-kind"]})
     assert bad.status_code == 422                      # engine drops; API says so
