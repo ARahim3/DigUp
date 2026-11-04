@@ -278,6 +278,53 @@
     "synthetic/long/sensor readings.txt@139-139"
    ],
    "tag": "long-exact"
+  },
+  {
+   "q": "name: penguin",
+   "expect": [
+    "synthetic/img/Animals-Penguin.jpg",
+    "traps/duplicates/penguin.jpg",
+    "traps/duplicates/penguin copy.jpg",
+    "synthetic/video/penguin_zebra_parrot_18s.mp4"
+   ],
+   "tag": "name"
+  },
+  {
+   "q": "name: duplicates",
+   "expect": [
+    "traps/duplicates/penguin.jpg",
+    "traps/duplicates/penguin copy.jpg"
+   ],
+   "tag": "name"
+  },
+  {
+   "q": "name: gingerbread",
+   "expect": [
+    "synthetic/img/Fun-Gingerbread Man.jpg"
+   ],
+   "tag": "name"
+  },
+  {
+   "q": "name: speech flight",
+   "expect": [
+    "synthetic/audio/speech_flight_delay.wav"
+   ],
+   "tag": "name"
+  },
+  {
+   "q": "name: zoo clip",
+   "expect": [
+    "traps/real-mpeg-ts/zoo clip.ts"
+   ],
+   "tag": "name"
+  },
+  {
+   "q": "name: meeting",
+   "expect": [
+    "synthetic/screenshots/shot_chat_meeting.png",
+    "synthetic/docs/Meeting notes.rtf"
+   ],
+   "tag": "name"
   }
  ]
 }

@@ -10,7 +10,8 @@ import Foundation
 ///       → {"hits":[…], "strong":n, "meaning":bool, "ms":{"embed":…,"search":…}}
 ///         `meaning` false: keyword-only (while typing, or while the encoder isn't ready); `strong`: the weaker-matches
 ///         fold (`Searcher.strongCount`); each hit has the fields of `digup search --json` plus segment_id, modified,
-///         size and info.
+///         size and info. A "name:" in `q` is keyword search of file and folder names only (`NameQuery`): no embedding,
+///         no vectors.
 ///   {"op":"embed_ahead","q":…,"code":bool}   → {"ok":true}: embeds and caches the text (the panel sends what's typed so
 ///                                               far on every keystroke, so the pause's vector is usually ready)
 ///   {"op":"text","segment":id,"code":bool}    → {"text":…}: the part of a file a hit points at, for the preview
@@ -133,7 +134,8 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             let started = Date()
             var vector: [Float]?
             var warning: String?
-            if wantMeaning, !text.isEmpty {
+            // "name: …": the names need no model — keyword search in the searcher, the encoder never starts.
+            if wantMeaning, !text.isEmpty, NameQuery.text(of: text) == nil {
                 vector = self.vector(for: text, code: code)
                 // Vectors from another model or runtime must never meet: keyword-only then, and say so once.
                 if vector != nil, let indexed = (code ? codeSearcher : searcher)?.vectorSource,
@@ -169,7 +171,10 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             if let warning { reply["warning"] = warning }
             return reply
         case "embed_ahead":
-            _ = vector(for: request["q"] as? String ?? "", code: request["code"] as? Bool ?? false)
+            let typed = request["q"] as? String ?? ""
+            if NameQuery.text(of: typed) == nil {   // "name: …" is keyword-only: don't wake the encoder for it
+                _ = vector(for: typed, code: request["code"] as? Bool ?? false)
+            }
             return ["ok": true]
         case "text":
             guard let segment = (request["segment"] as? NSNumber)?.int64Value else { throw CLIError("which segment?") }

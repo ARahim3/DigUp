@@ -364,12 +364,15 @@ func search(_ args: Arguments) throws {
     guard !query.isEmpty else { throw CLIError("search for what?") }
     let code = CodeQuery.text(of: query)
     if let code { query = code }
+    let names = NameQuery.text(of: query)   // "name: …" searches the code index's names too, the same way
+    if names == "" { throw CLIError("search the names for what?") }
     guard !query.isEmpty else { throw CLIError("search the code for what?") }
     let store = try IndexStore(directory: args.indexFolder, file: code == nil ? IndexStore.mainFile : IndexStore.codeFile)
     let searcher = try Searcher(store: store)
     let started = Date()
-    let vector = try queryVectors([query], store: store, searcher: searcher,
-                                  prompt: code == nil ? Prompts.query : Prompts.codeQuery)?.first
+    // A name search needs no model at all: the searcher reads the prefix, keywords the names and stops there.
+    let vector = names != nil ? nil : try queryVectors([query], store: store, searcher: searcher,
+                                                        prompt: code == nil ? Prompts.query : Prompts.codeQuery)?.first
     let encoded = Date()
     let hits = try searcher.search(query, queryVector: vector, kinds: try args.kinds(),
                                    limit: args.values["-n"].flatMap(Int.init) ?? 10, zGate: args.zGate,
@@ -626,7 +629,8 @@ func evaluate(_ args: Arguments) throws {
         let store = try IndexStore(directory: args.indexFolder, file: code ? IndexStore.codeFile : IndexStore.mainFile)
         let searcher = try Searcher(store: store)
         searchers[code] = searcher
-        let indices = texts.indices.filter { isCode[$0] == code }
+        // "name: …" queries are keyword-only: no vector to precompute, the searcher reads the prefix itself.
+        let indices = texts.indices.filter { isCode[$0] == code && NameQuery.text(of: texts[$0]) == nil }
         let embedded = try queryVectors(indices.map { texts[$0] }, store: store, searcher: searcher,
                                         prompt: code ? Prompts.codeQuery : Prompts.query)
         for (index, vector) in zip(indices, embedded ?? []) { vectors[index] = vector }
