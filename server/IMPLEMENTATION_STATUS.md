@@ -2,6 +2,60 @@
 
 One document, kept current (docs/implementation/README.md §10). Newest first.
 
+## 2026-11-04 — The API as the product, the security seams, and the Stage-9 handoff
+
+The overnight round on `feat/server` (PR #184): API surface, security, and the handoff the GPU
+box needs. **Suite: 96 passed, 1 deselected, 0 SKIPPED in 222.11 s** (the handoff script's own
+run, twice: 224.38 s / 222.11 s, EXIT=0) — 21 new tests, zero skips, arm64, the shipped engine
+payload. **GPU NOT MEASURED: this machine has no CUDA/Vulkan device; see
+[docs/implementation/gpu-handoff.md](../docs/implementation/gpu-handoff.md).**
+
+* **API default `limit` = 40** (`api.py`), the engine's own default (`SearchService.swift:130`).
+  The UI already sent 40; a direct API client that named no limit was quietly getting a third of
+  the engine's answer. Pinned twice: the typed default, and the reply against an explicit 40.
+* **`server/docs/API.md`** — the API reference as an artifact of its own (schemas, media
+  identifiers, limits/pagination, the error table, curl examples, versioning, security,
+  multi-client use, deploy shape), independent of the UI. `tests/test_api_docs.py` fails if an
+  endpoint, the `limit` default row, or the OpenAPI/docs paths drift out of it.
+* **Error shapes pinned** (`tests/test_api.py`): one `detail` string for 404/409/502/503, a
+  **list of objects** for 422 (the UI renders each item; printing the raw array is the bug).
+* **One API process, said out loud** (README + API.md): `media_id` handles live in this process's
+  LRU and the job runner is a thread inside it, so `--workers >1`/replicas 404 handles and let
+  two writers race. Searches are concurrent inside the one process; only process count is fixed.
+* **Host/Origin validation** (`security.py`, opt-in, off by default):
+  `DIGUP_SERVER_ALLOWED_HOSTS` names the URL hosts a deployment serves → a foreign `Host` gets
+  400, a browser's state-changing request from another origin gets 403, non-browser clients (no
+  `Origin`) pass, read-only GETs are unchecked, ports are not compared, no wildcard. Installed
+  inert by default, so a localhost box behaves exactly as before. 11 tests in
+  `tests/test_security.py` pin the whole table.
+* **Bearer tokens with a read/admin split** (`DIGUP_SERVER_TOKEN`, `DIGUP_SERVER_ADMIN_TOKEN`):
+  read scope covers `/api/v1` except `health`/`docs`/`openapi.json` (the container's
+  `HEALTHCHECK` calls `/health` with no credential); admin scope covers `POST /index` and
+  `POST /estimate`. `401` + `WWW-Authenticate: Bearer` with nothing, `401` for the wrong token,
+  `403` for the read token on an admin endpoint, `hmac.compare_digest` comparison. The UI prompts
+  once on a 401, keeps the token in `localStorage` (`digupBearer`), retries once, and does not
+  loop. Off by default; Compose passes the three knobs through unset.
+* **Media-handle semantics pinned** (`tests/test_media_handles.py` + one API test): handles are
+  per-reply (two replies never share one), the cache is bounded and a true LRU, and handles die
+  with the process — clients key their own records on `path` + `kind` + `segment_id` (+ `loc`).
+* **The interrupted-job counts fix** (a real finding from this round's suite run):
+  `run_sync()` raises `EngineExited` on EOF-without-`exit` and loses the events it collected, so
+  a stop landing during the model load published an *interrupted* record with **no counts** — the
+  suite caught it as `assert partial is not None` under load. The runner now drains the event
+  stream as it arrives and marks *interrupted* with the engine's real partial counts. The
+  resume test's arithmetic was corrected to the engine's own (measured in Stage 8: 8 + 7 = 15):
+  the interrupted job embedded `partial`, the resumed job embeds the rest (`unchanged` files are
+  not `done`), so `partial + files_done ≥ expected` — the old `files_done ≥ partial` was the
+  lucky version and fails whenever the stop lands past the halfway point.
+* **Stage-9 handoff** (`docs/implementation/gpu-handoff.md` +
+  `server/tests/gpu-handoff.sh`): Gate A (the CPU baseline: pins verified against
+  `ModelFiles.swift`, the contract suite with a zero-skip gate, Compose boot, the image's own
+  healthcheck, a search, a non-137 stop with `Application shutdown complete`) and Gate B (the
+  card: toolkit test, CUDA payload `ldd`, `speed --model --json`'s measured `device`, and
+  **GPU utilization sampled during a real index job** — "detected the device, embedded on CPU"
+  is a failing gate). Gate A ran green here on arm64 twice; Gate B runs on the RTX 4070 box.
+  The script prints `GPU NOT MEASURED` in those words whenever Gate B did not prove it.
+
 ## 2026-11-03 — Stage 11: the review round — parity proven, suite 75, CI that can't pass by luck
 
 Adversarial review of the whole PR (backend; UI + media; build/CI/docs), every real finding

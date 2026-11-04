@@ -254,4 +254,9 @@ the app's own adapter (`SearchService`) on a snapshot of the live index answerin
 queries with the same hits, strong counts and z-scores as the HTTP API — is in
 [docs/implementation/stage-11-review-round.md](../docs/implementation/stage-11-review-round.md).
 The GPU override
-(Stage 9, on the prod box) comes next.
+(Stage 9, on the prod box) comes next: the handoff — what to run on the x86_64 NVIDIA box, in
+what order, and what "verified" must mean there (the engine's measured `device`, GPU utilization
+sampled during a real index job) — is
+[docs/implementation/gpu-handoff.md](../docs/implementation/gpu-handoff.md), executable as
+`server/tests/gpu-handoff.sh` (Gate A's CPU baseline ran green on arm64, 96 tests, 0 skipped;
+Gate B — the card — has not been run, and the script says so).
