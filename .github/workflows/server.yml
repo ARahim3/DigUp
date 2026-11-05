@@ -92,8 +92,9 @@ jobs:
       # from it, the stamped scripts (the same ones ci.yml runs — stamped, idempotent) land
       # on their stamps and skip the rebuild. Hosted runners start BuildKit cache mounts
       # cold every job, so without the seed a 15-minute ffmpeg compile lands on every PR.
-      # The runner host needs no toolchain for this (curl/git/python3/ffmpeg ship on it; the
-      # container installs the builder's build packages itself). Bounded retries around the
+      # The runner host needs no toolchain for this (curl/git/python3 ship on it — ffmpeg
+      # does NOT, see the corpus step; the container installs the builder's build packages
+      # itself). Bounded retries around the
       # build scripts: they survive a network hiccup and cost nothing on healthy networks.
       - name: Vendored libraries, ffmpeg, llama.cpp (in the builder's base image, cached — ci.yml's own scripts)
         run: |
@@ -138,8 +139,18 @@ jobs:
           docker run --rm digup-engine:ci digup --help
           docker run --rm digup-engine:ci digup --help | sed -n 2p
 
+      # The corpus fixture is fully checkout-deterministic (12 photos + 2 videos in git,
+      # manifest-pinned); only the synthetic clip needs ffmpeg. The hosted runner image ships
+      # NO ffmpeg (measured 2026-11-05, run #4: the runner's "Tools" inventory has MediaInfo
+      # and no ffmpeg; the apt list jumps ftp→g++), and build.sh probes candidates by
+      # capability — the engine's Vendor ffmpeg (decode-only, restored into the workspace by
+      # the step-4 cache) is probed out, so the runner needs a real one: apt's ffmpeg has
+      # libx264 + the mp4 muxer and passes the probe.
       - name: Corpus (pinned photos are in git; the videos, clip, and manifest checks run here)
-        run: server/tests/corpus/build.sh
+        run: |
+          sudo apt-get update -q
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends ffmpeg
+          server/tests/corpus/build.sh
 
       # The clip is the suite's video fixture; a runner whose ffmpeg lacks libx264 silently
       # unbuilds it, ~20 tests skip, and the suite greys out green. It must exist, plainly.
