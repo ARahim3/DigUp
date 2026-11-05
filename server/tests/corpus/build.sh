@@ -14,12 +14,24 @@ MEDIA="${1:-$HERE/media}"
 UA="DigUpServer-corpus/1.0 (dev corpus setup; contact: https://github.com/ARahim3/DigUp)"
 mkdir -p "$MEDIA/photos" "$MEDIA/videos" "$MEDIA/clips"
 
-# ffmpeg: the build container's (scripts/build-ffmpeg.sh's output) when it is there, else the
-# system's. It is only needed for the synthetic clip; the photos and videos need nothing.
+# ffmpeg: only the synthetic clip runs it; the photos and videos need nothing. The clip needs
+# an ENCODER (libx264) and the mp4 muxer, so a candidate is accepted only when it lists both.
+# The engine's own Vendor ffmpeg (scripts/build-ffmpeg.sh) is a decode-only build — its encoder
+# list is pcm_s16le,mjpeg,ppm,rawvideo, no mp4 muxer — and is probed out by this check.
+# Measured on CI run #3 (2026-11-05): the unprobed Vendor pick (the step-4 cache restores
+# Vendor/ into the workspace) died on the clip with ffmpeg's exit 8, "Unknown encoder 'libx264'"
+# — a structural mismatch, not a network or ABI one: the engine never encodes x264. An explicit
+# FFMPEG=… is honoured as given.
+ffmpeg_makes_the_clip() {  # true when "$1" encodes libx264 and muxes mp4 (the clip's demands)
+  local out
+  out="$("$1" -hide_banner -encoders 2>/dev/null)" && [[ "$out" == *" libx264 "* ]] || return 1
+  out="$("$1" -hide_banner -muxers 2>/dev/null)" && [[ "$out" == *" mp4 "* ]]
+}
 FFMPEG="${FFMPEG:-}"
 if [[ -z "$FFMPEG" ]]; then
   for candidate in "$HERE/../../../Vendor/ffmpeg/bin/ffmpeg" "$(command -v ffmpeg 2>/dev/null || true)"; do
-    [[ -n "$candidate" && -x "$candidate" ]] && FFMPEG="$candidate" && break
+    [[ -n "$candidate" && -x "$candidate" ]] || continue
+    if ffmpeg_makes_the_clip "$candidate"; then FFMPEG="$candidate"; break; fi
   done
 fi
 
@@ -56,6 +68,6 @@ if [[ -x "$FFMPEG" ]]; then
     -preset veryfast -crf 30 "$MEDIA/clips/scenes.mp4"
   echo "  made scenes.mp4"
 else
-  echo "  no ffmpeg: scenes.mp4 not built (set FFMPEG=…, e.g. Vendor/ffmpeg/bin/ffmpeg)" >&2
+  echo "  no ffmpeg with libx264 + mp4: scenes.mp4 not built (install ffmpeg, or set FFMPEG=…)" >&2
 fi
 echo "corpus in $MEDIA"

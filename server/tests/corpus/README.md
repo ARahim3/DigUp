@@ -43,8 +43,11 @@ as `path`, a moment as `path@lo-hi`, plus `tag` and `kind` — so the recall num
 the same numbers `evals/` prints for the rest of the project, and `DIGUP_TESTBED` points the file
 at this corpus.
 
-`build.sh` needs ffmpeg for the synthetic clip: on a Mac use the build container's
-(`Vendor/ffmpeg/bin/ffmpeg`), inside the builder image it is already on the path.
+`build.sh` needs ffmpeg only for the synthetic clip, and the clip needs an encoder: libx264 and the
+mp4 muxer. The engine's own `Vendor/ffmpeg/bin/ffmpeg` is a decode-only build (`scripts/build-ffmpeg.sh`:
+no lavfi sources, no libx264 — see `docs/implementation/stage-1-linux-build.md`), so `build.sh` probes
+each candidate and accepts only one that lists both; the system ffmpeg (`apt install ffmpeg`, Homebrew's)
+qualifies, the engine's never can, and a missing clip is a hard CI gate, not a silent skip.
 
 ## Provenance
 
