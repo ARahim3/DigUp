@@ -4,6 +4,10 @@ One document, kept current (docs/implementation/README.md §10). Newest first.
 
 ## 2026-11-05 (night) — CI `server` job green end-to-end; `:feat-server` live in ghcr, pull-and-run proven
 
+**Run #9 (`6d97cd5`): `server` SUCCESS + `publish` SUCCESS — the whole pipeline is green**
+(CPU + CUDA images pushed off the warm caches, hygiene step green with the fixed heredoc).
+CI/publish objective closed. Registry: `feat-server` (568 MB) + `feat-server-cuda` (3.67 GB).
+
 Measured on the fork's Server workflow (branch `feat/server`), runs #2–#6 (all numbers from
 the run timelines):
 
@@ -29,14 +33,17 @@ the run timelines):
   8788 → Up **(healthy)**, `/api/v1/health` `ok:true` (engine b11461, encoder ready, index
   created), UI served at `/` (7,197 bytes with DigUp/app.js), `docker stop --time 15` →
   **exit 143 + `Application shutdown complete`**, compose down clean.
-* **CUDA image (`-cuda`) fix pending (run #6 died at 2 m 44 s):** `build-llama.sh` passes
+* **CUDA image (`-cuda`) fix (run #6 died at 2 m 44 s):** `build-llama.sh` passes
   `CUDA_ARCHS` verbatim to `-DCMAKE_CUDA_ARCHITECTURES`, CMake lists are **semicolon**-
   separated, and the publish step's `61,70,75,80,86,89,90` is ONE invalid arch token —
   configure died ~35 s × 3 retries + 60 s sleeps = 164 s, matching the step to the second.
   Fix lives at the server's boundary (scripts untouched): the Dockerfile's engine-builder
   RUN normalizes commas → semicolons (`tr ',' ';'`), plain/`native`/semicolon values pass
   through. Verified by configure-only probe on `nvidia/cuda:12.4.1-devel-ubuntu22.04` with
-  the seeded Vendor: raw commas fail, semicolons pass (see below for the probe result).
+  the seeded Vendor: raw commas fail at `ggml-cuda/CMakeLists.txt:72 (enable_language)`,
+  the semicolon shape prints `CONFIGURE-OK` with compiler-ID cubins for 61/70/75/80/86/89/90.
+  Shipped in `7400c82`; run #7 step 10 built the CUDA image green in **1 h 28 m 57 s**
+  (cold), proving the fix live.
 
 * **CUDA image published and proven in the nvidia shape.** Run #7 step 10 (the CUDA
   build-push) went green in **1 h 28 m 57 s** — the arch normalization shipped
