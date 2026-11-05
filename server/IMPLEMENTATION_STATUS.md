@@ -38,6 +38,23 @@ the run timelines):
   through. Verified by configure-only probe on `nvidia/cuda:12.4.1-devel-ubuntu22.04` with
   the seeded Vendor: raw commas fail, semicolons pass (see below for the probe result).
 
+* **CUDA image published and proven in the nvidia shape.** Run #7 step 10 (the CUDA
+  build-push) went green in **1 h 28 m 57 s** — the arch normalization shipped
+  `ghcr.io/ocean572/digup-server:feat-server-cuda` (anonymous pull verified; images
+  on disk here: 568 MB CPU / 3.67 GB CUDA). Boot proof of the merged GPU shape
+  (`docker-compose.yml + docker-compose.ghcr.yml + docker-compose.ghcr.nvidia.yml
+  --profile nvidia`, `DIGUP_NVIDIA_GPU` = the box's GTX 1070 UUID, port 8789):
+  **Up 11 s (healthy)**, `/api/v1/health` 200 first try, encoder `ready`, engine
+  b11461, model resident on the card (**1780 MiB, 37% util** during prewarm),
+  `docker stop --time 15` → **exit 143** + `Application shutdown complete`, down clean.
+* **Hygiene step fixed (run #7, step 11, exit 1 in 1 s):** the python heredoc body sat
+  deeper than its delimiters → IndentationError; and version deletion is
+  `POST …/versions/delete` since GitHub's 2022 verb migration (old `DELETE` → 404).
+  Body moved to the delimiter column, verb fixed, cleanup made best-effort: a loud
+  `::warning` + exit 0 — publish has already succeeded by then, so cleanup never reds
+  a run and never fails silently. Shape verified by extracting the run block from the
+  YAML and running it (reaches the API: 401 with a dummy token, warning printed, 0).
+
 ## 2026-11-05 — ghcr publish + pull-and-run compose; first fully green suite on x86_64
 ```
 
