@@ -121,6 +121,31 @@ docker compose up -d --build
 # 503 until the searcher is up — the container is healthy, the API is honest.
 ```
 
+### Pull the published image (no build step)
+
+CI publishes `ghcr.io/<owner>/digup-server` (the Server workflow's `publish` job):
+`:latest` from main, `:<branch>` from a feature branch — PR #184's shape is
+`:feat-server`. Images are **x86_64 only** by the §11 rule: other architectures build
+locally with `--build`, exactly as the section above does. Pull-and-run is the same
+compose file with one override appended — it nulls the `build:` block (`!reset`) so the
+image is pulled, and the `DIGUP_*` env, knobs and volumes are unchanged:
+
+```sh
+cd deploy
+DIGUP_INDEX_DIR=… DIGUP_MODELS_DIR=… DIGUP_MEDIA_DIR=… \
+docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up -d
+# GPU box (NVIDIA Container Toolkit installed, x86_64): pulls :feat-server-cuda / :latest-cuda
+DIGUP_IMAGE_TAG=feat-server \
+docker compose -f docker-compose.yml -f docker-compose.ghcr.yml \
+  -f docker-compose.ghcr.nvidia.yml --profile nvidia up -d
+```
+
+`DIGUP_IMAGE_TAG` (default `latest`) selects the build; the `-cuda` suffix is appended
+by the GPU override file itself. The package is public while the repository is
+(Anon pulls work); if it is ever made private, `docker login ghcr.io` with a PAT that
+has `read:packages` first. The `chown -R 990` step above stays required on Linux —
+the pull shape changes only where the image comes from, not what it needs.
+
 The runtime image is `server-runtime`: engine payload + API + UI, `tini` as PID 1 (the
 ParentWatch chain: helpers' parent is uvicorn, never PID 1), non-root (`uid 990`), a
 HEALTHCHECK that asks the API's own `/health`. SIGTERM (even mid-job): the runner sends
@@ -172,7 +197,7 @@ is the reference, `Sources/DigUpApp/SearchPanel.swift` the Mac one):
 | Open (the file itself; `placeToOpen` for video) | same | `GET /media/{id}/file` — inline media opens in the browser (H.264/AAC mp4-mov, webm, plain audio seek at `#t=` via Range); formats a browser can't stream keep the frame + words and open in the user's player; Download = attachment |
 | footer: summary + keys line | same | "N results · M weaker", "Matching words…", "Words only: …", the helper's own error quoted; keys line under the results |
 | activity badge ("Indexing 42%", encoder warming) | same | encoder/job state from `/status` + the polled job's counts |
-| onboarding estimate (the folders' cost) | same | `POST /estimate` → per-folder forecast with kind counts, PDF pages, audio/video durations, the `calibrated` truth, top subfolders — the button lives in the settings panel, the honest note is one line |
+| onboarding estimate (the folders' cost) | same | `POST /estimate` → per-folder forecast with kind counts, PDF pages, audio/video durations, the `calibrated` truth, top subfolders — the button lives in the settings panel, the honest note is one line; the walk's ceiling is `DIGUP_SERVER_ESTIMATE_TIMEOUT_S` (default 120 s — a big tree on a spinning disk needs minutes, measured 2026-11-04) |
 | appearance (the desktop follows the OS) | **choice: System / Light / Dark** | a server has no OS to follow; a select in the settings panel (the gear), `data-theme` + CSS variables, kept in `localStorage` |
 | roots shown (Settings → Folders) | shown | `GET /status` publishes the server's own configured roots (env-configured; the settings panel prints them with the engine's counts) — display, not path acceptance (§7) |
 

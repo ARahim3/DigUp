@@ -1,0 +1,23 @@
+# Pull-and-run override (server/README.md "Pull the published image"): use the ghcr.io
+# image instead of building from source.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up -d
+#
+# The Server workflow publishes these images — x86_64 only, by rule: cross-emulation
+# builds are forbidden (docs/implementation/README.md §11), so arm64 hosts build the
+# image natively under that same rule. The tag knob picks the build:
+#
+#   DIGUP_IMAGE_TAG=latest      → main's published image   (default)
+#   DIGUP_IMAGE_TAG=feat-server → the PR branch's image    (branch name, lowercased,
+#                                slashes → dashes; pr-<number>-style tags do not exist,
+#                                a push event carries the branch, not the PR number)
+#
+# The package is public when the repository is public (this repo is) — no login needed.
+# If a package ever goes private, `docker login ghcr.io` with a PAT (read:packages)
+# first. All the DIGUP_* env, knobs and volumes come from docker-compose.yml unchanged:
+# this file only swaps where the image comes from. `!reset` nulls the base file's
+# `build:` block — a service with only `image:` is pulled, never built.
+services:
+  server:
+    build: !reset null
+    image: ghcr.io/ocean572/digup-server:${DIGUP_IMAGE_TAG:-latest}

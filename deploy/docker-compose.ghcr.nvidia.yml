@@ -1,0 +1,28 @@
+# Pull-and-run GPU shape: the published CUDA image, no local CUDA build.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.ghcr.yml \
+#     -f docker-compose.ghcr.nvidia.yml --profile nvidia up -d
+#
+# Host prerequisites are docker-compose.nvidia.yml's, unchanged: the NVIDIA Container
+# Toolkit, and on multi-GPU hosts DIGUP_NVIDIA_GPU pins the card (a UUID from
+# `nvidia-smi -L`). The engine, not this file, decides whether the card is USED
+# (`digup speed --model` measures it; the proof of use is gpu-handoff.sh's utilization
+# gate) — the image shape is the same server-runtime-cuda target the build path ships.
+#
+# Tag knob mirrors docker-compose.ghcr.yml, with the -cuda suffix appended by the
+# literal below: DIGUP_IMAGE_TAG=latest → :latest-cuda; DIGUP_IMAGE_TAG=feat-server →
+# :feat-server-cuda. Requires docker-compose.ghcr.yml in the -f chain (it carries the
+# `!reset` that removes the build block; this file alone keeps the base's build shape).
+services:
+  server:
+    profiles: ["nvidia"]
+    image: ghcr.io/ocean572/digup-server:${DIGUP_IMAGE_TAG:-latest}-cuda
+    environment:
+      NVIDIA_VISIBLE_DEVICES: ${DIGUP_NVIDIA_GPU:-all}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [cuda]

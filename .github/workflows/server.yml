@@ -18,7 +18,7 @@ on:
       - "Sources/**"
       - "scripts/**"
   push:
-    branches: [main]
+    branches: [main, "feat/**"]
     paths:
       - "server/**"
       - "deploy/**"
@@ -26,6 +26,11 @@ on:
       - ".github/workflows/server.yml"
       - ".dockerignore"
       - ".ci-vendor/**"
+      # The published images embed the engine: a Sources/Package.swift/scripts change that
+      # passes ci.yml must republish them here, or ghcr silently serves a stale engine.
+      - "Package.swift"
+      - "Sources/**"
+      - "scripts/**"
   workflow_dispatch:
 
 permissions:
@@ -186,8 +191,16 @@ jobs:
       # end it *stopped, not killed*: the lifespan must complete (it marks a running job
       # interrupted and quit()s every helper) inside the stop grace — exit 143 (a completed
       # SIGTERM stop) is the graceful code here; 137 means SIGKILL, i.e. the shutdown hung.
-      - name: The Compose file is valid (schema check)
-        run: cd deploy && docker compose config --quiet
+      # Every operator-facing compose shape, schema-checked on every run: the CPU default,
+      # the build-GPU override, and both pull-and-run (ghcr) merges — the `!reset` of the
+      # build block is a merge feature, so its shapes belong pinned in CI, not in prose.
+      - name: The Compose files are valid (every merge shape, schema check)
+        run: |
+          cd deploy
+          docker compose config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.nvidia.yml --profile nvidia config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.ghcr.yml config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.ghcr.yml -f docker-compose.ghcr.nvidia.yml --profile nvidia config --quiet
 
       - name: The server runtime image boots, answers, serves the UI, stops cleanly
         run: |
@@ -232,3 +245,146 @@ jobs:
             ${{ runner.temp }}/proof
             ${{ runner.temp }}/suite.log
           if-no-files-found: warn
+
+  # Pull-and-run publishes here (server/README.md "Pull the published image"): pushes to
+  # main and to the PR branch push the shipping images to ghcr.io, and
+  # deploy/docker-compose.ghcr*.yml pull them, so an operator needs no toolchain — set
+  # the DIGUP_* env vars, `docker compose up -d`, done. Tags: main → :latest and
+  # :latest-cuda; a feature branch → :<branch> and :<branch>-cuda (lowercased,
+  # slashes → dashes — the PR's own image is :feat-server-cuda on :feat-server).
+  # publish never runs on a pull_request event: that context's token is scoped to the
+  # BASE repo's registry, and this is the head owner's registry. x86_64 only, by rule:
+  # cross-emulation builds are forbidden (README §11) and arm64 hosts build the image
+  # natively under the same rule. The publish runs only after the full `server` job is
+  # green — the image that reaches ghcr passed the contract suite, the headless proof
+  # and the clean-stop gate minutes earlier.
+  publish:
+    needs: server
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    # The CUDA flavor compiles llama.cpp with GGML_CUDA for seven archs on a cold gha
+    # cache; 180 mirrors the server job's measured ceiling and dies on its own before
+    # GitHub's 6 h one.
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The same Vendor cache the server job just filled (same key): the Dockerfile seeds
+      # its cache mounts from .ci-vendor/, the stamped scripts land on their stamps and
+      # skip the rebuild. The CUDA flavor re-pays only the CUDA compile (the stamp embeds
+      # $FLAVOR), which the gha build cache (below) keeps warm across runs.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: Vendor
+          key: server-vendor-linux-${{ hashFiles('scripts/fetch-vendor.sh', 'scripts/build-ffmpeg.sh', 'scripts/build-llama.sh', 'scripts/package-linux.sh') }}
+      - name: Vendored libraries, ffmpeg, llama.cpp (host, cached — the server job's scripts)
+        run: |
+          scripts/fetch-vendor.sh
+          scripts/build-ffmpeg.sh
+          scripts/build-llama.sh
+          mkdir -p .ci-vendor
+          cp -a Vendor/. .ci-vendor/
+
+      # ghcr.io forces the whole path lowercase: Ocean572/DigUp publishes as
+      # ghcr.io/ocean572/digup-server. Derived from the repo owner so case never hard-codes.
+      - name: Image name (ghcr paths are lowercase — derive from the repo)
+        run: echo "IMAGE=ghcr.io/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/digup-server" >> "$GITHUB_ENV"
+
+      # main is :latest / :latest-cuda; a feature branch is :<branch> / :<branch>-cuda —
+      # the PR branch's own build, pullable with DIGUP_IMAGE_TAG=<branch>. The branch
+      # name is what a push event carries; PR numbers are not derivable from a push, so
+      # tags are branch-named, honestly.
+      - name: Image tags (main → latest; other refs → the branch name)
+        run: |
+          if [ "$GITHUB_REF" = refs/heads/main ]; then
+            tag=latest
+          else
+            tag=$(echo "$GITHUB_REF_NAME" | tr '[:upper:]' '[:lower:]' | tr / -)
+          fi
+          echo "TAG_CPU=$tag" >> "$GITHUB_ENV"
+          echo "TAG_CUDA=$([ "$tag" = latest ] && echo latest-cuda || echo "$tag-cuda")" >> "$GITHUB_ENV"
+
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # The CPU image — the target server-runtime the stop-gate step above booted,
+      # tagged :latest on main, :<branch> on a feature branch.
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: server/docker/Dockerfile
+          target: server-runtime
+          push: true
+          tags: ${{ env.IMAGE }}:${{ env.TAG_CPU }}
+          platforms: linux/amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The CUDA image — the shape docker-compose.ghcr.nvidia.yml pulls (:latest-cuda
+      # on main, :<branch>-cuda on the PR branch). Fat arch list
+      # (61 Pascal … 90 Hopper; CUDA 12.4.1 compiles 61 as deprecated — CUDA 13 drops it,
+      # re-evaluate the base when the line moves). Its build gate is the Dockerfile's own:
+      # server-runtime-cuda runs `ldd libggml-cuda.so` and fails the build on any
+      # "not found" (measured 2026-11-04, Gate B), so a broken CUDA image never publishes.
+      # Separate gha cache scope: the CPU and CUDA layer sets must not evict each other.
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: server/docker/Dockerfile
+          target: server-runtime-cuda
+          push: true
+          tags: ${{ env.IMAGE }}:${{ env.TAG_CUDA }}
+          platforms: linux/amd64
+          build-args: |
+            BASE_IMAGE=nvidia/cuda:12.4.1-devel-ubuntu22.04
+            CUDA_RUNTIME_IMAGE=nvidia/cuda:12.4.1-runtime-ubuntu22.04
+            CUDA_ARCHS=61,70,75,80,86,89,90
+          cache-from: type=gha,scope=cuda
+          cache-to: type=gha,mode=max,scope=cuda
+
+      # Version hygiene: every push leaves the previous one untagged, and ghcr's free
+      # tier is metered by stored GB — a CUDA image is ~2 GB, so untagged leftovers get
+      # deleted right here. Keep rule: anything still carrying a tag survives — the
+      # floating tags this job writes (latest, latest-cuda, branch names) are the only
+      # tags it ever creates, so the registry ends up holding exactly the live builds.
+      - name: Delete untagged image versions (registry hygiene)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+
+          owner, pkg, tok = os.environ["GITHUB_REPOSITORY"].split("/")[0], "digup-server", os.environ["GITHUB_TOKEN"]
+          api = "https://api.github.com"
+
+          def req(method, url, body=None):
+              data = json.dumps(body).encode() if body is not None else None
+              r = urllib.request.Request(url, data=data, method=method, headers={
+                  "Authorization": "Bearer " + tok,
+                  "Accept": "application/vnd.github+json",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              })
+              with urllib.request.urlopen(r) as resp:
+                  raw = resp.read()
+                  return json.loads(raw) if raw else {}
+
+          versions, page = [], 1
+          while True:
+              batch = req("GET", f"{api}/users/{owner}/packages/container/{pkg}/versions?per_page=50&page={page}")
+              versions.extend(batch)
+              if len(batch) < 50:
+                  break
+              page += 1
+
+          doomed = [{"id": v["id"]} for v in versions if not v.get("tags")]
+          for i in range(0, len(doomed), 20):          # the API deletes in batches of <=20
+              req("DELETE", f"{api}/user/packages/container/{pkg}/versions", {"versions": doomed[i:i + 20]})
+          print(f"versions: {len(versions)} total, {len(versions) - len(doomed)} tagged kept, {len(doomed)} untagged deleted")
+          PY
