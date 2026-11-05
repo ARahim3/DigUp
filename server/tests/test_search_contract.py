@@ -47,8 +47,11 @@ def test_wakeboarding_ranks_the_wakeboards(search):
     reply = search["service"].search("wakeboarding", limit=10)
     assert {"hits", "strong", "meaning", "ms"} <= set(reply)
     assert reply["meaning"] is True                          # vectors were used
-    assert paths(reply["hits"])[:3] == ["wakeboarding-vienna.webm", "wakeboard-logan.jpg",
-                                        "wakeboarding-aarhus-04.jpg"]
+    assert set(paths(reply["hits"])[:3]) == {"wakeboarding-vienna.webm", "wakeboard-logan.jpg",
+                                             "wakeboarding-aarhus-04.jpg"}
+    # The SET is the contract (the three planted wakeboard media answer the query). The
+    # order is platform-dependent (embedding matmul vs CPU features; measured 2026-11-04:
+    # x86_64 logan 1.571 > vienna 1.531, arm64 vienna first — 0.040 z apart, inside noise).
     assert reply["strong"] >= 3
 
 

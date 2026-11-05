@@ -322,9 +322,15 @@ def create_app(config: EngineConfig) -> FastAPI:
         # One writer, serialized; after a done job the searcher is brought current with
         # the sequence the contract suite proved: reload() → prewarm().
         config_dir = os.environ.get("DIGUP_SERVER_CONFIG") or os.path.join(config.index, "server-config")
+        # A job's ceiling: 3600 s fits the corpora the suite walks (15–60 files finish in
+        # ~20 s). A first pass of a real media tree outlives an hour — measured 2026-11-04:
+        # 19,007/131,972 files done when the default expired; the job recorded *interrupted*
+        # with its partial counters and the next job resumes (README §5). The operator owns
+        # the ceiling: DIGUP_SERVER_JOB_TIMEOUT_S (same pattern as the estimate's).
         runner = JobRunner(config, config_dir=config_dir,
                            after_done=lambda: (service.reload(), service.prewarm()),
                            backfill=os.environ.get("DIGUP_SERVER_BACKFILL", "1") != "0",
+                           sync_timeout_s=float(os.environ.get("DIGUP_SERVER_JOB_TIMEOUT_S", "3600")),
                            log_rotate_bytes=int(os.environ.get("DIGUP_SERVER_JOB_LOG_SIZE",
                                                                1_048_576)))
         app.state.jobs = runner
@@ -437,8 +443,14 @@ def create_app(config: EngineConfig) -> FastAPI:
             raise HTTPException(status_code=409,
                                 detail="an estimate is already running — the engine walks "
                                        "every folder once at a time")
+        # The 120 s default fits corpus-sized trees. A full-tree crawl of a real media
+        # tree on a spinning disk takes minutes — measured 2026-11-04: 187k files on a
+        # 2 TB HDD crossed the default and the endpoint answered 502 "timed out". The
+        # operator owns that ceiling: DIGUP_SERVER_ESTIMATE_TIMEOUT_S (the engine keeps
+        # walking; the endpoint just stays honest about how long it will wait for it).
+        timeout = float(os.environ.get("DIGUP_SERVER_ESTIMATE_TIMEOUT_S", "120"))
         try:
-            return {"folders": estimate_lines(config)}
+            return {"folders": estimate_lines(config, timeout=timeout)}
         finally:
             estimate_busy.release()
 

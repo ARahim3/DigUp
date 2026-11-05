@@ -18,7 +18,16 @@ from fastapi.testclient import TestClient
 
 from digup_server.api import SearchRequest, create_app
 
-WAKEBOARD_TOP3 = ["wakeboarding-vienna.webm", "wakeboard-logan.jpg", "wakeboarding-aarhus-04.jpg"]
+# The three wakeboard media — the corpus's planted answer to "wakeboarding". Their ORDER
+# is not portable: the embedding matmul moves with CPU features. Measured 2026-11-04 on
+# x86_64 (the suite container, this box): logan 1.571 > vienna 1.531 > aarhus-04 0.441;
+# the arm64-Mac measurements the strict pin carried before ranked vienna first — the top
+# two are 0.040 z apart, inside cross-platform noise. What IS portable (and is exactly
+# the server's contract) is WHICH three files answer the query, and that they clear the
+# engine's gate: the server relays the engine's per-platform order verbatim — that
+# pass-through is pinned by the hit-field and reply-shape tests, not by hard-coding one
+# machine's ranking here.
+WAKEBOARD_TOP3 = {"wakeboarding-vienna.webm", "wakeboard-logan.jpg", "wakeboarding-aarhus-04.jpg"}
 
 
 @pytest.fixture(scope="module")
@@ -55,7 +64,7 @@ def test_status_adds_the_cli_kind_table(client):
 
 def test_search_answers_with_the_engines_ranking(client):
     reply = client.post("/api/v1/search", json={"q": "wakeboarding", "limit": 10}).json()
-    assert paths(reply["hits"])[:3] == WAKEBOARD_TOP3
+    assert set(paths(reply["hits"])[:3]) == WAKEBOARD_TOP3  # the set is portable; the order is the engine's (see WAKEBOARD_TOP3)
     assert reply["meaning"] is True and reply["strong"] >= 3
     assert {"embed", "search"} <= set(reply["ms"])    # the engine's own milliseconds
     assert "id" not in reply                          # protocol bookkeeping stays inside
@@ -278,6 +287,27 @@ def test_a_slow_estimate_answers_busy_never_parallel(client, monkeypatch):
     assert box[0].status_code == 200                             # crawl #1 finished honest
     third = client.post("/api/v1/estimate", json={})
     assert third.status_code == 200                              # the lock released
+
+
+def test_the_estimate_timeout_is_an_operator_knob(client, monkeypatch):
+    """The 120 s default fits corpus-sized trees; a real media tree on a spinning disk
+    needs minutes (measured 2026-11-04: 187k files on a 2 TB HDD crossed the default →
+    502). The route reads DIGUP_SERVER_ESTIMATE_TIMEOUT_S per request — default 120
+    keeps every existing pin, an operator's value reaches the CLI call."""
+    import digup_server.api as api_mod
+
+    seen = {}
+
+    def counted(config, **kwargs):
+        seen["timeout"] = kwargs.get("timeout")
+        return [{"path": str(config.roots[0]), "files": 15}]
+
+    monkeypatch.setattr(api_mod, "estimate_lines", counted)
+    assert client.post("/api/v1/estimate", json={}).status_code == 200
+    assert seen["timeout"] == 120.0                              # the default, unchanged
+    monkeypatch.setenv("DIGUP_SERVER_ESTIMATE_TIMEOUT_S", "900")
+    assert client.post("/api/v1/estimate", json={}).status_code == 200
+    assert seen["timeout"] == 900.0                              # the operator's value
 
 
 def test_a_cli_timeout_surfaces_as_a_quoted_502_not_a_500(client, monkeypatch):

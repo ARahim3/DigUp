@@ -41,6 +41,22 @@ def test_an_interrupted_record_always_carries_the_counts_it_saw():
     assert counts["files"] is None and counts["vectors"] is None    # no `idle` totals yet
 
 
+def test_the_job_timeout_is_an_operator_knob(scratch, scratch_index, tmp_path_factory, monkeypatch):
+    """3600 s is the runner's patience for corpora (the scratch walk finishes in seconds).
+    A real tree's first pass outlives an hour — measured 2026-11-04: a 131,972-file job
+    recorded *interrupted with its partial counters* at 19,007 when the default expired
+    (and the next job resumed — README §5). The operator owns the ceiling:
+    DIGUP_SERVER_JOB_TIMEOUT_S, read at the lifespan; the default stays 3600."""
+    folder, _ = scratch_index
+    monkeypatch.setenv("DIGUP_SERVER_CONFIG", str(tmp_path_factory.mktemp("job-timeout-config")))
+    monkeypatch.setenv("DIGUP_SERVER_JOB_TIMEOUT_S", "900")
+    with TestClient(create_app(_cfg(folder, (scratch,)))) as c:
+        assert c.app.state.jobs._timeout == 900.0                   # the operator's value
+    monkeypatch.delenv("DIGUP_SERVER_JOB_TIMEOUT_S")
+    with TestClient(create_app(_cfg(folder, (scratch,)))) as c:
+        assert c.app.state.jobs._timeout == 3600.0                  # the default, unchanged
+
+
 @pytest.fixture(scope="module")
 def jobs_client(scratch, scratch_index, tmp_path_factory):
     """The app over the scratch corpus, with its own job log folder."""
@@ -257,7 +273,15 @@ def test_a_stop_mid_job_is_interrupted_and_the_next_job_resumes(tmp_path, scratc
     expected = sum(1 for f in scratch.rglob("*") if f.is_file())   # session scratch grows:
     runner = JobRunner(_cfg(str(idx), (scratch,)), config_dir=str(cfg_dir))  # assert vs live
     job_id = runner.start()["id"]
-    time.sleep(6.0)                                   # a fresh scratch index embeds ~1 min:
+    # Land the shutdown in the model-load phase — the one window every platform must
+    # cross (~800 MB of weights before the engine's first `file` event). The "embeds
+    # ~1 min" budget was Stage 8's cold measurement; measured 2026-11-05 on a warm box
+    # the whole scratch embed (8 files) finished *inside* 6 s — files_done 8/8 at the
+    # shutdown instant, and `partial < expected` became a timing assumption, not a fact.
+    # 1.0 s is under every measured embed phase on every platform, and above no load
+    # floor: the record is then partial = 0 (tolerated below) on a cold runner, a
+    # small partial on a warm one — the interrupted-then-resume contract holds both.
+    time.sleep(1.0)
     runner.shutdown()                                 # this shutdown lands mid-walk
     job = runner.job(job_id)
     assert job["state"] == "interrupted"
@@ -288,9 +312,9 @@ def test_a_stop_mid_job_is_interrupted_and_the_next_job_resumes(tmp_path, scratc
         # The engine's own arithmetic, measured in Stage 8 (8 + 7 = 15): the interrupted job
         # embedded `partial` files, the resumed job embeds the REST (files already in the index
         # come back `unchanged`, not `done`), so the two records sum to the walk. `partial` may
-        # legitimately be **0**: this shutdown lands 6 s into a walk whose first minute is the
-        # model load, and a job stopped before the engine's first `file` event has completed
-        # zero files — that is the truth, and the record says 0 (jobs.py publishes the counters
+        # legitimately be **0**: this shutdown lands inside the model load that opens every
+        # walk (a job stopped before the engine's first `file` event has completed zero
+        # files — that is the truth, and the record says 0: jobs.py publishes the counters
         # when the walk starts). Demanding `partial > 0` was a timing assumption, not a fact.
         assert 0 <= partial < expected
         assert partial + done["files_done"] >= expected
