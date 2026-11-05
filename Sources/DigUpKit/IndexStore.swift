@@ -36,26 +36,39 @@ public final class IndexStore {
     /// The ranges live in a temp table and the scoped queries test them with a correlated `EXISTS`: one
     /// `(path >= ? AND path < ?)` per folder, ORed into a single expression, hits SQLite's expression-depth cap of
     /// 1,000 around 500 folders (#166: 1,179 folders, the indexer died at every startup), while the table grows
-    /// with the folder list for free.
+    /// with the folder list for free. Its PRIMARY KEY is the probe's lookup — scoped query rows `SEARCH s USING
+    /// PRIMARY KEY`; without it every row scans every range, which was slower than the old chain past ~400 folders.
     public private(set) var scope: [String]?
     private var scopeSQL = ""
 
+    /// Writes the ranges in one transaction and moves `scope`/`scopeSQL` only after it commits: a write that
+    /// fails mid-flight (disk full) leaves the previous scope standing, in memory and in the table, and the
+    /// scoped queries go on answering as before. Spell that order any other way and a failed write leaves
+    /// the in-memory scope claiming folders the emptied table says nothing about — the indexer quietly
+    /// sees zero pending files until the next `setScope` succeeds.
     public func setScope(_ folders: [String]?) throws {
-        scope = folders
-        guard let folders else { scopeSQL = ""; return }
+        guard let folders else { (scope, scopeSQL) = (nil, ""); return }
         let ranges = folders.flatMap(Self.pathRanges(under:))
-        scopeSQL = ranges.isEmpty ? " AND 0"
-            : " AND EXISTS (SELECT 1 FROM scope s WHERE files.path >= s.lo AND files.path < s.hi)"
-        try db.run("CREATE TEMP TABLE IF NOT EXISTS scope(lo TEXT NOT NULL, hi TEXT NOT NULL)")
-        try db.run("DELETE FROM scope")
-        var start = 0
-        while start < ranges.count {   // multi-row INSERTs, kept under SQLite's cap on a compound select
-            let chunk = ranges[start..<min(start + 200, ranges.count)]
-            try db.run("INSERT INTO scope(lo, hi) VALUES"
-                       + Array(repeating: "(?, ?)", count: chunk.count).joined(separator: ","),
-                       chunk.flatMap { [.text($0.from), .text($0.to)] })
-            start += 200
+        try db.transaction {
+            try db.run("""
+                CREATE TEMP TABLE IF NOT EXISTS scope(
+                    lo TEXT NOT NULL,
+                    hi TEXT NOT NULL,
+                    PRIMARY KEY(lo, hi)
+                ) WITHOUT ROWID
+                """)
+            try db.run("DELETE FROM scope")
+            var start = 0
+            while start < ranges.count {   // multi-row INSERTs, kept under SQLite's cap on a compound select
+                let chunk = ranges[start..<min(start + 200, ranges.count)]
+                try db.run("INSERT INTO scope(lo, hi) VALUES"
+                           + Array(repeating: "(?, ?)", count: chunk.count).joined(separator: ","),
+                           chunk.flatMap { [.text($0.from), .text($0.to)] })
+                start += 200
+            }
         }
+        (scope, scopeSQL) = (folders, ranges.isEmpty ? " AND 0"
+            : " AND EXISTS (SELECT 1 FROM scope s WHERE files.path >= s.lo AND files.path < s.hi)")
     }
 
     /// The ranges of the UNIQUE path index that hold the files under `folder`. Paths are stored as a walk reports them,

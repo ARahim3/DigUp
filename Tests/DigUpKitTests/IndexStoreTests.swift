@@ -82,6 +82,40 @@ import WinSDK
         #expect(try store.pendingCount() == 2)
     }
 
+    @Test func aFailedScopeWriteKeepsTheWorkingScope() throws {
+        // The #191 review's disk-full shape: the scope write touches the table in several statements,
+        // so a failure needs to land *inside* the transaction, after `DELETE` has emptied it. A
+        // RAISE(ABORT) trigger on the table injects that failure; the transaction must leave the
+        // previous scope standing in memory and its ranges in the table, and every scoped query keep
+        // answering as it did before the failed write.
+        let store = try IndexStore(directory: folder)
+        try store.insert(file("/a/x.png", inode: 1))
+        try store.insert(file("/drive/y.png", inode: 2))   // on a drive that's unplugged
+        try store.setScope(["/a"])
+        var rowsBefore = -1
+        try store.db.query("SELECT COUNT(*) FROM scope") { rowsBefore = Int($0.int(0)) }
+        #expect(rowsBefore > 0)
+        try store.db.run("""
+            CREATE TEMP TRIGGER disk_full BEFORE INSERT ON scope
+            BEGIN SELECT RAISE(ABORT, 'disk full'); END
+            """)
+        var threw = false
+        do { try store.setScope(["/drive", "/b"]) } catch { threw = true }
+        #expect(threw, "the injected disk full must reach the caller")
+        #expect(store.scope == ["/a"])   // the in-memory scope of the last good write, untouched
+        var rowsAfter = -1
+        try store.db.query("SELECT COUNT(*) FROM scope") { rowsAfter = Int($0.int(0)) }
+        #expect(rowsAfter == rowsBefore)   // its ranges, in the table, untouched
+        #expect(try store.pendingCount() == 1)
+        #expect(try store.pending(limit: nil).map(\.path) == ["/a/x.png"])
+        #expect(try store.counts().byKindAndState["image"]?["pending"] == 1)
+        // The next write goes through: table and scope move together, in one transaction.
+        try store.db.run("DROP TRIGGER disk_full")
+        try store.setScope(["/a", "/drive"])
+        #expect(store.scope == ["/a", "/drive"])
+        #expect(try store.pendingCount() == 2)
+    }
+
     @Test func aFileTheHelperStoppedOnIsNotReadAgain() throws {
         let store = try IndexStore(directory: folder)
         try store.insert(file("/a/stuck.pdf", inode: 1))
