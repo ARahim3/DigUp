@@ -2,6 +2,27 @@
 
 One document, kept current (docs/implementation/README.md §10). Newest first.
 
+## 2026-11-05 — 1.8M-tree bench run COMPLETE: 131,972-file library indexed, job record `done`
+
+Measured on this box (GTX 1070 pinned, compose stack `deploy/`, engine untouched; full
+sampler table + arithmetic in `server/data/bench-18m-stats.md`, git-ignored):
+
+* **Job 3 `ab6686ba178a` ended `done`** (engine's own fields): 20,225.0 s = 5 h 37 m 05 s,
+  files_done 7,097, files_failed 1, errors 0; final index: **files 131,972 · searchable
+  131,758 · pending 0 · unfinished 0 · vectors 403,831 · 1.39 GB on disk**.
+* Whole library: three job records — 19,007 + 105,439 + 7,097 = **131,543 files completed**,
+  **421 failed** (video decode refusals the engine recorded), **0 server-side errors**;
+  engine working time 3,611 + 36,104 + 20,225 = **59,940 s = 16 h 39 min**, average
+  **2.195 files/s**; wall clock 16 h 50 m 27 s with ≈8 min idle gaps. Stop/resume proven
+  **3×** (ceiling → `interrupted` kept → one `POST /index` → walk continues).
+* Cost-model check: estimate forecast 31,613.6 + 145,961.7 = 177,575.3 s; measured 59,940 s
+  = 33.75% of forecast (2.96× the forecast rate, GPU-assisted).
+* GPU (sampler, during jobs): peak 99% util (job 2) / 90% (job 3), model resident
+  1,780–1,802 MiB on the 1070; container peak 207.75% CPU, 3.436 GiB RAM.
+* Search latency at the finished index (limit 10): **0.6875–0.8004 s**, five queries,
+  all **10 hits / 10 strong / meaning true**.
+* Disk watch at end: `/` 7.0 G free (99% used) — the index fit with room; no pruning ran.
+
 ## 2026-11-05 (night) — CI `server` job green end-to-end; `:feat-server` live in ghcr, pull-and-run proven
 
 **Run #9 (`6d97cd5`): `server` SUCCESS + `publish` SUCCESS — the whole pipeline is green**
