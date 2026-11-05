@@ -194,11 +194,22 @@ jobs:
 
       - name: The headless proof (index + search + eval, the engine's own words)
         run: |
+          # The engine image runs as its non-root user (USER digup, uid 990); dirs under
+          # $RUNNER_TEMP are runner-owned (mode 775) and dirs docker auto-creates are
+          # root-owned — uid 990 can write NEITHER. Measured on run #5 (2026-11-05): the
+          # proof died in 58 s with every gate red (tee into unwritable /out/proof, index
+          # unwritable), while the suite passed writing the same shapes as root (its test
+          # image has no USER directive). CI scratch dirs get 777 by design: containers
+          # create files there under uids the host does not have. The proof also gets its
+          # OWN index dir — hermetic: the suite's /index holds root-owned rows from test
+          # runs, the engine must start from an empty index, not inherit fixtures.
+          mkdir -p "$RUNNER_TEMP/proof-index" "$RUNNER_TEMP/proof"
+          chmod 777 "$RUNNER_TEMP/proof-index" "$RUNNER_TEMP/proof"
           docker run --rm \
             -v "$PWD:/src:ro" \
             -v "$PWD/server/tests/corpus/media:/corpus:ro" \
             -v "$RUNNER_TEMP/models:/models:ro" \
-            -v "$RUNNER_TEMP/index:/index" \
+            -v "$RUNNER_TEMP/proof-index:/index" \
             -v "$RUNNER_TEMP/proof:/out/proof" \
             -e OUT=/out/proof \
             digup-engine:ci bash /src/server/tests/proof.sh
@@ -225,6 +236,9 @@ jobs:
         run: |
           docker build --target server-runtime -f server/docker/Dockerfile -t digup-server:ci .
           mkdir -p "$RUNNER_TEMP/data/index" "$RUNNER_TEMP/data/config"
+          # 777 as in the proof step: the server image is non-root (uid 990) and must own
+          # its writer lock + job log under /data/index — a runner-owned 775 dir denies it.
+          chmod 777 "$RUNNER_TEMP/data/index" "$RUNNER_TEMP/data/config"
           docker run -d --name server-ci \
             -p 127.0.0.1:8787:8787 \
             -v "$RUNNER_TEMP/data/index:/data/index" \
