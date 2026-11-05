@@ -26,8 +26,11 @@ FROM ${BASE_IMAGE} AS engine-builder
 ARG SWIFT_VERSION
 # Stage 9: scripts/build-llama.sh picks CUDA when nvcc is on PATH and pins the architecture
 # with CUDA_ARCHS (default native). The builder container sees no GPU device, so the CUDA
-# build passes the card's architecture explicitly (e.g. 6.1 for the Pascal GTX 1070).
-# Harmless on the CPU baseline: with no nvcc, the value is unused.
+# build passes the card's architecture explicitly — plain numbers, e.g. 61 for the Pascal
+# GTX 1070 (the builder's apt cmake rejects dotted `6.1`; see the cuda-libs comment below).
+# Comma- or semicolon-separated fat lists (61;70;89…) are accepted; the RUN normalizes the
+# separators to CMake's semicolons. Harmless on the CPU baseline: with no nvcc, the value
+# is unused.
 ARG CUDA_ARCHS=native
 ENV CUDA_ARCHS=${CUDA_ARCHS}
 ENV DEBIAN_FRONTEND=noninteractive
@@ -104,6 +107,12 @@ RUN --mount=type=cache,target=/src/Vendor \
     # (the CUDA invocation always passes -DGGML_CUDA=ON, so it never sees this). Dropping just
     # the cache file forces a fresh configure and keeps every compiled object in place.
     rm -f Vendor/llama-build/CMakeCache.txt; \
+    # CUDA_ARCHS reaches CMake as ONE -D value, and CMake lists are SEMICOLON-separated:
+    # "61,70,…" is one invalid arch token and configure dies immediately (measured 2026-11-05,
+    # publish run #6: three fast configure fails, 164 s). Normalize commas to semicolons here,
+    # at the server's own boundary — scripts/build-llama.sh stays untouched. Plain numbers,
+    # native, and semicolon lists pass through unchanged.
+    export CUDA_ARCHS="$(printf %s "${CUDA_ARCHS:-native}" | tr ',' ';')"; \
     # The fetches inside scripts/build-ffmpeg.sh / build-llama.sh are single-attempt curls.
     # Build hosts behind a flaky resolver (timeouts, SERVFAIL cascades on AAAA) can stall one
     # query for seconds and fail the whole build; these scripts are stamped and idempotent,
@@ -285,8 +294,11 @@ CMD ["uvicorn", "--factory", "digup_server.api:app_factory", "--host", "0.0.0.0"
 #   docker build --target server-runtime-cuda \
 #     --build-arg BASE_IMAGE=nvidia/cuda:11.8.0-devel-ubuntu22.04 \
 #     --build-arg CUDA_RUNTIME_IMAGE=nvidia/cuda:11.8.0-runtime-ubuntu22.04 \
-#     --build-arg CUDA_ARCHS=61 …        # plain number: the builder's apt cmake 3.22.1 rejects
-#                                        # dotted 6.1 and native alike (measured 2026-11-04)
+#     --build-arg CUDA_ARCHS=61 …        # plain number, or a fat list `61,70,…`: the builder's
+#                                        # apt cmake 3.22.1 rejects dotted 6.1 and native alike
+#                                        # (measured 2026-11-04); commas are normalized to
+#                                        # CMake's semicolons in the engine-builder RUN
+#                                        # (measured 2026-11-05, publish run #6)
 #
 # The `cuda-libs` stage is pulled only by this target: CPU builds (target server-runtime)
 # prune it and never touch a CUDA image. The ldd gate below fails the build if a shipped

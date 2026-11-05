@@ -2,7 +2,44 @@
 
 One document, kept current (docs/implementation/README.md §10). Newest first.
 
+## 2026-11-05 (night) — CI `server` job green end-to-end; `:feat-server` live in ghcr, pull-and-run proven
+
+Measured on the fork's Server workflow (branch `feat/server`), runs #2–#6 (all numbers from
+the run timelines):
+
+* **Run #6 (commit `ad4b682`): `server` job SUCCESS, 12 min 52 s, all 17 steps green** —
+  drift guard, Vendor-in-base-image seed 4 m 47 s (cache warm), model pins, engine +
+  `swift test` in the builder 2 m 05 s, CLI headless 34 s, corpus 15 s, clip gate, test
+  image 12 s, **contract suite 3 min 03 s with zero skips**, **headless proof 1 min 27 s**,
+  all four compose merge shapes, boot + `/api/v1/health` + UI + graceful stop (exit 143),
+  logs as artifacts.
+* Four environment failures were diagnosed on the runner and fixed in server-side scope,
+  each reproduced on this box first: (1) Vendor-seed ABI trap → build Vendor in the
+  builder's own base image (`6b9d9a4`); (2) Wikimedia blocks Azure ranges → the two pinned
+  corpus videos joined the pinned photos in git (`808826f`); (3) hosted runner images ship
+  **no ffmpeg** (Tools list has MediaInfo, apt list jumps `ftp`→`g++`) → corpus step
+  installs apt's ffmpeg, and `build.sh` now capability-probes libx264 + mp4, probing out
+  the engine's decode-only Vendor ffmpeg (`b6235a7`, `7b65454`); (4) the engine/server
+  images run as uid 990 and `$RUNNER_TEMP` dirs deny them writes → CI scratch dirs get
+  777 and the proof got its own hermetic index (`ad4b682`).
+* **`publish` (run #6): CPU image built and pushed — `ghcr.io/ocean572/digup-server:feat-server`
+  is live** (public repo, anonymous pulls verified: token flow + tags list + manifest 200).
+  **Pull-and-run proved on this box:** `docker pull` → compose merge of
+  `docker-compose.yml + docker-compose.ghcr.yml` with `DIGUP_IMAGE_TAG=feat-server` on port
+  8788 → Up **(healthy)**, `/api/v1/health` `ok:true` (engine b11461, encoder ready, index
+  created), UI served at `/` (7,197 bytes with DigUp/app.js), `docker stop --time 15` →
+  **exit 143 + `Application shutdown complete`**, compose down clean.
+* **CUDA image (`-cuda`) fix pending (run #6 died at 2 m 44 s):** `build-llama.sh` passes
+  `CUDA_ARCHS` verbatim to `-DCMAKE_CUDA_ARCHITECTURES`, CMake lists are **semicolon**-
+  separated, and the publish step's `61,70,75,80,86,89,90` is ONE invalid arch token —
+  configure died ~35 s × 3 retries + 60 s sleeps = 164 s, matching the step to the second.
+  Fix lives at the server's boundary (scripts untouched): the Dockerfile's engine-builder
+  RUN normalizes commas → semicolons (`tr ',' ';'`), plain/`native`/semicolon values pass
+  through. Verified by configure-only probe on `nvidia/cuda:12.4.1-devel-ubuntu22.04` with
+  the seeded Vendor: raw commas fail, semicolons pass (see below for the probe result).
+
 ## 2026-11-05 — ghcr publish + pull-and-run compose; first fully green suite on x86_64
+```
 
 **Suite (this box, suite container, fresh index): 102 passed, 0 failed, 0 skipped, 1
 deselected — 128.55 s.** Two pins moved, both measured here (the engine untouched):

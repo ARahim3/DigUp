@@ -16,7 +16,8 @@
 # (X matches the host driver's `nvidia-smi` "CUDA Version"; scripts/build-llama.sh finds
 # nvcc itself; pass `--build-arg CUDA_ARCHS=<plain number>` for the card — the builder's
 # apt cmake 3.22.1 rejects dotted `6.1` and `native` alike (measured 2026-11-04): use
-# `61` for Pascal sm_61, `89` for Ada sm_89.)
+# `61` for Pascal sm_61, `89` for Ada sm_89. Fat lists (`61,70,75,80,86,89,90`) build a
+# many-card binary; the Dockerfile normalizes the separators to CMake's semicolons.)
 #
 # This file makes the device AVAILABLE. It never claims the device is USED: the engine
 # measures (`digup speed --model` keeps `device` in costs.json, and DIGUP_DEVICE=cpu is
@@ -31,9 +32,11 @@ services:
   server:
     profiles: ["nvidia"]
     # The CUDA shape of the image: same Dockerfile, the server-runtime-cuda target, the
-    # matching devel + runtime bases, the card's plain CUDA_ARCHS number (apt cmake 3.22.1,
-    # see the comment above). Compose merges this over the base file's CPU build, so
-    # `--profile nvidia … up -d --build` produces the CUDA image on the box that has it.
+    # matching devel + runtime bases, the card's CUDA_ARCHS — a plain number for one card
+    # (apt cmake 3.22.1, see the comment above) or a fat list like `61,70,89` for many;
+    # the Dockerfile normalizes the separators. Compose merges this over the base file's
+    # CPU build, so `--profile nvidia … up -d --build` produces the CUDA image on the box
+    # that has it.
     build:
       target: server-runtime-cuda
       args:

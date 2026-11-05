@@ -376,7 +376,9 @@ jobs:
       # The CUDA image — the shape docker-compose.ghcr.nvidia.yml pulls (:latest-cuda
       # on main, :<branch>-cuda on the PR branch). Fat arch list
       # (61 Pascal … 90 Hopper; CUDA 12.4.1 compiles 61 as deprecated — CUDA 13 drops it,
-      # re-evaluate the base when the line moves). Its build gate is the Dockerfile's own:
+      # re-evaluate the base when the line moves); CMake lists are semicolon-separated and
+      # the Dockerfile's engine-builder normalizes this comma string (run #6, 2026-11-05:
+      # raw commas = ONE invalid arch token, configure died in seconds). Its build gate is the Dockerfile's own:
       # server-runtime-cuda runs `ldd libggml-cuda.so` and fails the build on any
       # "not found" (measured 2026-11-04, Gate B), so a broken CUDA image never publishes.
       # Separate gha cache scope: the CPU and CUDA layer sets must not evict each other.
