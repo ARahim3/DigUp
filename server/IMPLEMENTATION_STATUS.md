@@ -7,6 +7,9 @@ One document, kept current (docs/implementation/README.md §10). Newest first.
 **Run #9 (`6d97cd5`): `server` SUCCESS + `publish` SUCCESS — the whole pipeline is green**
 (CPU + CUDA images pushed off the warm caches, hygiene step green with the fixed heredoc).
 CI/publish objective closed. Registry: `feat-server` (568 MB) + `feat-server-cuda` (3.67 GB).
+**Run #10 (`19b21d1`, docs-only tip): `server` SUCCESS + `publish` SUCCESS again** —
+CPU + CUDA pushed off the warm caches, hygiene green. The branch tip is green
+end-to-end; the ghcr tags now embed exactly the pushed engine.
 
 Measured on the fork's Server workflow (branch `feat/server`), runs #2–#6 (all numbers from
 the run timelines):
