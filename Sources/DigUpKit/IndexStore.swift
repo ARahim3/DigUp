@@ -33,17 +33,47 @@ public final class IndexStore {
 
     /// When set, `pending`, `pendingCount` and `counts` see only files under these folders: the app's helper sets the
     /// folders that are connected right now, so files on an unplugged drive neither fail nor count as waiting.
-    public var scope: [String]? {
-        didSet {
-            guard let scope else { (scopeSQL, scopeValues) = ("", []); return }
-            let ranges = scope.flatMap(Self.pathRanges(under:))
-            scopeSQL = ranges.isEmpty ? " AND 0"
-                : " AND (" + ranges.map { _ in "(path >= ? AND path < ?)" }.joined(separator: " OR ") + ")"
-            scopeValues = ranges.flatMap { [SQLValue.text($0.from), .text($0.to)] }
-        }
-    }
+    /// The ranges live in a temp table, merged to disjoint, and the scoped queries test a path against the one
+    /// range that can contain it: `(SELECT s.hi FROM scope s WHERE s.lo <= files.path ORDER BY s.lo DESC
+    /// LIMIT 1) > files.path`. When the ranges don't overlap, the greatest `lo` at or below a path is the
+    /// only candidate — one PRIMARY KEY seek per row, where a correlated `EXISTS` asked every range with
+    /// `lo <= path` to say yes (26× the time at 1,200 folders, measured in the #191 review's follow-up).
+    /// One `(path >= ? AND path < ?)` per folder, ORed into a single expression, is what died past #166's
+    /// 1,179 folders: SQLite caps expression trees at a depth of 1,000. The table grows with the list for free.
+    public private(set) var scope: [String]?
     private var scopeSQL = ""
-    private var scopeValues: [SQLValue] = []
+
+    /// Writes the merged ranges in one transaction and moves `scope`/`scopeSQL` only after it commits: a
+    /// write that fails mid-flight (disk full) leaves the previous scope standing, in memory and in the
+    /// table, and the scoped queries go on answering as before. Spell that order any other way and a
+    /// failed write leaves the in-memory scope claiming folders the emptied table says nothing about —
+    /// the indexer quietly sees zero pending files until the next `setScope` succeeds. Merging makes the
+    /// range list unique on its own, so a folder listed twice folds into its twin instead of tripping
+    /// the PRIMARY KEY.
+    public func setScope(_ folders: [String]?) throws {
+        guard let folders else { (scope, scopeSQL) = (nil, ""); return }
+        let ranges = Self.mergedRanges(folders.flatMap(Self.pathRanges(under:)))
+        try db.transaction {
+            try db.run("""
+                CREATE TEMP TABLE IF NOT EXISTS scope(
+                    lo TEXT NOT NULL,
+                    hi TEXT NOT NULL,
+                    PRIMARY KEY(lo, hi)
+                ) WITHOUT ROWID
+                """)
+            try db.run("DELETE FROM scope")
+            var start = 0
+            while start < ranges.count {   // multi-row INSERTs, kept under SQLite's cap on a compound select
+                let chunk = ranges[start..<min(start + 200, ranges.count)]
+                try db.run("INSERT INTO scope(lo, hi) VALUES"
+                           + Array(repeating: "(?, ?)", count: chunk.count).joined(separator: ","),
+                           chunk.flatMap { [.text($0.from), .text($0.to)] })
+                start += 200
+            }
+        }
+        (scope, scopeSQL) = (folders, ranges.isEmpty ? " AND 0"
+            : " AND (SELECT s.hi FROM scope s WHERE s.lo <= files.path ORDER BY s.lo DESC LIMIT 1) > files.path")
+    }
 
     /// The ranges of the UNIQUE path index that hold the files under `folder`. Paths are stored as a walk reports them,
     /// which isn't always how the folder is spelled here: `standardizedFileURL` says /var where the walk says
@@ -58,6 +88,30 @@ public final class IndexStore {
             let prefix = path.hasSuffix("/") ? path : path + "/"
             return (prefix, prefix + "\u{10FFFF}")
         }
+    }
+
+    /// The range list sorted and folded into disjoint spans: nested ranges (a chosen folder inside another),
+    /// repeats, and touching ones all merge. The scope test above trusts the one range with the greatest
+    /// `lo` at or below a path, and that answer is exact only when the ranges don't overlap — merging is
+    /// what makes them not. Comparisons are bytewise, the order SQLite keeps TEXT in (BINARY): it is what
+    /// keeps `/ab` out of `/a`'s range and a decomposed name out of its precomposed folder.
+    static func mergedRanges(_ ranges: [(from: String, to: String)]) -> [(from: String, to: String)] {
+        func byteLess(_ a: String, _ b: String) -> Bool {
+            let x = Array(a.utf8), y = Array(b.utf8)
+            for (i, byte) in x.enumerated() {
+                if i >= y.count { return false }      // b ran out: a is longer, a is after b
+                if byte != y[i] { return byte < y[i] }
+            }
+            return x.count < y.count                  // a is a strict prefix: a is before b
+        }
+        var out: [(from: String, to: String)] = []
+        for r in ranges.filter { byteLess($0.from, $0.to) }.sorted { byteLess($0.from, $1.from) } {
+            if var last = out.last, !byteLess(last.to, r.from) {   // r.from <= last.to: touching or overlapping
+                if byteLess(last.to, r.to) { last.to = r.to }
+                out[out.count - 1] = last
+            } else { out.append(r) }
+        }
+        return out
     }
 
     /// The main index's file in the index folder.
@@ -334,13 +388,13 @@ public final class IndexStore {
         try db.query("""
             SELECT \(Self.fileColumns) FROM files WHERE state = 'pending'\(filter)\(scopeSQL)
             ORDER BY \(FileKind.indexingOrderSQL), mtime DESC LIMIT ?
-            """, scopeValues + [.int(Int64(limit ?? -1))]) { out.append(Self.record($0)) }
+            """, [.int(Int64(limit ?? -1))]) { out.append(Self.record($0)) }
         return out
     }
 
     public func pendingCount() throws -> Int {
         var count = 0
-        try db.query("SELECT COUNT(*) FROM files WHERE state = 'pending'\(scopeSQL)", scopeValues) {
+        try db.query("SELECT COUNT(*) FROM files WHERE state = 'pending'\(scopeSQL)") {
             count = Int($0.int(0))
         }
         return count
@@ -352,7 +406,7 @@ public final class IndexStore {
         try db.query("""
             SELECT \(Self.fileColumns) FROM files WHERE state = 'partial'\(scopeSQL)
             ORDER BY \(FileKind.indexingOrderSQL), mtime DESC
-            """, scopeValues) { out.append(Self.record($0)) }
+            """) { out.append(Self.record($0)) }
         return out
     }
 
@@ -363,7 +417,7 @@ public final class IndexStore {
             SELECT COUNT(*), SUM(MAX(0, CAST(json_extract(info, '$.read_end') AS INTEGER)
                                       - CAST(json_extract(info, '$.read_to') AS INTEGER)))
             FROM files WHERE state = 'partial'\(scopeSQL)
-            """, scopeValues) { count = (Int($0.int(0)), Int($0.int(1))) }
+            """) { count = (Int($0.int(0)), Int($0.int(1))) }
         return count
     }
 
@@ -494,12 +548,12 @@ public final class IndexStore {
 
     public func counts() throws -> Counts {
         var counts = Counts()
-        try db.query("SELECT kind, state, COUNT(*) FROM files WHERE 1\(scopeSQL) GROUP BY kind, state", scopeValues) {
+        try db.query("SELECT kind, state, COUNT(*) FROM files WHERE 1\(scopeSQL) GROUP BY kind, state") {
             counts.byKindAndState[$0.text(0) ?? "?", default: [:]][$0.text(1) ?? "?"] = Int($0.int(2))
         }
         (counts.unfinished, counts.left) = try unfinishedCount()
         let inScope = scope == nil ? "" : " AND file IN (SELECT id FROM files WHERE 1\(scopeSQL))"
-        try db.query("SELECT COUNT(*), COUNT(vec) FROM segments WHERE kind != 'name'\(inScope)", scopeValues) {
+        try db.query("SELECT COUNT(*), COUNT(vec) FROM segments WHERE kind != 'name'\(inScope)") {
             counts.segments = Int($0.int(0))
             counts.vectors = Int($0.int(1))
         }
