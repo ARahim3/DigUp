@@ -20,6 +20,12 @@ with the **same file chain and same env as the original boot** — mount back at
 level → 10/10 strong restored, all three job records intact. Lesson pinned in
 `server/README.md`: recreations must always pass the full chain + env, never defaults.
 
+**Run #13 (`7c2329b`, the LAN shape): `server` SUCCESS 12 min 58 s (15:48:50→16:01:48,
+now schema-checking all seven merge shapes) + `publish` SUCCESS 1 h 21 m 44 s
+(16:01:51→17:23:35) — both tags republished carrying the LAN override file. The
+operator-facing compose family is fully green on CI at the LAN tip: CPU, GPU, pull-CPU,
+pull-GPU, LAN, LAN+GPU, LAN+pull.
+
 Measured on this box (GTX 1070 pinned, compose stack `deploy/`, engine untouched; full
 sampler table + arithmetic in `server/data/bench-18m-stats.md`, git-ignored):
 
