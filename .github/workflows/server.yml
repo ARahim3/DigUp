@@ -407,7 +407,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           python3 - <<'PY'
-          import json, os, urllib.request
+          import json, os, urllib.request, urllib.error
 
           owner, pkg, tok = os.environ["GITHUB_REPOSITORY"].split("/")[0], "digup-server", os.environ["GITHUB_TOKEN"]
           api = "https://api.github.com"
@@ -423,16 +423,26 @@ jobs:
                   raw = resp.read()
                   return json.loads(raw) if raw else {}
 
-          versions, page = [], 1
-          while True:
-              batch = req("GET", f"{api}/users/{owner}/packages/container/{pkg}/versions?per_page=50&page={page}")
-              versions.extend(batch)
-              if len(batch) < 50:
-                  break
-              page += 1
-
-          doomed = [{"id": v["id"]} for v in versions if not v.get("tags")]
-          for i in range(0, len(doomed), 20):          # the API deletes in batches of <=20
-              req("DELETE", f"{api}/user/packages/container/{pkg}/versions", {"versions": doomed[i:i + 20]})
-          print(f"versions: {len(versions)} total, {len(versions) - len(doomed)} tagged kept, {len(doomed)} untagged deleted")
+          # Best-effort hygiene: publish has already succeeded at this point, so cleanup
+          # problems get a loud ::warning and exit 0 — never a red run, never silence.
+          # Two measured fixes (run #7, 2026-11-05): the heredoc body must sit at the SAME
+          # column as the delimiters (a deeper indent = IndentationError, exit 1 in 1 s),
+          # and deleting versions is POST .../versions/delete since GitHub's 2022 verb
+          # migration — the old DELETE answers 404.
+          try:
+              versions, page = [], 1
+              while True:
+                  batch = req("GET", f"{api}/users/{owner}/packages/container/{pkg}/versions?per_page=50&page={page}")
+                  versions.extend(batch)
+                  if len(batch) < 50:
+                      break
+                  page += 1
+              doomed = [{"id": v["id"]} for v in versions if not v.get("tags")]
+              for i in range(0, len(doomed), 20):          # the API deletes in batches of <=20
+                  req("POST", f"{api}/user/packages/container/{pkg}/versions/delete", {"versions": doomed[i:i + 20]})
+              print(f"versions: {len(versions)} total, {len(versions) - len(doomed)} tagged kept, {len(doomed)} untagged deleted")
+          except urllib.error.HTTPError as exc:
+              print(f"::warning::registry hygiene skipped: HTTP {exc.code} {exc.reason} — {exc.read().decode()[:200]}")
+          except Exception as exc:
+              print(f"::warning::registry hygiene skipped: {exc}")
           PY
