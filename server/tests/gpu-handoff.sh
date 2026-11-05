@@ -136,23 +136,34 @@ gate_b_toolkit() {
 }
 
 gate_b_cuda_build() {
-  DOCKER_BUILDKIT=1 docker build --build-arg BASE_IMAGE="$CUDA_BASE" --target engine-payload \
+  # CUDA_ARCHS reaches scripts/build-llama.sh's cmake as CMAKE_CUDA_ARCHITECTURES, and the
+  # builder's cmake is the Ubuntu 22.04 apt one (3.22.1, measured): it accepts only plain
+  # numbers — "6.1" and "native" both fail configure there (native needs cmake >= 3.24 and a
+  # GPU the builder container does not have). Pass the card's plain number: 61 for Pascal
+  # sm_61, 89 for Ada sm_89. The default stays native for toolchains that speak it.
+  DOCKER_BUILDKIT=1 docker build --build-arg BASE_IMAGE="$CUDA_BASE" \
+    --build-arg CUDA_ARCHS="${CUDA_ARCHS:-native}" --target engine-payload \
     -f server/docker/Dockerfile -t digup-payload:cuda . > /dev/null 2>&1 \
     || { fail "CUDA engine-payload build on $CUDA_BASE (match the base's CUDA to the host driver: nvidia-smi's 'CUDA Version')"; return; }
-  local listing; listing=$(docker run --rm digup-payload:cuda sh -c 'ls /opt/digup | grep -i cuda' || true)
+  local listing; listing=$(docker run --rm digup-payload:cuda sh -c 'ls /out | grep -i cuda' || true)
   [ -n "$listing" ] && pass "payload carries the CUDA backend ($listing)" \
     || fail "payload has no CUDA backend: scripts/build-llama.sh did not find nvcc in $CUDA_BASE"
-  docker run --rm digup-payload:cuda sh -c 'ldd /opt/digup/libggml-cuda.so' | tee "$OUT.ldd"
+  # /out, not /opt/digup: the engine-payload stage lands in /out; the runtime stages COPY it
+  # to /opt/digup. A check written against /opt/digup fails on the payload image (measured).
+  docker run --rm digup-payload:cuda sh -c 'ldd /out/libggml-cuda.so' | tee "$OUT.ldd"
   if grep -qE 'libcuda\.so\.1.*not found' "$OUT.ldd"; then note "libcuda.so.1 unresolved in the build stage — expected: it comes from the HOST driver through the toolkit at run time"; fi
   if grep -qE 'libcudart|libcublas' "$OUT.ldd"; then pass "CUDA runtime libs resolve in the payload (ship these, from a CUDA runtime base, never the toolkit)"; else fail "ldd shows CUDA runtime libs that do not resolve: add exactly them to the runtime stage"; fi
 }
 
 gate_b_device_choice() {
   # The engine's own measurement, on the real index: `device` is what the helpers then use.
-  mkdir -p "$DATA/index-gpu"
-  docker run --rm --gpus all \
+  # On a real Linux host (not Docker Desktop) the bind folder must be writable by the
+  # container's user: index the corpus AS uid 990 (the runtime user) in a folder any of
+  # them can write, so the files the Compose gate below uses belong to the same uid.
+  mkdir -p "$DATA/index-gpu"; chmod 777 "$DATA/index-gpu" 2>/dev/null || true
+  docker run --rm --gpus "${GPU_SPEC:-all}" -u 990:990 -e HOME=/tmp \
     -v "$ROOT/server/tests/corpus/media:/corpus:ro" -v "$DATA/models:/models:ro" -v "$DATA/index-gpu:/index" \
-    -e DIGUP_MODELS=/models digup-payload:cuda sh -c 'digup index /corpus --index /index > /dev/null 2>&1; digup speed --model --json --index /index | tail -1' \
+    -e DIGUP_MODELS=/models digup-payload:cuda sh -c '/out/digup index /corpus --index /index > /dev/null 2>&1; /out/digup speed --model --json --index /index | tail -1' \
     > "$OUT.speed" 2>&1
   if grep -qE '"device"|"seconds"' "$OUT.speed"; then
     tail -2 "$OUT.speed"
@@ -165,20 +176,94 @@ gate_b_device_choice() {
 
 gate_b_utilization() {
   # Detecting a device is not using one. Sample the card DURING a real index job.
+  # Work the fresh walk: a fully-embedded corpus makes the job a no-op sync — nothing to
+  # sample — so the gate measures a real embedding pass over the corpus.
+  #
+  # Sampling cadence is measured (2026-11-04, GTX 1070): GPU embedding of a small corpus is
+  # a series of ~150 ms kernel bursts separated by P8 idle. A 2 s-interval sampler is blind
+  # to that shape: over a full 15-file job it saw peak 12%, and 0% across most windows —
+  # a false FAIL for a server demonstrably embedding on the GPU (model resident in 392 MB
+  # of card VRAM, engine costs at the GPU's 0.15 s/image rate). The 0.15 s sampler over the
+  # job sees peak 94% and 39% busy time. A CPU-embedding job is flat: zero busy samples,
+  # no model VRAM on the card. So: sample at the job's pace, judge busy-time (duty) and
+  # VRAM residency, and let the old peak>20 stand as the easy pass.
+  mkdir -p "$DATA/index-gpu"; chmod 777 "$DATA/index-gpu" 2>/dev/null || true
+  rm -rf "$DATA/index-gpu"/* "$DATA/index-gpu"/.digup-server.writer.lock 2>/dev/null || true
   ( cd deploy && DIGUP_INDEX_DIR="$DATA/index-gpu" DIGUP_MODELS_DIR="$DATA/models" \
       DIGUP_CONFIG_DIR="$DATA/config" DIGUP_MEDIA_DIR="$ROOT/server/tests/corpus/media" \
-      docker compose -f docker-compose.yml -f docker-compose.nvidia.yml --profile nvidia up -d ) > /dev/null 2>&1
+      docker compose -f docker-compose.yml -f docker-compose.nvidia.yml --profile nvidia up -d --build ) > /dev/null 2>&1
   if [ $? -ne 0 ]; then fail "the nvidia-profile Compose override did not come up (author deploy/docker-compose.nvidia.yml on this box, per docs/implementation/gpu-handoff.md §4)"; return; fi
-  curl -sf -X POST localhost:8787/api/v1/index -H 'content-type: application/json' -d '{}' > /dev/null 2>&1
-  local peak=0 i
-  for i in $(seq 1 30); do
-    local used; used=$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | head -1)
-    [ -n "$used" ] && [ "$used" -gt "$peak" ] && peak=$used
-    sleep 2
+  # nvidia-smi -i wants an index/UUID/name; the docker --gpus value carries a device= prefix.
+  local gpu="${GPU_SPEC:-all}"; gpu="${gpu#device=}"
+  # /health answers 503 while the searcher warms/respawns (~20–30 s prewarm): the container
+  # is healthy, the API is honest. The index job needs the API up — count 200 as ready, not 503.
+  local i code=000
+  for i in $(seq 1 40); do
+    code=$(curl -s -o /dev/null -w '%{http_code}' localhost:8787/api/v1/health 2>/dev/null || true)
+    [ "$code" = 200 ] && break
+    sleep 3
   done
-  if [ "$peak" -gt 20 ]; then pass "the card worked during the index job (peak utilization ${peak}%)"; gpus_used=1
-  else fail "GPU utilization peaked at ${peak}% during a real index job — the container detected the device and embedded on the CPU"; fi
+  if [ "$code" != 200 ]; then
+    fail "the nvidia-profile API never answered /health with 200 (last: $code) — job was never asked"
+    ( cd deploy && docker compose -f docker-compose.yml -f docker-compose.nvidia.yml --profile nvidia down -v ) > /dev/null 2>&1
+    return
+  fi
+  local jobid
+  jobid=$(python3 - <<'PYEOF'
+import json, sys, time, urllib.request
+for attempt in range(40):
+    try:
+        req = urllib.request.Request('http://127.0.0.1:8787/api/v1/index', data=b'{}',
+                                     headers={'content-type': 'application/json'})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            print(json.load(r)["job"]["id"]); sys.exit(0)
+    except Exception:
+        time.sleep(3)  # warming (503) / transient: ask again; 409 = a job runs — handled below
+PYEOF
+)
+  if [ -z "$jobid" ]; then
+    fail "POST /index answered no job id (the nvidia container is up but the API did not accept the job)"
+    ( cd deploy && docker compose -f docker-compose.yml -f docker-compose.nvidia.yml --profile nvidia down -v ) > /dev/null 2>&1
+    return
+  fi
+  local stats
+  stats=$(python3 - "$jobid" "$gpu" <<'PYEOF'
+import json, subprocess, sys, time, urllib.request
+jid, gpu = sys.argv[1], sys.argv[2]
+busy = tot = peak = vram_hi = 0
+t0 = time.time()
+while time.time() - t0 < 300:
+    out = subprocess.run(['nvidia-smi', '--query-gpu=utilization.gpu,memory.used',
+                          '--format=csv,noheader,nounits', '-i', gpu],
+                         capture_output=True, text=True).stdout.splitlines()[0].split(',')
+    u, m = int(out[0]), int(out[1])
+    tot += 1
+    busy += u > 0
+    peak = max(peak, u)
+    vram_hi += m > 200
+    try:
+        js = json.load(urllib.request.urlopen('http://127.0.0.1:8787/api/v1/jobs', timeout=5))
+        j = next((x for x in js['jobs'] if x['id'] == jid), None)
+        if j and j.get('state') == 'done':
+            break
+    except Exception:
+        pass
+    time.sleep(0.15)
+print(f"{peak} {busy} {tot} {vram_hi}")
+PYEOF
+)
+  local peak busy tot vram_hi
+  read -r peak busy tot vram_hi <<< "$stats"
+  : "${tot:=0}"
   ( cd deploy && docker compose -f docker-compose.yml -f docker-compose.nvidia.yml --profile nvidia down -v ) > /dev/null 2>&1
+  if [ "${tot:-0}" -eq 0 ]; then fail "nvidia-smi answered nothing during the job (card '$gpu' not visible?)"; return; fi
+  local duty=$(( 100 * busy / tot ))
+  if [ "$peak" -gt 20 ] || { [ "$duty" -ge 10 ] && [ "$vram_hi" -ge $(( tot / 2 )) ]; }; then
+    pass "the card worked during the index job (peak ${peak}%, busy ${duty}% of ${tot} samples, model on card for ${vram_hi}/${tot} samples)"
+    gpus_used=1
+  else
+    fail "GPU utilization peaked at ${peak}% with ${duty}% busy samples over ${tot} — the container detected the device and embedded on the CPU"
+  fi
 }
 
 gate_b_toolkit; gate_b_cuda_build; gate_b_device_choice; gate_b_utilization

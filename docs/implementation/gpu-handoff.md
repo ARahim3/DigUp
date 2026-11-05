@@ -81,7 +81,10 @@ request. If Gate A does not pass, the GPU work is not the problem — fix this f
    `docker build --build-arg BASE_IMAGE=nvidia/cuda:12.4.1-devel-ubuntu22.04 --target engine-builder …`
    (pick the CUDA version that matches the host driver; check `nvidia-smi`'s "CUDA Version").
    `scripts/build-llama.sh` finds `nvcc` by itself and builds the CUDA backend;
-   `CUDA_ARCHS=…` pins the architecture (default `native`, which is right on the box itself).
+   `CUDA_ARCHS=…` pins the architecture. Pass the card's **plain number** (measured 2026-11-04:
+   the builder's cmake is Ubuntu 22.04's apt 3.22.1, which rejects dotted `6.1` **and** `native`
+   alike — `native` needs cmake ≥ 3.24 *and* a GPU visible at build time, which the builder
+   container never has). `61` = Pascal sm_61 (GTX 1070), `89` = Ada sm_89.
 2. **Check the payload carries the backend and nothing duplicated:**
    `docker run --rm digup-payload:x86 sh -c 'ls -l /opt/digup | grep -i cuda; ldd /opt/digup/libggml-cuda.so'`
    — the CUDA runtime libs it asks for (cudart/cublas family) must resolve: ship exactly those
@@ -94,7 +97,13 @@ request. If Gate A does not pass, the GPU work is not the problem — fix this f
    * Sample the card **while indexing**: `nvidia-smi --query-gpu=utilization.gpu,memory.used \
      --format=csv,interval=1` — utilization must move during a real index job. A container that
      only *detects* the device and embeds on CPU is a failure of this gate, and it is the easy
-     false positive.
+     false positive. Sampling cadence is measured (2026-11-04, GTX 1070): a small-corpus GPU job
+     is ~150 ms kernel bursts separated by P8 idle — a 2 s-interval sampler sees 0–12% on a job
+     that is provably on the GPU (model resident in the card's VRAM, engine costs at the GPU's
+     image rate), while a 0.15 s sampler across the job window sees peak 94% and 39% busy time.
+     Judge the busy-time fraction and VRAM residency, not only the peak: a CPU-embedded job is
+     flat — zero busy samples, no model VRAM on the card. (`gpu-handoff.sh` samples the job at
+     0.15 s and passes on peak > 20% or ≥ 10% busy with the model on the card.)
    * Compare `speed --model` times against the CPU-only build on the same machine, same corpus,
      same `DIGUP_THREADS`. Faster *and* agreeing vectors is the pass; the engine keeps CPU when
      CPU wins (that is not a failure, it is the engine's measurement — report the numbers).

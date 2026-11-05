@@ -15,11 +15,21 @@
 #
 ARG BASE_IMAGE=ubuntu:22.04
 ARG SWIFT_VERSION=6.4.0
+# The CUDA *runtime* base whose libraries server-runtime-cuda ships (Stage 9). It must match
+# the CUDA BASE_IMAGE the payload was built with. BuildKit prunes unreferenced stages: a
+# CPU-only build (target server-runtime) never pulls this image.
+ARG CUDA_RUNTIME_IMAGE=nvidia/cuda:11.8.0-runtime-ubuntu22.04
 
 # ── Toolchain, vendor libraries, llama.cpp, ffmpeg, the CLI, the tests ───────────────────────
 FROM ${BASE_IMAGE} AS engine-builder
 
 ARG SWIFT_VERSION
+# Stage 9: scripts/build-llama.sh picks CUDA when nvcc is on PATH and pins the architecture
+# with CUDA_ARCHS (default native). The builder container sees no GPU device, so the CUDA
+# build passes the card's architecture explicitly (e.g. 6.1 for the Pascal GTX 1070).
+# Harmless on the CPU baseline: with no nvcc, the value is unused.
+ARG CUDA_ARCHS=native
+ENV CUDA_ARCHS=${CUDA_ARCHS}
 ENV DEBIAN_FRONTEND=noninteractive
 
 # The same list the Linux CI job installs, plus patchelf (the runtime stage re-points rpaths).
@@ -88,8 +98,21 @@ RUN --mount=type=cache,target=/src/Vendor \
       fi; \
     fi; \
     scripts/fetch-vendor.sh; \
-    scripts/build-ffmpeg.sh; \
-    scripts/build-llama.sh; \
+    # Flavor-switch hygiene (measured 2026-11-04): a CUDA-flavor build leaves Vendor/llama-build/
+    # CMakeCache.txt with GGML_CUDA=ON; the next CPU-flavor run reuses that cache with cmake -S -B,
+    # ggml then asks for the CUDA language and configure dies with "CUDA Toolkit not found"
+    # (the CUDA invocation always passes -DGGML_CUDA=ON, so it never sees this). Dropping just
+    # the cache file forces a fresh configure and keeps every compiled object in place.
+    rm -f Vendor/llama-build/CMakeCache.txt; \
+    # The fetches inside scripts/build-ffmpeg.sh / build-llama.sh are single-attempt curls.
+    # Build hosts behind a flaky resolver (timeouts, SERVFAIL cascades on AAAA) can stall one
+    # query for seconds and fail the whole build; these scripts are stamped and idempotent,
+    # so a bounded retry (3 attempts, 30 s apart) costs nothing on healthy networks and
+    # survives a resolver hiccup. CI's first attempt lands on its stamp the same way.
+    tries=0; until scripts/build-ffmpeg.sh; do tries=$((tries+1)); [ "$tries" -ge 3 ] && exit 1; \
+      echo "build-ffmpeg: attempt $tries failed; retrying in 30 s"; sleep 30; done; \
+    tries=0; until scripts/build-llama.sh; do tries=$((tries+1)); [ "$tries" -ge 3 ] && exit 1; \
+      echo "build-llama: attempt $tries failed; retrying in 30 s"; sleep 30; done; \
     export PATH="/src/Vendor/ffmpeg/bin:$PATH"; \
     swift build -c release; \
     swift test
@@ -251,3 +274,53 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 
 ENTRYPOINT ["tini", "--"]
 CMD ["uvicorn", "--factory", "digup_server.api:app_factory", "--host", "0.0.0.0", "--port", "8787"]
+
+# ── Server runtime WITH the CUDA backend (Stage 9 — built only on the box that has the card) ──
+# The same server-runtime plus exactly the CUDA runtime libraries `ldd` of libggml-cuda.so
+# asks for, shipped beside the payload (its rpath `$ORIGIN` resolves them). `libcuda.so.1`
+# stays unresolved by design: it comes from the HOST driver through the NVIDIA Container
+# Toolkit (docs/implementation/gpu-handoff.md). Two matching build-args (the devel base that
+# builds the backend, the runtime base whose libraries ship), target this stage:
+#
+#   docker build --target server-runtime-cuda \
+#     --build-arg BASE_IMAGE=nvidia/cuda:11.8.0-devel-ubuntu22.04 \
+#     --build-arg CUDA_RUNTIME_IMAGE=nvidia/cuda:11.8.0-runtime-ubuntu22.04 \
+#     --build-arg CUDA_ARCHS=61 …        # plain number: the builder's apt cmake 3.22.1 rejects
+#                                        # dotted 6.1 and native alike (measured 2026-11-04)
+#
+# The `cuda-libs` stage is pulled only by this target: CPU builds (target server-runtime)
+# prune it and never touch a CUDA image. The ldd gate below fails the build if a shipped
+# library does not resolve — ship exactly these, from a CUDA *runtime* base, never the
+# toolkit, never a second copy of libggml*.
+FROM ${CUDA_RUNTIME_IMAGE} AS cuda-libs
+# Copy by glob, never by hand-typed filenames: the CUDA 11.8 runtime image ships exactly the
+# SONAMEs ggml-cuda asks for — libcublas.so.11 -> libcublas.so.11.11.3.6, libcublasLt.so.11 ->
+# libcublasLt.so.11.11.3.6, libcudart.so.11.0 -> libcudart.so.11.8.89, libnvrtc.so.11.2 and
+# libnvrtc-builtins.so.11.8 -> their .so.11.8.89 (measured on this box 2026-11-04, from
+# nvidia/cuda:11.8.0-runtime-ubuntu22.04). The dotted names (libcublasLt.so.11.8, …) belong to
+# the -dev packages and are NOT in a runtime base: a COPY of them dies with "not found" —
+# measured. `cp -a` carries each symlink together with its target, and the glob travels with
+# the CUDA version, so the stage needs no retyping when the base moves.
+RUN set -eux; \
+    dir=""; \
+    for base in /usr/local/cuda /usr/local/cuda-*; do \
+      for target in "$base"/targets/*/lib; do [ -d "$target" ] && { dir="$target"; break; }; done; \
+      [ -n "$dir" ] && break; \
+    done; \
+    test -n "$dir"; \
+    mkdir -p /out; \
+    for lib in cudart cublas cublasLt nvrtc nvrtc-builtins; do cp -a "$dir/lib${lib}.so"* /out/; done; \
+    # libnccl.so.2 (measured in the 11.8 runtime base as /usr/lib/x86_64-linux-gnu/libnccl.so.2
+    # -> 2.15.5, 268 M, package libnccl2 …+cuda11.8 — outside the targets dir): libggml-cuda
+    # links it (multi-GPU comms), ldd asks for it, so the ldd gate below needs it. A single
+    # GPU never calls nccl, but an unresolved DT_NEEDED fails the load.
+    nccl_found=""; \
+    for loc in "$dir" "/usr/lib/$(uname -m)-linux-gnu" /usr/lib/x86_64-linux-gnu; do \
+      if [ -e "$loc/libnccl.so.2" ]; then cp -a "$loc"/libnccl.so* /out/ && nccl_found=1 && break; fi; \
+    done; \
+    test -n "$nccl_found"
+
+FROM server-runtime AS server-runtime-cuda
+COPY --from=cuda-libs /out/ /opt/digup/
+RUN ldd /opt/digup/libggml-cuda.so \
+    && ! ldd /opt/digup/libggml-cuda.so | grep 'not found' | grep -v 'libcuda.so.1'
