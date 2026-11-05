@@ -179,6 +179,35 @@ engine's own `--prune`): it retires every row for a file not found under the cur
 roots, ghost rows included. One job, honest counts, and the ranking is back to the
 engine's own numbers. Both behaviors are pinned by tests in `test_jobs.py`.
 
+### Reach it from other machines (opt-in LAN bind)
+
+The default binding is localhost-only (`127.0.0.1:8787:8787`) because the API has no
+authentication (§7). `docker-compose.lan.yml` is the documented, opt-in way to let a
+**home LAN** reach it: it appends a second host binding for your machine's LAN address
+(the loopback mapping stays, so nothing local breaks):
+
+```sh
+cd deploy
+DIGUP_LAN_BIND=<the host's own LAN address> \
+docker compose -f docker-compose.yml -f docker-compose.lan.yml up -d
+# → http://<host>:8787/ from any device on the LAN
+```
+
+`DIGUP_LAN_BIND` is required by design (the file refuses to apply without it). READ the
+file's header before using it: with no auth, every device on the network can read the
+whole indexed library — bind your own address (never a wildcard), and on any network you
+do not own, the §7 shape is an authenticating reverse proxy in front of the loopback
+binding, not this file. GPU and ghcr overrides compose with it cleanly (schema-checked
+in CI: base+LAN, ghcr+LAN, build-GPU+LAN shapes, using RFC 5737 test addresses).
+`DIGUP_PUBLISH_PORT` keeps working in the LAN shape too.
+
+One recreation discipline this file's first field run proved the hard way (measured
+2026-11-05): a `up -d` recreation must pass **the same file chain and the same env every
+time**. Dropped env silently moved the media bind one folder off the roots the index
+rows carry — every row fell out of scope, search answered zero, health stayed green.
+No prune was needed to fix it: the same command with the original env remounts the tree
+where the rows point (search back to 10 strong per query, 0.7–0.8 s at 132k files).
+
 ## The web app (desktop parity, Stage 10)
 
 `server/ui/` is a browser client of the published API — vanilla HTML/CSS/JS, no build step,

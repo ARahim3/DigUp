@@ -222,8 +222,11 @@ jobs:
       # interrupted and quit()s every helper) inside the stop grace — exit 143 (a completed
       # SIGTERM stop) is the graceful code here; 137 means SIGKILL, i.e. the shutdown hung.
       # Every operator-facing compose shape, schema-checked on every run: the CPU default,
-      # the build-GPU override, and both pull-and-run (ghcr) merges — the `!reset` of the
-      # build block is a merge feature, so its shapes belong pinned in CI, not in prose.
+      # the build-GPU override, both pull-and-run (ghcr) merges, and the LAN-bind merges —
+      # the `!reset` of the build block and the `ports`-list merge (loopback stays, LAN
+      # binding appends) are merge features, so their shapes belong pinned in CI, not in
+      # prose. LAN shapes use RFC 5737 TEST-NET addresses (192.0.2.0/24): documentation
+      # addresses that are nobody's.
       - name: The Compose files are valid (every merge shape, schema check)
         run: |
           cd deploy
@@ -231,6 +234,9 @@ jobs:
           docker compose -f docker-compose.yml -f docker-compose.nvidia.yml --profile nvidia config --quiet
           docker compose -f docker-compose.yml -f docker-compose.ghcr.yml config --quiet
           docker compose -f docker-compose.yml -f docker-compose.ghcr.yml -f docker-compose.ghcr.nvidia.yml --profile nvidia config --quiet
+          DIGUP_LAN_BIND=192.0.2.1 docker compose -f docker-compose.yml -f docker-compose.lan.yml config --quiet
+          DIGUP_LAN_BIND=192.0.2.1 docker compose -f docker-compose.yml -f docker-compose.lan.yml -f docker-compose.nvidia.yml --profile nvidia config --quiet
+          DIGUP_LAN_BIND=192.0.2.1 docker compose -f docker-compose.yml -f docker-compose.ghcr.yml -f docker-compose.lan.yml config --quiet
 
       - name: The server runtime image boots, answers, serves the UI, stops cleanly
         run: |

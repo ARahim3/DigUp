@@ -4,6 +4,22 @@ One document, kept current (docs/implementation/README.md §10). Newest first.
 
 ## 2026-11-05 — 1.8M-tree bench run COMPLETE: 131,972-file library indexed, job record `done`
 
+**LAN opt-in shape added + field-proven (same day):** `deploy/docker-compose.lan.yml`
+appends a LAN host binding (env-forced `DIGUP_LAN_BIND`; the loopback mapping stays —
+compose merges `ports` lists). Merged with the GPU override on the live stack: healthy,
+UI + searches served on the host's LAN address, 10 hits/10 strong in 0.71–0.81 s. Three
+new merge shapes (base+lan, lan+nvidia, ghcr+lan, RFC 5737 addresses) pinned in the
+workflow's schema-check step. The field run also **measured the ghost-row trap live**:
+a recreation launched with a subset of the compose chain and default env moved the media
+bind one folder off the roots the index rows carry — every row fell out of scope, the
+API answered 0 hits (keyword queries included, 0 hits/0 strong, `meaning:true`) while
+health/files/vectors/job-log all stayed normal. Diagnosis: `ls /media/photos` showed the
+tree's folders one level deeper than the row roots in the index (`files/` nesting vs
+131,972 rows rooted at the mount top). Fix by semantics, no reindex, no prune: relaunch
+with the **same file chain and same env as the original boot** — mount back at the rows'
+level → 10/10 strong restored, all three job records intact. Lesson pinned in
+`server/README.md`: recreations must always pass the full chain + env, never defaults.
+
 Measured on this box (GTX 1070 pinned, compose stack `deploy/`, engine untouched; full
 sampler table + arithmetic in `server/data/bench-18m-stats.md`, git-ignored):
 
