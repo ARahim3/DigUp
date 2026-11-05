@@ -48,3 +48,6 @@ server/tests/corpus2/media/
 # Local agent working notes (see the file itself): a dev aid, not part of the PR
 AGENTS.md
 .agent-journal.md
+
+# ghcr pull-and-run scratch stack (compose state, index, job logs) — same category as deploy/data
+deploy/data-ghcr/
