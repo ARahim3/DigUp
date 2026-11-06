@@ -346,6 +346,20 @@ public final class IndexStore {
         return count
     }
 
+    /// The kinds of the files waiting to be embedded (`only` narrows it to some files), without building
+    /// their records: the queue's look that `SharedEmbedder` decides the model's shape from (issue #155)
+    /// — a run of text and code alone never loads the image and audio encoders.
+    public func pendingKinds(only ids: Set<Int64>? = nil) throws -> Set<FileKind> {
+        if let ids, ids.isEmpty { return [] }
+        let filter = ids.map { " AND id IN (\($0.map(String.init).joined(separator: ",")))" } ?? ""
+        var out: Set<FileKind> = []
+        try db.query("SELECT DISTINCT kind FROM files WHERE state = 'pending'\(filter)\(scopeSQL)",
+                     scopeValues) { row in
+            if let kind = FileKind(rawValue: row.text(0) ?? "") { out.insert(kind) }
+        }
+        return out
+    }
+
     /// Long files with pages or chunks still to read after their first step, in indexing order (`pending`'s).
     public func unfinished() throws -> [FileRecord] {
         var out: [FileRecord] = []

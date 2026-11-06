@@ -194,13 +194,14 @@ func skippedLine(_ skipped: [String: Int]) -> String {
 // MARK: Commands
 
 /// The embedding runtime: llama.cpp in this process, or the worker in $DIGUP_WORKER_DIR (the mlx-vlm reference).
-func makeEmbedder(textOnly: Bool, log: URL, qos: QualityOfService = .default) throws -> any Embedder {
+/// `contextTokens`: see `LlamaEmbedder.init` — a llama.cpp-only knob (the worker sets its own width).
+func makeEmbedder(textOnly: Bool, log: URL, qos: QualityOfService = .default, contextTokens: Int? = nil) throws -> any Embedder {
     if var config = try WorkerConfig.fromEnvironment() {
         config.log = log
         config.qos = qos
         return try EmbeddingWorker(config, textOnly: textOnly)
     }
-    return try LlamaEmbedder(models: try LlamaModels.locate(), textOnly: textOnly, log: log)
+    return try LlamaEmbedder(models: try LlamaModels.locate(), textOnly: textOnly, contextTokens: contextTokens, log: log)
 }
 
 /// `makeEmbedder`'s vector source when it's known without starting it: llama.cpp's always is.
@@ -415,9 +416,15 @@ func status(_ args: Arguments) throws {
 
 /// The app's indexing helper: sync + index on request, JSON events out (IndexService.swift).
 func indexService(_ args: Arguments) throws -> Int32 {
-    // One model for both indexes, started when the first file needs it (`SharedEmbedder`).
-    let model = SharedEmbedder {
-        try makeEmbedder(textOnly: false, log: args.indexFolder.appendingPathComponent("worker.log"), qos: .utility)
+    // One model for both indexes, started when the first file needs it (`SharedEmbedder`), text-only
+    // until a queue needs the media encoders (issue #155). The text-only shape keeps the 2048-token
+    // document budget (only the media encoders are left out): 512 is the *query* cut, and indexing
+    // long pages, chunks, code, or multilingual text at 512 would change its vectors (measured with
+    // the review probe: a 2000-token text embeds identically at text-only-2048 and full, differs at
+    // 512 — so #155 changes no stored vector, by construction).
+    let model = SharedEmbedder { textOnly in
+        try makeEmbedder(textOnly: textOnly, log: args.indexFolder.appendingPathComponent("worker.log"), qos: .utility,
+                         contextTokens: textOnly ? 2048 : nil)
     }
     func part(_ file: String, options: IndexOptions, roots: [URL]) throws -> IndexService.Part {
         let store = try IndexStore(directory: args.indexFolder, file: file)

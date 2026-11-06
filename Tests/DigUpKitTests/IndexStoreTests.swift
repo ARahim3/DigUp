@@ -174,6 +174,31 @@ import WinSDK
         #expect(try store.pendingCount() == 2)
         #expect(try store.prune(keepingUnder: chosen.map(\.path)) == 0)
     }
+
+    // Issue #155: the queue's look `SharedEmbedder` decides the model's shape from.
+
+    @Test func pendingKindsSeeTheQueuedShapesOnly() throws {
+        let store = try IndexStore(directory: folder)
+        func candidate(_ name: String, _ kind: FileKind, _ inode: UInt64) -> Candidate {
+            Candidate(path: folder.appendingPathComponent(name).path, kind: kind, size: 100, mtime: 1,
+                      inode: inode, device: 1)
+        }
+        let image = try store.insert(candidate("a.jpg", .image, 1))
+        try store.insert(candidate("b.pdf", .pdf, 2))
+        try store.insert(candidate("c.txt", .doc, 3))
+        #expect(try store.pendingKinds() == [.image, .pdf, .doc])
+        #expect(try store.pendingKinds(only: [image]) == [.image])
+        #expect(try store.pendingKinds(only: []) == [])
+        #expect(try store.markStopped(folder.appendingPathComponent("c.txt").path, why: "stopped"))
+        #expect(try store.pendingKinds() == [.image, .pdf])   // a marked file isn't queued
+    }
+
+    @Test func mediaKindsAreTheOnesThatEmbedPicturesAndSound() {
+        #expect(FileKind.image.needsMediaEncoders && FileKind.screenshot.needsMediaEncoders)
+        #expect(FileKind.video.needsMediaEncoders && FileKind.audio.needsMediaEncoders)
+        #expect(!FileKind.pdf.needsMediaEncoders && !FileKind.doc.needsMediaEncoders)
+        #expect(!FileKind.code.needsMediaEncoders)
+    }
 }
 
 /// Sets an environment variable of this process, or removes it (nil).
