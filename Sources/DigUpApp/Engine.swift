@@ -110,6 +110,24 @@ nonisolated final class Engine: @unchecked Sendable {
     private var watchdogStops: [Date] = []
     /// The helper's exit status when its watchdog ended it on a file (`digup`'s Watchdog: EX_TEMPFAIL).
     private static let stoppedOnFile: Int32 = 75
+    /// The queue's pending-file count as the helper last reported it, and what it was at the last stop on a
+    /// file: stops are a stall only when the queue isn't moving between them (issue #182 — 55,000 files
+    /// behind oversized RAWs, where the 4-stops cap froze the index after 4 of them).
+    private var lastPending: Int?
+    private var pendingAtLastStop: Int?
+    /// Exits that mean "the helper died on the file it was reading": fatal signals — SIGILL, SIGTRAP (Swift's
+    /// allocation trap, the "exited (5)" of #182), SIGABRT, SIGFPE, SIGKILL, SIGBUS (mapped-file faults:
+    /// the crash class a truncated picture gives), SIGSEGV. `terminationStatus` carries the signal on
+    /// macOS; the helper's `CrashNotes` leaves a note beside the index, so the next helper marks that
+    /// file. (10 was missing from the list when the pre-push review checked it: SIGBUS crashes left the
+    /// note unread and the helper unrestarted.)
+    static func diedOnFile(_ status: Int32) -> Bool { [4, 5, 6, 8, 9, 10, 11].contains(status) }
+    /// The last file the helper reported reading (its `"file"` events): when it dies on the spot, the
+    /// app names it for the next helper (`DIGUP_STOPPED_FILE`), because the queue's head is not
+    /// necessarily the file it died on — image batches keep all eight files pending till the batch
+    /// ends, and the head-marking fallback would fail an innocent one (pre-push review of #182).
+    private var lastReadFile: String?
+    private var crashFile: String?   // the name to pass on, taken by the next spawn
     /// The next helper drops files under folders that are no longer chosen. At launch too, in case the folders
     /// changed while a helper had no time to; but an app with no folders at all never empties the index by itself.
     private var pruneWanted: Bool
@@ -518,7 +536,12 @@ nonisolated final class Engine: @unchecked Sendable {
             arguments += extra.split(separator: " ").map(String.init)
         }
         process.arguments = arguments + roots.map(\.path)
-        process.environment = ProcessInfo.processInfo.environment.merging(["DIGUP_MODELS": modelsDirectory.path]) { $1 }
+        var environment = ["DIGUP_MODELS": modelsDirectory.path]
+        if let file = crashFile {   // taken once: the next helper marks the file its predecessor died reading
+            environment["DIGUP_STOPPED_FILE"] = file
+            crashFile = nil
+        }
+        process.environment = ProcessInfo.processInfo.environment.merging(environment) { $1 }
         process.qualityOfService = .utility
         let input = Pipe(), output = Pipe()
         process.standardInput = input
@@ -610,6 +633,7 @@ nonisolated final class Engine: @unchecked Sendable {
                 + "\(int("removed")) removed · \(int("unchanged")) unchanged in \(int("ms")) ms")
         case "file":
             let (done, total) = (int("done"), int("total"))
+            lastReadFile = event["path"] as? String
             update { $0.activity = .indexing(done: done, total: total) }
             if event["new"] as? Bool == true, let path = event["path"] as? String {
                 log(String(format: "index: %@ %@ in %.2f s", (path as NSString).lastPathComponent,
@@ -675,6 +699,7 @@ nonisolated final class Engine: @unchecked Sendable {
             log("code sync: \(int("added")) new · \(int("changed")) changed · \(int("moved")) moved · "
                 + "\(int("removed")) removed · \(int("unchanged")) unchanged in \(int("ms")) ms")
         case "file":
+            lastReadFile = event["path"] as? String
             update { $0.code.indexing = .init(done: int("done"), total: int("total")) }
             refreshCodeSearcher(force: false)
         case "summary":
@@ -708,6 +733,7 @@ nonisolated final class Engine: @unchecked Sendable {
 
     private func applyCounts(_ event: [String: Any]) {
         if let files = event["files"] as? Int {
+            lastPending = event["pending"] as? Int
             update {
                 $0.files = files
                 $0.searchable = event["searchable"] as? Int ?? 0
@@ -746,10 +772,24 @@ nonisolated final class Engine: @unchecked Sendable {
             restartHelper = false
             startWanted = false
             startHelper()
-        } else if status == Self.stoppedOnFile {
-            // Its watchdog ended it on a file whose reading ran away: the next one skips that file and goes on. Not
-            // over and over, though, if something else is wrong.
+        } else if status == Self.stoppedOnFile || Self.diedOnFile(status) {
+            // Its watchdog ended it on a file whose reading ran away, or it died on the spot (Swift's
+            // allocation trap — "exited (5)" — which beats the watchdog: `CrashNotes` noted the queue's head,
+            // and the next helper marks it). Not over and over, though, if something else is wrong — but a
+            // queue that moves 100 files between stops is getting past its bad files, not looping (#182:
+            // a photo index of 55,000 froze on this cap after four oversized RAWs).
+            if Self.diedOnFile(status) {
+                log("indexer: it died (exit \(status)) on a file: it will be marked, and indexing goes on")
+                // Name it for the helper that starts next (its `CrashNotes` note carries no path):
+                // the queue's head-mark is a fallback, not the answer — a media batch keeps all its
+                // files pending, and the head of a queue of images is rarely the one being read.
+                crashFile = lastReadFile
+            }
             watchdogStops = watchdogStops.filter { Date().timeIntervalSince($0) < 600 } + [Date()]
+            if let pending = lastPending, let before = pendingAtLastStop, before - pending >= 100 {
+                watchdogStops = []
+            }
+            pendingAtLastStop = lastPending
             if watchdogStops.count <= 3 { startHelper() } else { log("indexer: stopped on files 4 times in 10 min") }
         } else if syncWantedAt != nil, status == 0 {
             // A sync asked for while it was on its way out still has to happen.

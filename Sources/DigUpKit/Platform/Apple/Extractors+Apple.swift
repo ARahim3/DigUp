@@ -23,6 +23,40 @@ extension ImageExtractor {
         let width = properties[kCGImagePropertyPixelWidth] as? Int ?? 0
         let height = properties[kCGImagePropertyPixelHeight] as? Int ?? 0
         guard max(width, height) >= minSide else { throw ExtractError.tooSmall(width, height) }
+        // The preflight of issue #182, for the two kinds of picture that ran away in the field: RAW, and
+        // TIFFs whose master says its full-resolution layers live in sub-IFDs. The reading of both has
+        // ballooned past gigabytes on real photos (a 45 MP Nikon RAW ran past an 8 GB watchdog), and the
+        // helper died on them before the watchdog tick could note the file. Both are judged from the
+        // header, which ImageIO has already read for us: pixels, and the master's own declaration.
+        // Plain TIFFs, JPEGs, PNGs get nothing: their scaled decode streams in tiles, measured at 70 MB
+        // for a 2,125 MP TIFF and 18 MB for a 100 MP PNG (2026-11-05, Apple M1 with 8 GB RAM).
+        let budget = decodeMemoryBudget
+        if budget > 0 {
+            let uti = (CGImageSourceGetType(source) as String?).flatMap { UTType($0) }
+            // Pixels and their estimates in `UInt64`, saturating: ImageIO reports the header's own numbers,
+            // and a file lying about them (a 4-byte dimension of 0xFFFFFFFF, a negative one) must give a
+            // huge estimate, not an overflow trap in the guard built to stop traps (#182 review S4). The
+            // budget is a `UInt64` too: comparing in `Int` needed `Int(budget)`, which itself traps above
+            // `Int.max` on an absurd `--memory-limit` (review N1).
+            let pixels = UInt64(max(width, 0)) &* UInt64(max(height, 0))
+            // Every camera RAW UTI (com.nikon.raw-image and friends) conforms to public.raw-image.
+            if uti?.conforms(to: .rawImage) == true {
+                let estimate = pixels &* UInt64(rawDecodeBytesPerPixel)
+                guard estimate <= budget else {
+                    throw ExtractError.unreadable("needed an estimated \(decodeSize(estimate)) of memory to read: "
+                                                  + "a RAW picture of \(pixels / 1_000_000) MP "
+                                                  + "(the helper's limit is \(decodeSize(budget)))")
+                }
+            } else if uti?.conforms(to: .tiff) == true, let layers = LayeredTIFF.layerPixels(in: url) {
+                let estimate = (pixels &+ layers) &* UInt64(layeredTIFFBytesPerPixel)
+                guard estimate <= budget else {
+                    throw ExtractError.unreadable("needed an estimated \(decodeSize(estimate)) of memory to read: "
+                                                  + "a layered TIFF, \(pixels / 1_000_000) MP of preview and "
+                                                  + "\(layers / 1_000_000) MP of layers (the helper's limit is "
+                                                  + "\(decodeSize(budget)))")
+                }
+            }
+        }
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceThumbnailMaxPixelSize: maxPixel,

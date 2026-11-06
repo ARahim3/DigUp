@@ -111,3 +111,40 @@ public enum CodeQuery {
         return trimmed.dropFirst(prefix.count).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
+
+/// The file an indexing helper had to stop on (`Watchdog` in the helper, `CrashNotes` for a crash), written beside
+/// the index for the next helper, which marks it as unreadable and goes on. A note with no path says "the helper
+/// died on the file it was reading", and the app that watched it names that file for the next helper
+/// (`DIGUP_STOPPED_FILE`, from the `file` events both apps report): the queue's head is *not* necessarily it —
+/// media runs in batches of eight and the whole batch stays pending till it ends (`Indexer`), so marking the
+/// head of an image queue would fail an innocent file and leave the poison queued (issue #182, pre-push
+/// review S3). The head-mark is the fallback for a spawn that carries no name — a helper started from a
+/// terminal, or a crash before the app saw any file.
+public struct StoppedFile: Codable {
+    /// The exit status that says "a file was stopped: start a new helper" (EX_TEMPFAIL).
+    public static let exitCode: Int32 = 75
+
+    public let path: String?
+    public let why: String
+
+    public init(path: String?, why: String) {
+        self.path = path
+        self.why = why
+    }
+
+    public static func location(in folder: URL) -> URL {
+        folder.appendingPathComponent("stopped-file.json")
+    }
+
+    public func write(to url: URL) {
+        try? JSONEncoder().encode(self).writeReplacing(url)
+    }
+
+    /// The note an earlier helper left, removed as it's read.
+    public static func take(from folder: URL) -> StoppedFile? {
+        let url = location(in: folder)
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        try? FileManager.default.removeItem(at: url)
+        return try? JSONDecoder().decode(StoppedFile.self, from: data)
+    }
+}

@@ -99,16 +99,33 @@ fn stop(mut child: Child, mut stdin: ChildStdin, farewell: &str) {
 /// Each helper started gets a number, so the thread reading it knows whether its slot still holds it or a newer one.
 static STARTED: AtomicU64 = AtomicU64::new(1);
 
-/// A helper whose output ended is on its way out: waits for it (up to five seconds) and gives its exit code.
-fn reap(child: &mut Child) -> Option<i32> {
+/// The fatal signal a child died by, where the platform reports one (`ExitStatus::signal()` is Unix-only —
+/// `ExitStatusExt`, stable since 1.0 — and Windows carries no signals: its crash class arrives as the SEH
+/// exit code, which `index_ended` in main.rs matches).
+#[cfg(unix)]
+fn fatal_signal(status: &std::process::ExitStatus) -> Option<i32> {
+    use std::os::unix::process::ExitStatusExt;
+    status.signal()
+}
+
+#[cfg(windows)]
+fn fatal_signal(_: &std::process::ExitStatus) -> Option<i32> {
+    None
+}
+
+/// A helper whose output ended is on its way out: waits for it (up to five seconds) and gives its exit
+/// code — and the fatal signal it died by, which is what `ExitStatus::code()` does not report on Unix
+/// (a child killed by a signal has no exit code at all: issue #182's crash classification is
+/// unreachable from `code()` alone, and on Windows the SEH exit codes carry the crash class instead).
+fn reap(child: &mut Child) -> (Option<i32>, Option<i32>) {
     for _ in 0..100 {
         match child.try_wait() {
-            Ok(Some(status)) => return status.code(),
+            Ok(Some(status)) => return (status.code(), fatal_signal(&status)),
             Ok(None) => std::thread::sleep(Duration::from_millis(50)),
-            Err(_) => return None,
+            Err(_) => return (None, None),
         }
     }
-    None
+    (None, None)
 }
 
 /// `digup search-service`: started on the first request, and again after it died.
@@ -262,8 +279,8 @@ impl IndexService {
             if slot.as_ref().is_some_and(|indexing| indexing.number == number) {
                 if let Some(mut indexing) = slot.take() {
                     drop(slot);
-                    let status = reap(&mut indexing.child);
-                    on_event(json!({"event": "ended", "status": status, "owed": indexing.owed}));
+                    let (status, signal) = reap(&mut indexing.child);
+                    on_event(json!({"event": "ended", "status": status, "signal": signal, "owed": indexing.owed}));
                 }
             }
         });
@@ -407,5 +424,37 @@ mod job {
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod reap_tests {
+    use super::reap;
+    use std::process::{Command, Stdio};
+
+    /// The exit a helper leaves behind, read the way the shell reads it (issue #182's crash
+    /// classification): a child killed by a signal has no exit code on Unix — `code()` reports nothing,
+    /// and the signal is what carries the class. `sh`'s own `kill` is a built-in, so `$$` is the child.
+    #[test]
+    fn a_kill_by_signal_gives_the_signal_and_no_code() {
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "kill -TRAP $$"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        assert_eq!(reap(&mut child), (None, Some(5)));   // SIGTRAP: Swift's allocation trap
+    }
+
+    /// The other shape: a deliberate exit (the watchdog's stop is 75, EX_TEMPFAIL), with no signal.
+    #[test]
+    fn a_plain_exit_gives_its_code_and_no_signal() {
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "exit 75"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        assert_eq!(reap(&mut child), (Some(75), None));
     }
 }

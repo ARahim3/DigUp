@@ -35,7 +35,16 @@ enum FFmpeg {
         while true {
             let data = reader.readData(ofLength: 1 << 16)
             if data.isEmpty { break }
-            try read(data)
+            do {
+                try read(data)
+            } catch {
+                // The reader has had enough (a picture that would overrun the helper's memory, the cap in
+                // `decodeWithFFmpeg`): ending ffmpeg here, not leaving it to block on a full pipe forever
+                // with the helper gone past it.
+                process.terminate()
+                process.waitUntilExit()
+                throw error
+            }
         }
         process.waitUntilExit()
         guard process.terminationStatus == 0 else {

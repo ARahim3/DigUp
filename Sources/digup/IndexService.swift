@@ -81,10 +81,32 @@ final class IndexService: @unchecked Sendable {
         removeStaleScratchFolders()
         do {
             // A file an earlier helper had to stop on (`Watchdog`) isn't read again until it changes.
-            if let stopped = StoppedFile.take(from: folder), let path = stopped.path {
-                for part in parts {
-                    guard try part.store.markStopped(path, why: stopped.why) else { continue }
-                    emit(["event": "stopped", "path": path, "why": stopped.why, "code": part.code])
+            if let stopped = StoppedFile.take(from: folder) {
+                if let path = stopped.path {
+                    for part in parts {
+                        guard try part.store.markStopped(path, why: stopped.why) else { continue }
+                        emit(["event": "stopped", "path": path, "why": stopped.why, "code": part.code])
+                    }
+                } else {
+                    // A note without a path is "the helper died on the file it was reading" (`CrashNotes`).
+                    // The app names that file for the next helper (`DIGUP_STOPPED_FILE`): the queue's head
+                    // is *not* necessarily it — images run eight at a time and the whole batch stays
+                    // pending till it ends, so marking the head would fail an innocent file and leave the
+                    // poison queued (pre-push review of #182). The head-mark stays for a spawn that
+                    // carries no name, and marks nothing when the queue has moved on.
+                    let named = ProcessInfo.processInfo.environment["DIGUP_STOPPED_FILE"]
+                    var marked = false
+                    if let named {
+                        for part in parts {
+                            guard try part.store.markStopped(named, why: stopped.why) else { continue }
+                            emit(["event": "stopped", "path": named, "why": stopped.why, "code": part.code])
+                            marked = true
+                        }
+                    }
+                    if !marked, let head = try main.store.pending(limit: 1).first {
+                        try main.store.markStopped(head.path, why: stopped.why)
+                        emit(["event": "stopped", "path": head.path, "why": stopped.why])
+                    }
                 }
             }
             let again = try main.store.readAgainOnce()   // what older indexes couldn't read: scans' words, SVGs

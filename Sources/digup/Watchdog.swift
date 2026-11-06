@@ -3,10 +3,12 @@ import Foundation
 
 /// Ends the indexing helper when reading one file runs away. Apple's PDF text extraction has grown without end on a
 /// page of some PDFs (30 GB in 3.5 minutes, never returning), and nothing stops code like that from outside but ending
-/// the process. Every second the watchdog looks at the helper's memory (its footprint, as Activity Monitor counts it) and
-/// at how long the file being read (`Indexer.nowReading`) has taken. Past `memoryLimit`, or past `timeLimit` on one
-/// file, it writes down the file and why (`StoppedFile`) and exits with `StoppedFile.exitCode`: the app starts a new
-/// helper, which marks that file as one that couldn't be read and goes on.
+/// the process. Ten times a second the watchdog looks at the helper's memory (its footprint, as Activity Monitor
+/// counts it) and at how long the file being read (`Indexer.nowReading`) has taken. Past `memoryLimit`, or past
+/// `timeLimit` on one file, it writes down the file and why (`StoppedFile`) and exits with `StoppedFile.exitCode`:
+/// the app starts a new helper, which marks that file as one that couldn't be read and goes on. The ten-times-a-second
+/// rate matters: the runaway reading of a 45 MP RAW climbs past gigabytes in well under a second, and a watchdog
+/// that looks once a second loses it to Swift's allocation trap, which notes nothing (issue #182).
 final class Watchdog: @unchecked Sendable {
     let memoryLimit: UInt64
     let timeLimit: TimeInterval
@@ -30,7 +32,7 @@ final class Watchdog: @unchecked Sendable {
     func start() {
         Thread.detachNewThread { [self] in
             while true {
-                Thread.sleep(forTimeInterval: 1)
+                Thread.sleep(forTimeInterval: 0.1)
                 let reading = Indexer.nowReading
                 if let footprint = Self.footprint(), footprint > memoryLimit {
                     stop(reading?.path, why: "needed more than \(Self.size(memoryLimit)) of memory to read")
@@ -76,30 +78,5 @@ final class Watchdog: @unchecked Sendable {
         #else
         return nil
         #endif
-    }
-}
-
-/// The file a helper stopped on (`Watchdog`), written beside the index for the next helper.
-struct StoppedFile: Codable {
-    /// The exit status that says "a file was stopped: start a new helper" (EX_TEMPFAIL).
-    static let exitCode: Int32 = 75
-
-    let path: String?
-    let why: String
-
-    static func location(in folder: URL) -> URL {
-        folder.appendingPathComponent("stopped-file.json")
-    }
-
-    func write(to url: URL) {
-        try? JSONEncoder().encode(self).writeReplacing(url)
-    }
-
-    /// The note an earlier helper left, removed as it's read.
-    static func take(from folder: URL) -> StoppedFile? {
-        let url = location(in: folder)
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        try? FileManager.default.removeItem(at: url)
-        return try? JSONDecoder().decode(StoppedFile.self, from: data)
     }
 }
