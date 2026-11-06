@@ -437,10 +437,17 @@ func indexService(_ args: Arguments) throws -> Int32 {
     codeOptions.code = true
     codeOptions.excludedFolders = (args.lists["--code-exclude"] ?? []).map { Arguments.folderURL($0).path }
     let codeRoots = (args.lists["--code-root"] ?? []).map(Arguments.folderURL)
-    // A file whose reading runs away ends this helper, noted for the next one (`Watchdog`).
-    Watchdog(folder: args.indexFolder,
-             memoryLimit: args.values["--memory-limit"].flatMap(UInt64.init).map { $0 << 20 } ?? Watchdog.defaultMemoryLimit,
+    // A file whose reading runs away ends this helper, noted for the next one (`Watchdog`). `&*` and not
+    // `<<`: a `--memory-limit` above 2^44 MB would overflow-shift and trap in the helper's own setup
+    // (#182 review N1); saturating gives a limit no file reaches, which is what such an argument means.
+    let memoryLimit = args.values["--memory-limit"].flatMap(UInt64.init).map { $0 &* (1 << 20) } ?? Watchdog.defaultMemoryLimit
+    Watchdog(folder: args.indexFolder, memoryLimit: memoryLimit,
              timeLimit: args.values["--time-limit"].flatMap(Double.init) ?? Watchdog.defaultTimeLimit).start()
+    // A picture whose header says its reading would ask for more than that is marked, not decoded, and a
+    // helper killed on the spot (Swift's allocation trap) is noted too: a 45 MP RAW can hold the whole
+    // queue at its head (issue #182; the report's 55,000 files waited behind one).
+    ImageExtractor.decodeMemoryBudget = memoryLimit
+    CrashNotes.install(in: args.indexFolder)
     let service = IndexService(main: try part(IndexStore.mainFile, options: args.options,
                                               roots: args.positional.map(Arguments.folderURL)),
                                code: codeRoots.isEmpty ? nil : try part(IndexStore.codeFile, options: codeOptions,

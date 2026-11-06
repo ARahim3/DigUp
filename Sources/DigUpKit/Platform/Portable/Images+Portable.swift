@@ -19,6 +19,20 @@ extension ImageExtractor {
         if stbi_info(url.path, &storedWidth, &storedHeight, &channels) != 0 {
             (width, height) = (Int(storedWidth), Int(storedHeight))
             guard max(width, height) >= minSide else { throw ExtractError.tooSmall(width, height) }
+            // Here the whole picture is decoded, turned, and scaled (`decodeWithFFmpeg` pipes the same), so
+            // full-size pixels are the peak and the header alone can tell it: a giant JPEG decodes even
+            // where ImageIO would stream tiles (issue #182's preflight, on the stb side). `UInt64` and
+            // saturating: stb reports the header's own numbers, and a file lying about them (a 4-byte
+            // dimension of 0xFFFFFFFF) must give a huge estimate, not an overflow trap in the guard built
+            // to stop traps (#182 review S4); comparing in `UInt64` also avoids `Int(budget)`, which traps
+            // above `Int.max` on an absurd `--memory-limit` (review N1).
+            let pixels = UInt64(max(width, 0)) &* UInt64(max(height, 0))
+            let estimate = pixels &* UInt64(portableDecodeBytesPerPixel)
+            guard decodeMemoryBudget == 0 || estimate <= decodeMemoryBudget else {
+                throw ExtractError.unreadable("needed an estimated \(decodeSize(estimate)) of memory to read: "
+                                              + "a picture of \(pixels / 1_000_000) MP "
+                                              + "(the helper's limit is \(decodeSize(decodeMemoryBudget)))")
+            }
             guard let decoded = RGBImage.load(url.path) else { throw ExtractError.unreadable("can't decode image") }
             image = decoded.oriented(exif?.orientation ?? 1)
         } else {
@@ -51,10 +65,22 @@ extension ImageExtractor {
             throw ExtractError.unreadable("ffmpeg isn't installed (HEIC, WebP and TIFF pictures need it)")
         }
         var data = Data()
+        let budget = decodeMemoryBudget
         do {
             try FFmpeg.run(FFmpeg.ffmpeg, ["-v", "error", "-nostdin", "-i", url.path, "-frames:v", "1", "-pix_fmt",
-                                           "rgb24", "-f", "image2pipe", "-c:v", "ppm", "-"]) { data.append($0) }
+                                           "rgb24", "-f", "image2pipe", "-c:v", "ppm", "-"]) { chunk in
+                data.append(chunk)
+                // The picture whole, made as PPM over the pipe (3 bytes per pixel, before any scaling),
+                // lands in the helper's own memory: the helper's limit stops the reading, and `FFmpeg.run`
+                // stops ffmpeg with it (issue #182: this is where a huge TIFF/HEIC lands on this side).
+                // Compared in `UInt64`: `Int(budget)` traps above `Int.max`, which an absurd
+                // `--memory-limit` can hand us (#182 review N1).
+                guard budget == 0 || UInt64(data.count) <= budget else {
+                    throw ExtractError.unreadable("needed more than \(decodeSize(budget)) of memory to read")
+                }
+            }
         } catch {
+            if let error = error as? ExtractError { throw error }   // the memory cap above, not a broken picture
             let ext = url.pathExtension.lowercased()
             if ext == "heic" || ext == "heif" { throw ExtractError.unreadable("this ffmpeg can't read HEIC (8.1 can)") }
             throw ExtractError.unreadable("can't decode image")

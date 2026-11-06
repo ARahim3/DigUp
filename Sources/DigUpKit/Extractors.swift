@@ -20,13 +20,123 @@ enum ExtractError: Error, CustomStringConvertible {
 }
 
 /// Pictures for the model: a downscaled copy of each image (`prepare`) and the camera's date. ImageIO on macOS (HEIC,
-/// RAW, WebP and friends); stb_image elsewhere (Platform/).
-enum ImageExtractor {
+/// RAW, WebP and friends); stb_image elsewhere (Platform/). Public for the indexing helper to set its
+/// `decodeMemoryBudget` at startup; `prepare` itself stays internal to the kit.
+public enum ImageExtractor {
     struct Prepared: Sendable {
         let path: String
         let width: Int
         let height: Int
         let taken: String?   // EXIF DateTimeOriginal, as written by the camera
+    }
+
+    /// What reading one picture may cost the helper in memory, set at its start from `--memory-limit`
+    /// (`main.swift`: the watchdog's own limit). A picture whose header says its reading would ask for more
+    /// goes into the index as unreadable *without being decoded*: a 45 MP RAW has run to over 8 GB in the
+    /// wild, killing the helper before the watchdog's tick could note the file, and every restart took that
+    /// file first and died on it again (issue #182: 55,000 files stuck behind it). 0 = no preflight, for the
+    /// tools that don't index under a watchdog.
+    nonisolated(unsafe) public static var decodeMemoryBudget: UInt64 = 0
+
+    /// Bytes the reading of one RAW pixel can take. Measured on 2026-11-05 on an Apple M1 with 8 GB RAM
+    /// (macOS 26.5.1): the production thumbnail path on a real 45.4 MP Nikon Z9 NEF peaks at 782 MB, 17 B/px,
+    /// so ImageIO of that macOS decodes RAW safely. The #182 reports — the same camera — are files whose
+    /// reading ran past an 8 GB watchdog, which floors the coefficient at 176 B/px; 192 carries the guard.
+    /// RAW is only read on the ImageIO side. Measured on one camera on one macOS, and taken for all makers.
+    public static let rawDecodeBytesPerPixel = 192
+
+    /// Bytes per pixel of a layered TIFF: every full-resolution layer decoded with its masks. A design
+    /// estimate, not measured — Photoshop's layered files of the #182 reports can't be synthesized from
+    /// nothing. Only files that say so themselves get it: `LayeredTIFF`.
+    static let layeredTIFFBytesPerPixel = 16
+
+    /// Bytes without ImageIO: stb decodes the whole picture, `oriented` copies it, and the scaling copies it
+    /// again (3 B/px decoded, a 4-byte copy, the scaled copy). Estimated, not measured on Linux or Windows.
+    static let portableDecodeBytesPerPixel = 8
+
+    /// A size for the file's note: "4.1 GB", "900 MB".
+    static func decodeSize(_ bytes: UInt64) -> String {
+        bytes >= 1 << 30 ? String(format: "%.1f GB", Double(bytes) / Double(1 << 30)) : "\(bytes >> 20) MB"
+    }
+}
+
+/// The pixels of the layers of a Photoshop-style layered TIFF, nil when the file isn't layered. A layered
+/// TIFF's master declares itself a reduced preview (`SubfileType & 1`) and keeps its full-size layers — the
+/// colours, and alpha masks the same size — in sub-IFDs. A plain TIFF, including a page chain where every
+/// IFD is full size, is not layered: ImageIO decodes those in streaming tiles, measured 2026-11-05 at a
+/// 70 MB peak on a 2,125 MP file, so it gets no preflight. Only the headers are read: 8 bytes, 12 per
+/// entry, 4 per sub-IFD — never pixels, of a file that may be 2 GB.
+enum LayeredTIFF {
+    /// A side above this is not a picture: 16,777,216 px on a side is 280 GB of pixels at the preflight's
+    /// 16 B/px, and no file of it exists. The sizes come from 4-byte LONG tags, so a header saying
+    /// 0xFFFFFFFF is garbage — and two of those multiplied overflowed the sum below, trapping *inside* the
+    /// guard built to stop crashes (issue #182, pre-push review S4). Garbage gets no estimate: nil, meaning
+    /// "not this file's shape", so nothing is marked on it.
+    static let maxDimension = 1 << 24
+
+    /// All pixels of master and layers, counted in `UInt64` for the same reason — and saturating, so a file
+    /// that lies about its size produces a huge estimate, not a trap. `maxLayers`: more sub-IFDs than this
+    /// is not Photoshop (which caps at 50) — a file pulling at the parser is left unguarded, and the
+    /// watchdog ends the helper on it.
+    static func layerPixels(in url: URL, maxLayers: Int = 64) -> UInt64? {
+        guard let file = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? file.close() }
+        func chunk(_ at: Int, _ count: Int) -> Data? {
+            guard at >= 0, count > 0, count <= 1 << 20 else { return nil }
+            do {
+                try file.seek(toOffset: UInt64(at))
+                guard let data = try file.read(upToCount: count), data.count == count else { return nil }
+                return data
+            } catch {
+                return nil   // past the end, a closed file: the caller reads it as "not this file's shape"
+            }
+        }
+        guard let header = chunk(0, 8), header[header.startIndex] == 0x49 || header[header.startIndex] == 0x4D
+        else { return nil }
+        let big = header[header.startIndex] == 0x4D   // "MM": Motorola (big-endian) order
+        func number(_ at: Int, _ width: Int) -> Int? {
+            guard let data = chunk(at, width) else { return nil }
+            let bytes = big ? [UInt8](data) : [UInt8](data).reversed()
+            return bytes.reduce(0) { $0 << 8 | Int($1) }
+        }
+        func ifd(_ at: Int) -> (subfileType: Int, width: Int, height: Int, subIFDs: [Int])? {
+            guard let entries = number(at, 2), entries >= 1, entries <= 1024 else { return nil }
+            var read = (0, 0, 0, [Int]())
+            for i in 0..<entries {
+                let e = at + 2 + i &* 12
+                guard let tag = number(e, 2), let type = number(e + 2, 2), let count = number(e + 4, 4),
+                      count >= 0, count <= 1 << 16 else { return nil }
+                let unit = type == 3 || type == 8 ? 2 : type == 1 || type == 2 || type == 6 || type == 7 ? 1 : 4
+                let total = count &* unit
+                func value(_ index: Int) -> Int? {
+                    if total <= 4 { return index == 0 ? number(e + 8, unit) : nil }
+                    guard let base = number(e + 8, 4) else { return nil }
+                    return number(base + index &* unit, unit)
+                }
+                switch tag {
+                case 0x00FE: read.0 = value(0) ?? 0
+                case 0x0100: read.1 = value(0) ?? 0
+                case 0x0101: read.2 = value(0) ?? 0
+                case 0x0145 where count >= 1 && count <= maxLayers:
+                    read.3 = total <= 4 && count == 1 ? [number(e + 8, 4) ?? 0] : (0..<count).compactMap { value($0) }
+                default: break
+                }
+            }
+            return read
+        }
+        guard number(2, 2) == 42, let first = number(4, 4), first >= 8,
+              let master = ifd(first), master.subfileType & 1 == 1,   // the master says "I am a preview"
+              !master.subIFDs.isEmpty, master.width > 0, master.height > 0,
+              master.width <= maxDimension, master.height <= maxDimension   // a header lying about its size
+        else { return nil }
+        var total = UInt64(master.width) &* UInt64(master.height)   // the preview decodes too
+        for at in master.subIFDs {
+            guard at >= 8, let layer = ifd(at), layer.subfileType & 1 == 0,   // a full-size layer, not a preview
+                  layer.width > 0, layer.height > 0,
+                  layer.width <= maxDimension, layer.height <= maxDimension else { continue }
+            total = total &+ UInt64(layer.width) &* UInt64(layer.height)
+        }
+        return total
     }
 }
 

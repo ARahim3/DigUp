@@ -28,7 +28,7 @@ use serde_json::{json, Value};
 use settings::Settings;
 use status::Status;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
@@ -87,6 +87,16 @@ struct Shell {
     reloaded: Mutex<Instant>,
     /// When the index helper's watchdog ended it lately (on a file whose reading ran away).
     watchdog_stops: Mutex<Vec<Instant>>,
+    /// The queue's pending-file count at the last stop on a file (`status.pending` is the count now): stops
+    /// are a stall only when the queue isn't moving between them (issue #182, like the Mac app's `Engine`).
+    pending_at_stop: AtomicI64,
+    /// The last file the index helper reported reading (its `"file"` event). When a helper dies on the
+    /// spot, this is the app's best clue which file to mark: the queue's head is not necessarily it
+    /// (images run eight at a time, all eight stay pending till the batch ends — pre-push review #182).
+    last_file: Mutex<Option<String>>,
+    /// The file to hand the next helper as `DIGUP_STOPPED_FILE`, set when a fatal-signal exit is seen,
+    /// taken by the spawn that uses it.
+    crash_file: Mutex<Option<String>>,
     /// The window's size inside its frame, as its page last reported it (GTK's own counts its title bar and shadow).
     window_inner: Mutex<Option<(f64, f64)>>,
     /// A search the panel hands the window (its query, and the kind of results to show): taken when the window opens.
@@ -749,6 +759,9 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         tray_host: Mutex::new(None),
         reloaded: Mutex::new(Instant::now()),
         watchdog_stops: Mutex::default(),
+        pending_at_stop: AtomicI64::new(-1),
+        last_file: Mutex::new(None),
+        crash_file: Mutex::new(None),
         window_inner: Mutex::new(None),
         window_search: Mutex::new(None),
         debug_query_sent: AtomicBool::new(false),
@@ -913,7 +926,15 @@ fn run_index(app: &AppHandle) {
     if !may_index(&shell) {
         return;
     }
-    if let Err(error) = shell.index.run(&shell.index_launch()) {
+    let mut launch = shell.index_launch();
+    // A helper that died on the spot hands the next one the file it was last seen reading (the
+    // head-marking fallback covers notes from spawns without that knowledge): the pathless
+    // `CrashNotes` note plus this name tells the next helper exactly which file to mark, so an
+    // image batch of eight no longer loses seven innocent heads (pre-push review #182).
+    if let Some(file) = shell.crash_file.lock().unwrap().take() {
+        launch.env.push(("DIGUP_STOPPED_FILE".to_string(), file));
+    }
+    if let Err(error) = shell.index.run(&launch) {
         set_status(app, &format!("Indexing couldn't start: {error}"));
     }
 }
@@ -1848,7 +1869,14 @@ fn index_event(app: &AppHandle, event: Value) {
     }
     app.state::<Arc<Shell>>().status.lock().unwrap().apply(&event);
     match event["event"].as_str().unwrap_or_default() {
-        "file" | "rest" => reload(app, false),
+        "file" => {
+            app.state::<Arc<Shell>>().last_file
+                .lock()
+                .unwrap()
+                .clone_from(&event["path"].as_str().map(str::to_string));
+            reload(app, false)
+        }
+        "rest" => reload(app, false),
         "idle" => {
             reload(app, true);
             // A debug run through setup searches once the first index is in.
@@ -1868,22 +1896,53 @@ fn index_event(app: &AppHandle, event: Value) {
     let _ = app.emit("helper", json!({"from": "index", "event": event}));
 }
 
+/// The exits that mean "the helper died on the file it was reading": the fatal signals on Unix (SIGILL,
+/// SIGTRAP — Swift's allocation trap, the "exited (5)" of #182 — SIGABRT, SIGFPE, SIGKILL, SIGBUS, SIGSEGV),
+/// where a child killed by a signal has no exit code at all and the signal carries the class, and the
+/// Windows SEH crash codes (breakpoint, access violation, stack overflow, fast fail, illegal instruction,
+/// private instruction, divide-by-zero, in-cell divide). `status` alone is inert on Linux (it is None there,
+/// so `as_i64().unwrap_or(0)` answers 0): the pre-push review caught that, and the Mac app's
+/// `terminationStatus` has always carried the signal. The `CrashNotes` net on Windows covers only the SEH
+/// classes the C runtime translates there, so a note may be absent — the fallback then marks nothing, and
+/// the restart cap bounds the loop (disclosed Windows limit).
+fn died_on_file(status: i64, signal: Option<i64>) -> bool {
+    matches!(signal, Some(4 | 5 | 6 | 8 | 9 | 10 | 11))
+        || matches!(status, 4 | 5 | 6 | 8 | 9 | 10 | 11
+            | 0x80000004 | 0xC0000005 | 0xC00000FD | 0xC0000409 | 0xC000001D | 0xC0000094 | 0xC0000096)
+}
+
 /// The index helper ended by itself (helper.rs's "ended"). A sync asked of it as it was leaving (it exits a minute after
 /// it's done) still has to happen; its watchdog's exit (75: a file whose reading ran away, which the next helper skips)
 /// starts another, though not over and over if something else is wrong (as the Mac app's `Engine.helperExited`).
 fn index_ended(app: &AppHandle, event: &Value) {
     const STOPPED_ON_FILE: i64 = 75;
     let shell = app.state::<Arc<Shell>>().inner().clone();
-    let again = if event["status"].as_i64() == Some(STOPPED_ON_FILE) {
+    let status = event["status"].as_i64().unwrap_or(0);
+    let signal = event["signal"].as_i64();
+    let died_on_file = died_on_file(status, signal);
+    let again = if status == STOPPED_ON_FILE || died_on_file {
+        if died_on_file {
+            eprintln!("digup-shell: the helper died (exit {status}, signal {signal:?}) on a file: it will be \
+                       marked, and indexing goes on");
+            *shell.crash_file.lock().unwrap() = shell.last_file.lock().unwrap().clone();
+        }
         let mut stops = shell.watchdog_stops.lock().unwrap();
         stops.retain(|stop| stop.elapsed() < Duration::from_secs(600));
         stops.push(Instant::now());
+        // 100 files moved since the last stop means the stops are getting past bad files, not looping
+        // (#182: the 4-stops cap froze a 55,000-file index after four oversized RAWs).
+        let pending = shell.status.lock().unwrap().pending as i64;
+        let before = shell.pending_at_stop.swap(pending, Ordering::SeqCst);
+        if before - pending >= 100 {
+            stops.clear();
+            stops.push(Instant::now());
+        }
         if stops.len() > 3 {
             eprintln!("digup-shell: indexing stopped on files 4 times in 10 min");
         }
         stops.len() <= 3
     } else {
-        event["owed"] == true && event["status"].as_i64() == Some(0)
+        event["owed"] == true && status == 0
     };
     if again {
         run_index(app);
@@ -2023,5 +2082,35 @@ mod tests {
         let entry = "[Desktop Entry]\nType=Application\nExec=/home/me/.local/opt/digup/usr/bin/digup-shell --at-login\nName=DigUp\n";
         let fixed = super::with_exec(entry, "\"/home/me/.local/opt/digup/AppRun\" --at-login");
         assert_eq!(fixed, "[Desktop Entry]\nType=Application\nExec=\"/home/me/.local/opt/digup/AppRun\" --at-login\nName=DigUp\n");
+    }
+}
+
+#[cfg(test)]
+mod crash_class_tests {
+    use super::died_on_file;
+
+    /// Issue #182's crash classification, in both platforms' shapes. On Unix a child killed by a signal has
+    /// no exit code at all (`ExitStatus::code()` is None there, so `status` reaches us as 0) and the signal
+    /// carries the class; the Mac app's `terminationStatus` spells the same crash as the status itself.
+    /// Clean exits (0), the watchdog's own stop (75), and a plain nonzero exit are not crash classes.
+    #[test]
+    fn fatal_signals_carry_the_crash_class() {
+        for signal in [4, 5, 6, 8, 9, 10, 11] {
+            assert!(died_on_file(0, Some(signal)), "signal {signal}");
+            assert!(died_on_file(signal, None), "macOS spells it as the status");
+        }
+        assert!(!died_on_file(0, Some(13)));   // SIGPIPE: not a crash on a file
+        assert!(!died_on_file(0, None));       // an exit, not a killing
+        assert!(!died_on_file(75, None));      // the watchdog's own stop (EX_TEMPFAIL)
+        assert!(!died_on_file(1, None));       // an ordinary failure exit
+    }
+
+    /// Windows has no signals: the crash class arrives as the SEH exit code (a Swift trap, a CRT fast-fail).
+    #[test]
+    fn seh_codes_carry_the_crash_class() {
+        for code in [0x80000004i64, 0xC0000005, 0xC00000FD, 0xC0000409, 0xC000001D, 0xC0000094, 0xC0000096] {
+            assert!(died_on_file(code, None), "code {code:#x}");
+        }
+        assert!(!died_on_file(0xC0000022, None));   // a share-stop code: an exit, not a crash
     }
 }
