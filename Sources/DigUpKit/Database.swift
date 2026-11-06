@@ -61,6 +61,24 @@ public final class Database {
 
     public func run(_ sql: String, _ values: [SQLValue] = []) throws { try query(sql, values) }
 
+    private var prepared: [String: Statement] = [:]
+
+    /// `run` with the statement kept for the next call of the same SQL: the counters migration updates
+    /// 1.2M rows one at a time, and preparing per row costs more than the update itself (measured).
+    /// SQLite re-prepares a cached statement by itself when the schema changes under it (the migration
+    /// adds triggers after the backfill uses this), so the cache is safe across DDL.
+    public func run(_ sql: String, _ values: [SQLValue] = [], keeping: Bool) throws {
+        guard keeping else { try query(sql, values); return }
+        let statement: Statement
+        if let cached = prepared[sql] {
+            statement = cached
+        } else {
+            statement = try Statement(self, sql)
+            prepared[sql] = statement
+        }
+        try statement.reuse(values)
+    }
+
     /// Inside another transaction, a savepoint: its failure undoes only its own writes, and the outer one goes on.
     private var transactionDepth = 0
 
@@ -100,6 +118,7 @@ public enum SQLValue {
 public final class Statement {
     private let statement: OpaquePointer
     private let db: Database
+    private let sql: String
 
     init(_ db: Database, _ sql: String) throws {
         var statement: OpaquePointer?
@@ -108,11 +127,13 @@ public final class Statement {
         }
         self.statement = statement
         self.db = db
+        self.sql = sql
     }
 
     deinit { sqlite3_finalize(statement) }
 
     func bind(_ values: [SQLValue]) throws {
+        sqlite3_clear_bindings(statement)   // a reused statement: drop last call's values first
         for (offset, value) in values.enumerated() {
             let index = Int32(offset + 1)
             let status: Int32
@@ -132,8 +153,15 @@ public final class Statement {
         switch sqlite3_step(statement) {
         case SQLITE_ROW: return true
         case SQLITE_DONE: return false
-        default: throw Database.Failure(message: db.errorMessage)
+        default: throw Database.Failure(message: "\(db.errorMessage) (step: \(sql.prefix(160)))")
         }
+    }
+
+    /// Bind a fresh set of values into a kept statement and run it to the end (`Database.run(keeping:)`).
+    func reuse(_ values: [SQLValue]) throws {
+        guard sqlite3_reset(statement) == SQLITE_OK else { throw Database.Failure(message: db.errorMessage) }
+        try bind(values)
+        while try step() {}
     }
 
     public func int(_ column: Int32) -> Int64 { sqlite3_column_int64(statement, column) }
