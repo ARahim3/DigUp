@@ -53,6 +53,7 @@ public final class IndexStore {
     public func setScope(_ folders: [String]?) throws {
         guard let folders else { (scope, scopeSQL) = (nil, ""); return }
         let ranges = Self.mergedRanges(folders.flatMap(Self.pathRanges(under:)))
+        let bucketRanges = Self.mergedRanges(folders.flatMap(Self.bucketRanges(under:)))
         try db.transaction {
             try db.run("""
                 CREATE TEMP TABLE IF NOT EXISTS scope(
@@ -69,6 +70,22 @@ public final class IndexStore {
                            + Array(repeating: "(?, ?)", count: chunk.count).joined(separator: ","),
                            chunk.flatMap { [.text($0.from), .text($0.to)] })
                 start += 200
+            }
+            try db.run("""
+                CREATE TEMP TABLE IF NOT EXISTS scopeb(
+                    lo TEXT NOT NULL,
+                    hi TEXT NOT NULL,
+                    PRIMARY KEY(lo, hi)
+                ) WITHOUT ROWID
+                """)
+            try db.run("DELETE FROM scopeb")
+            var bStart = 0
+            while bStart < bucketRanges.count {
+                let chunk = bucketRanges[bStart..<min(bStart + 200, bucketRanges.count)]
+                try db.run("INSERT INTO scopeb(lo, hi) VALUES"
+                           + Array(repeating: "(?, ?)", count: chunk.count).joined(separator: ","),
+                           chunk.flatMap { [.text($0.from), .text($0.to)] })
+                bStart += 200
             }
         }
         (scope, scopeSQL) = (folders, ranges.isEmpty ? " AND 0"
@@ -126,6 +143,35 @@ public final class IndexStore {
         guard let last = bytes.lastIndex(of: 0x2F) else { return "" }
         bytes.removeSubrange(last...)   // everything before the final slash
         return String(decoding: bytes, as: UTF8.self)
+    }
+
+    /// The ranges of the counters table's bucket key that hold the files under `folder` — `pathRanges`'
+    /// dual spellings (the folder as given, plus its real path) mapped into the two shapes buckets come in:
+    /// * `(own, own + "\u{1}")` where `own` is the folder name without its trailing slash: the files sitting
+    ///   in the folder itself, whose bucket is exactly `own`. A range spanning one code unit past `own`
+    ///   contains that one bucket value and nothing else: every longer bucket extending `own` starts with
+    ///   a byte ≥ 0x01, and 0x2F (`/`) is ≥ 0x01, so a sibling folder named "notes." or "notes!" — which is
+    ///   NOT inside "notes" — has its files' buckets sort past this range's end. Root-level files
+    ///   (bucket `""`) and drive-root files (bucket `"C:"`) land in this range for the root spellings.
+    /// * `(folder + "/", folder + "/" + "\u{10FFFF}")`: the files in the folder's subfolders — their bucket
+    ///   starts with `folder + "/"`, and a bucket under `folder`'s path bound is a bucket under its name
+    ///   bound, because a bucket is a prefix of its files' paths.
+    /// The `"\u{10FFFF}"` bound is inherited from `pathRanges` verbatim (it is that range's own `to`): on
+    /// macOS a name containing it is unrepresentable — Foundation **and** raw `mkdir`/`open` refuse it
+    /// (APFS, measured in the audit) — so the bound is unreachable here; Linux (ext4: any UTF-8 sans
+    /// NUL/`/`) and Windows (NTFS: full UTF-16, surrogate pairs included) can represent a name starting
+    /// with it, and such a file/folder escapes the range in *both* forms identically — behavior inherited
+    /// from the shipped path machinery, not introduced here (audit Finding 10). The one asymmetry buckets
+    /// add: a direct child named starting with U+10FFFF has bucket `own`, so the counters count it while
+    /// the path query's bound excludes it (audit Finding 10's caveat, disclosed in the report).
+    static func bucketRanges(under folder: String) -> [(from: String, to: String)] {
+        pathRanges(under: folder).flatMap { range in
+            let own = String(range.from.dropLast())   // the prefix's trailing slash IS the cut: the folder
+            // name is its own bucket. `bucket(of:)` is NOT applicable to a folder path — it cuts the last
+            // segment, so it maps `/t/a` to its parent `/t`, which would make the exact range one folder
+            // too broad and drop the files sitting in the folder itself.
+            return [(own, own + "\u{1}"), (range.from, range.to)]
+        }
     }
 
     /// The main index's file in the index folder.
@@ -661,10 +707,26 @@ public final class IndexStore {
         return out
     }
 
+    /// Files waiting to be embedded (#193: read from the counters, not aggregated). Nil scope sums the
+    /// `counters` table's pending section; a folder scope joins from `scopeb` so the cost is one index
+    /// seek per connected folder, not a sweep of the counter table (audit Finding 9, measured: the
+    /// state-filtered plain join costs rows × ranges — 11.1 s at 2.985M rows × 100 ranges; the CROSS
+    /// JOIN form seeks `counters_state (state=? AND bucket>? AND bucket<?)` per range, 0.4 ms measured,
+    /// exact against live aggregation). `CROSS JOIN` pins the join order (SCAN b, then the seek): the
+    /// plain JOIN keeps the full-scan plan even with the index (measured 4 s) — tests assert the plan text.
+    /// An empty scope means an empty `scopeb`, which joins to zero — the same all-zero answer the old
+    /// ` AND 0` form gave.
     public func pendingCount() throws -> Int {
         var count = 0
-        try db.query("SELECT COUNT(*) FROM files WHERE state = 'pending'\(scopeSQL)") {
-            count = Int($0.int(0))
+        if scope == nil {
+            try db.query("SELECT COALESCE(SUM(n), 0) FROM counters WHERE state = 'pending'") {
+                count = Int($0.int(0))
+            }
+        } else {
+            try db.query("""
+                SELECT COALESCE(SUM(c.n), 0) FROM scopeb b CROSS JOIN counters c
+                ON c.state = 'pending' AND c.bucket >= b.lo AND c.bucket < b.hi
+                """) { count = Int($0.int(0)) }
         }
         return count
     }
@@ -679,14 +741,24 @@ public final class IndexStore {
         return out
     }
 
-    /// How many long files are unfinished, and how many of their pages and chunks are left to read.
+    /// How many long files are unfinished, and how many of their pages and chunks are left to read
+    /// (#193: `n` and `leftsum` from the counters; `leftsum` is maintained with the exact per-row shape
+    /// this query's SUM produced — Finding 8's amended term, one source with the triggers and the fill).
+    /// Same join contract as `pendingCount`; a partial row with one key (`{"read_end":"9"}`) counts 0
+    /// toward `left`, as production measures it.
     public func unfinishedCount() throws -> (files: Int, left: Int) {
         var count = (files: 0, left: 0)
-        try db.query("""
-            SELECT COUNT(*), SUM(MAX(0, CAST(json_extract(info, '$.read_end') AS INTEGER)
-                                      - CAST(json_extract(info, '$.read_to') AS INTEGER)))
-            FROM files WHERE state = 'partial'\(scopeSQL)
-            """) { count = (Int($0.int(0)), Int($0.int(1))) }
+        if scope == nil {
+            try db.query("SELECT COALESCE(SUM(n), 0), COALESCE(SUM(leftsum), 0) FROM counters WHERE state = 'partial'") {
+                count = (Int($0.int(0)), Int($0.int(1)))
+            }
+        } else {
+            try db.query("""
+                SELECT COALESCE(SUM(c.n), 0), COALESCE(SUM(c.leftsum), 0)
+                FROM scopeb b CROSS JOIN counters c
+                ON c.state = 'partial' AND c.bucket >= b.lo AND c.bucket < b.hi
+                """) { count = (Int($0.int(0)), Int($0.int(1))) }
+        }
         return count
     }
 
@@ -815,12 +887,62 @@ public final class IndexStore {
         public var left = 0
     }
 
+    /// What indexing learned, in totals (#193: counters reads; `fullCounts` is the aggregation form kept
+    /// as the tests' oracle). The `byKindAndState` dictionary lists only groups with files — zero-valued
+    /// counter rows (Finding 9's churn residue) are skipped, exactly as the old GROUP BY returned no row
+    /// for an absent group. Nil scope scans the two covering counter tables; a folder scope drives from
+    /// `scopeb` (PK bucket seek, Θ(folders)); an empty scope joins to zero, matching the old ` AND 0`.
     public func counts() throws -> Counts {
+        var counts = Counts()
+        let rowSQL = scope == nil
+            ? "SELECT kind, state, SUM(n) FROM counters GROUP BY kind, state"
+            : "SELECT c.kind, c.state, SUM(c.n) FROM scopeb b CROSS JOIN counters c ON c.bucket >= b.lo AND c.bucket < b.hi GROUP BY c.kind, c.state"
+        try db.query(rowSQL) { row in
+            let n = Int(row.int(2))
+            guard n != 0 else { return }
+            counts.byKindAndState[row.text(0) ?? "?", default: [:]][row.text(1) ?? "?"] = n
+        }
+        (counts.unfinished, counts.left) = try unfinishedCount()
+        let segSQL = scope == nil
+            ? "SELECT hasvec, SUM(n) FROM segcounters GROUP BY hasvec"
+            : "SELECT c.hasvec, SUM(c.n) FROM scopeb b CROSS JOIN segcounters c ON c.bucket >= b.lo AND c.bucket < b.hi GROUP BY c.hasvec"
+        try db.query(segSQL) { row in
+            counts.segments += Int(row.int(1))
+            if row.int(0) == 1 { counts.vectors += Int(row.int(1)) }
+        }
+        return counts
+    }
+
+    // MARK: Full aggregation — the oracle (#193 keeps it)
+
+    /// `pendingCount`'s aggregation form, verbatim as shipped before the counters. Every counters test
+    /// compares the maintained answer against this; `rebuildCounters` is built from this class of query.
+    public func fullPendingCount() throws -> Int {
+        var count = 0
+        try db.query("SELECT COUNT(*) FROM files WHERE state = 'pending'\(scopeSQL)") {
+            count = Int($0.int(0))
+        }
+        return count
+    }
+
+    /// `unfinishedCount`'s aggregation form, verbatim as shipped before the counters.
+    public func fullUnfinishedCount() throws -> (files: Int, left: Int) {
+        var count = (files: 0, left: 0)
+        try db.query("""
+            SELECT COUNT(*), SUM(MAX(0, CAST(json_extract(info, '$.read_end') AS INTEGER)
+                                      - CAST(json_extract(info, '$.read_to') AS INTEGER)))
+            FROM files WHERE state = 'partial'\(scopeSQL)
+            """) { count = (Int($0.int(0)), Int($0.int(1))) }
+        return count
+    }
+
+    /// `counts`' aggregation form, verbatim as shipped before the counters.
+    public func fullCounts() throws -> Counts {
         var counts = Counts()
         try db.query("SELECT kind, state, COUNT(*) FROM files WHERE 1\(scopeSQL) GROUP BY kind, state") {
             counts.byKindAndState[$0.text(0) ?? "?", default: [:]][$0.text(1) ?? "?"] = Int($0.int(2))
         }
-        (counts.unfinished, counts.left) = try unfinishedCount()
+        (counts.unfinished, counts.left) = try fullUnfinishedCount()
         let inScope = scope == nil ? "" : " AND file IN (SELECT id FROM files WHERE 1\(scopeSQL))"
         try db.query("SELECT COUNT(*), COUNT(vec) FROM segments WHERE kind != 'name'\(inScope)") {
             counts.segments = Int($0.int(0))
