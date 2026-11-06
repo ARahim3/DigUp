@@ -6,6 +6,12 @@ public enum FileKind: String, CaseIterable, Sendable, Codable {
     /// Source code, a repo's docs and notebooks: only in the code index (`IndexOptions.code`).
     case code
 
+    /// Kinds whose indexing embeds pictures or sound, so reading them needs the image and audio
+    /// encoders (issue #155: `SharedEmbedder` starts text-only and brings them in only for these).
+    /// A scanned PDF's pages are read as pictures page by page, so it's not on the list — its helper
+    /// upgrades when a page comes in that way, not from the queue's look.
+    public var needsMediaEncoders: Bool { [.image, .screenshot, .video, .audio].contains(self) }
+
     /// The order of the first indexing pass: what people look for most comes first.
     static let indexingOrderSQL = """
         CASE kind WHEN 'screenshot' THEN 0 WHEN 'image' THEN 1 WHEN 'pdf' THEN 2 WHEN 'doc' THEN 3

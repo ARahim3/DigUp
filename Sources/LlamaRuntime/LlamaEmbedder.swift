@@ -44,8 +44,13 @@ public final class LlamaEmbedder: Embedder {
     private var tokens = 0            // in `batch`
     private var position: llama_pos = 0
 
-    /// `textOnly`: just the text model (queries). `log`: where llama.cpp's warnings and errors go (stderr when nil).
-    public init(models: LlamaModels, textOnly: Bool, log: URL? = nil) throws {
+    /// `textOnly`: skip the media encoders (queries, and issue #155's text-only indexing start).
+    /// `contextTokens`: the context/budget width — defaults like before (`textOnly ? 512 : 2048`);
+    /// the indexing helper passes 2048 with `textOnly` so a text-only start cuts document text at
+    /// the same 2048 the full model always used (512 is a *query* budget; indexing long pages,
+    /// chunks, code, or multilingual text at 512 would silently change its vectors).
+    /// `log`: where llama.cpp's warnings and errors go (stderr when nil).
+    public init(models: LlamaModels, textOnly: Bool, contextTokens: Int? = nil, log: URL? = nil) throws {
         let started = Date()
         LlamaLog.shared.send(to: log)
         _ = Self.backend
@@ -59,7 +64,7 @@ public final class LlamaEmbedder: Embedder {
         }
         // One input must fit one micro-batch: 2048 tokens (the reference's cut), which also holds a 1120-token image or
         // a 750-token 30 s clip. Queries are short, so the query encoder reserves less and cuts at 512.
-        let maxTokens = textOnly ? 512 : 2048
+        let maxTokens = contextTokens ?? (textOnly ? 512 : 2048)
         var params = llama_context_default_params()
         params.n_ctx = UInt32(maxTokens)
         params.n_batch = UInt32(maxTokens)

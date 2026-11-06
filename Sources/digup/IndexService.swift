@@ -12,8 +12,9 @@ import WinSDK
 ///
 /// Protocol: one command per line on stdin, one JSON event per line on stdout.
 ///   stdin:  sync | sync code | stop | backfill on | backfill off      (EOF = stop)
-///   stdout: {"event": "missing" | "pruned" | "scanning" | "sync" | "file" | "rest" | "summary" | "waiting" | "idle" | "error" |
-///            "exit", ...}; events about the code index say "code": true
+///   stdout: {"event": "missing" | "pruned" | "scanning" | "sync" | "file" | "rest" | "summary" | "waiting" | "idle" |
+///            "model" (the embedder loaded with the media encoders) | "error" | "exit", ...}; events about the
+///            code index say "code": true
 ///
 /// The loop: sync, index what the sync just queued (if it's a few files: new files go first, on any power source),
 /// then the backfill if allowed; then the code index the same way (`--code-root`: its own sync, asked for with
@@ -246,6 +247,13 @@ final class IndexService: @unchecked Sendable {
     private func run(_ part: Part, only ids: Set<Int64>?) -> Bool {
         let started = Date()
         let isNew = ids != nil
+        // Issue #155: the model takes its shape from the queue before any file is read — the image and
+        // audio encoders only for kinds that embed media (`FileKind.needsMediaEncoders`). The code index
+        // is text alone. A queue read that fails is answered conservatively: full, as it always was.
+        if !part.code {
+            let kinds = (try? part.store.pendingKinds(only: ids)) ?? Set(FileKind.allCases)
+            model.note(needsMedia: kinds.contains { $0.needsMediaEncoders })
+        }
         // Cumulative over the pass: what earlier runs did, plus everything pending now (what a sync just added too).
         var soFar = pass[part.code] ?? (done: 0, total: 0)
         soFar.total = max(soFar.total, soFar.done + ((try? part.store.pendingCount()) ?? 0))
@@ -362,36 +370,124 @@ final class IndexService: @unchecked Sendable {
 
 /// One model for both indexes, started when the first file needs it and closed when the helper is done. The indexers
 /// get it as an `Embedder` whose `close` leaves it be, since the other may be using it.
+/// Issue #155: it starts **text-only** — the image and audio encoders (555 MB of projector on this box's
+/// reference model, measured 2026-11-05 on an Apple M1 with 8 GB RAM) stay unloaded until a run says its
+/// queue holds files that need them (`note(needsMedia:)`, from `IndexStore.pendingKinds`), or one shows up
+/// where the queue said text — a scanned PDF's page, read as a picture, upgrades on the spot through
+/// `Kept`. A helper indexing only text and code never pays for the encoders, in the run *or* in the idle
+/// linger after it, where the model is kept warm. Once media has been wanted the shape is sticky: the
+/// encoders are not dropped and paid for twice on the next image.
+/// Embedding runs on the service's one loop thread (both parts), so the lock guards the shape's state.
 final class SharedEmbedder: @unchecked Sendable {
-    private let make: () throws -> any Embedder
+    private let make: (_ textOnly: Bool) throws -> any Embedder
+    private let lock = NSLock()
     private var model: (any Embedder)?
+    private var wantsFull = false   // decided: a media embed has been wanted (sticky)
+    private var full = false        // `model` as loaded holds the media encoders
+    private var lastInfo: WorkerInfo?   // the shape info last handed out; `Kept.info` answers with it
 
-    init(_ make: @escaping () throws -> any Embedder) {
+    init(_ make: @escaping (_ textOnly: Bool) throws -> any Embedder) {
         self.make = make
     }
 
-    var isRunning: Bool { model != nil }
+    var isRunning: Bool { lock.withLock { model != nil } }
+
+    /// At a run's start: the queue's verdict, and the running model re-shaped to it *before* any file is
+    /// read. A start that fails here is kept for `embedder()`, where its error marks files the way a model
+    /// failure always has.
+    func note(needsMedia: Bool) {
+        lock.withLock { wantsFull = wantsFull || needsMedia }
+        lock.lock()
+        let restart = wantsFull && model != nil && !full
+        lock.unlock()
+        if restart { try? swap() }
+    }
 
     func embedder() throws -> any Embedder {
-        if model == nil { model = try make() }
-        return Kept(model!)
+        lock.lock()
+        let start = model == nil
+        let textOnly = !wantsFull
+        let restart = !start && wantsFull && !full
+        lock.unlock()
+        if restart { try swap() }
+        if start {
+            let started = try make(textOnly)
+            lock.withLock { model = started; full = !textOnly; lastInfo = started.info }
+            if !textOnly { emit(["event": "model", "full": true]) }
+        }
+        return Kept(self)
+    }
+
+    /// The model re-shaped to full. Called from an embedding call (`Kept`) or a run's start.
+    /// A failed load falls back to the text-only shape (the file that asked for media fails as any
+    /// model failure does); without the fallback a failed swap would strand the session: `wantsFull`
+    /// sticky, model gone, every later text embed answering "the model is closed".
+    private func swap() throws {
+        lock.lock()
+        let old = model
+        model = nil
+        lock.unlock()
+        old?.close()
+        do {
+            let started = try make(false)
+            lock.withLock { model = started; full = true; wantsFull = true; lastInfo = started.info }
+            emit(["event": "model", "full": true])
+        } catch {
+            lock.withLock { wantsFull = false }
+            throw error
+        }
     }
 
     func close() {
+        lock.lock()
+        let model = self.model
+        self.model = nil
+        lock.unlock()
         model?.close()
-        model = nil
     }
 
+    /// The indexers' view: always the *current* model — media calls upgrade it on the spot (issue #155:
+    /// a scanned PDF page from a queue that said text), text calls run on either shape.
     private final class Kept: Embedder {
-        let model: any Embedder
-        init(_ model: any Embedder) { self.model = model }
-        var info: WorkerInfo { model.info }
-        func embedTexts(_ texts: [String]) throws -> [[Float]] { try model.embedTexts(texts) }
-        func embedImages(_ paths: [String], budget: Int) throws -> [Embedding] {
-            try model.embedImages(paths, budget: budget)
+        let owner: SharedEmbedder
+        init(_ owner: SharedEmbedder) { self.owner = owner }
+        var info: WorkerInfo { owner.infoNow }
+        func embedTexts(_ texts: [String]) throws -> [[Float]] {
+            try owner.use { try $0.embedTexts(texts) }
         }
-        func embedAudio(_ paths: [String]) throws -> [Embedding] { try model.embedAudio(paths) }
+        func embedImages(_ paths: [String], budget: Int) throws -> [Embedding] {
+            try owner.use(media: true) { try $0.embedImages(paths, budget: budget) }
+        }
+        func embedAudio(_ paths: [String]) throws -> [Embedding] {
+            try owner.use(media: true) { try $0.embedAudio(paths) }
+        }
         func close() {}
+    }
+
+    /// `Kept.info`'s answer: the live model's shape, or the last one seen. `embedder()` hands out a
+    /// `Kept` only once a model is set, and every set updates `lastInfo`, so this never traps on a
+    /// closed model (the force-unwrap it replaces would, and a trap takes the whole helper down).
+    fileprivate var infoNow: WorkerInfo {
+        lock.lock()
+        defer { lock.unlock() }
+        if let model { return model.info }
+        if let lastInfo { return lastInfo }
+        return WorkerInfo(model: "digup", revision: "", runtime: "", dtype: "", dim: 0, textOnly: true, loadSeconds: nil)
+    }
+
+    fileprivate func use<T>(media: Bool = false, _ body: (any Embedder) throws -> T) throws -> T {
+        if media, !lock.withLock({ wantsFull }) {
+            lock.withLock { wantsFull = true }
+            try swap()   // the first media embed: bring the encoders in now
+        }
+        lock.lock()
+        let restart = model != nil && wantsFull && !full
+        lock.unlock()
+        if restart { try swap() }
+        lock.lock()
+        defer { lock.unlock() }
+        guard let model else { throw WorkerError.notFound("the model is closed") }
+        return try body(model)
     }
 }
 
