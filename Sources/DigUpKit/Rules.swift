@@ -23,6 +23,7 @@ public enum Rules {
 
     static let docExtensions: Set<String> = [
         "txt", "text", "md", "markdown", "typ", "rtf", "docx", "doc", "odt", "html", "htm", "xlsx", "pptx", "ods", "odp",
+        "emlx",   // Apple Mail messages, read by `MailMessage` (issue #146)
     ]
 
     /// FairPlay-protected music (Apple Music downloads, iTunes Store songs bought before 2009): only the Music app can

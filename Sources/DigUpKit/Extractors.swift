@@ -56,6 +56,9 @@ enum DocExtractor {
         case "docx", "doc", "odt", "rtf": return try richText(of: url, type: ext)
         case "xlsx", "pptx", "ods", "odp": return try OfficeText.text(of: url, type: ext)
         case "html", "htm": return plainText(fromHTML: try readText(url))
+        case "emlx":   // Apple Mail's message files: header lines + text bodies (issue #146); nil = the raw text
+            let mail = try readText(url)
+            return MailMessage.text(from: Data(mail.utf8)) ?? mail
         default: return try readText(url)
         }
     }
