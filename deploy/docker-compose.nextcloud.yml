@@ -1,0 +1,114 @@
+# Nextcloud + DigUp server, one stack (docs/implementation/stage-12-integrations.md).
+#
+#   cd deploy
+#   mkdir -p data/nextcloud/{index,models,config,apps,html} && sudo chown -R 33:33 data/nextcloud
+#   DIGUP_NEXTCLOUD_DATA=$PWD/data/nextcloud/html \
+#   DIGUP_NEXTCLOUD_ADMIN_USER=admin \
+#   DIGUP_NEXTCLOUD_ADMIN_PASSWORD='pick-a-password' \
+#   DIGUP_NEXTCLOUD_INSTANCE_ID=<from occ after install, see below> \
+#   DIGUP_NEXTCLOUD_READ_TOKEN=<a secret for the Nextcloud app> \
+#   DIGUP_SERVER_ADMIN_TOKEN=<a secret for the operator> \
+#   docker compose -f docker-compose.nextcloud.yml up -d
+#   → Nextcloud on http://127.0.0.1:8081/, DigUp on http://127.0.0.1:8787/
+#
+# The design (stage-12 §11.1): Nextcloud owns its files, users, ACLs and previews; the
+# DigUp server reads the same data directory, mounted READ-ONLY at /media/photos, and the
+# DigUp Nextcloud app (its own repository) queries the API server-to-server inside this
+# compose network with the read token. Zero extra containers for the integration: the app
+# runs inside Nextcloud, the search runs on this machine's GPU/CPU — the Nextcloud box
+# never needs the card (the remote shape: DIGUP_LAN_BIND on the AI server + the app's
+# settings pointing at its URL; the data folder reaches the AI server as an NFS/SMB
+# read-only mount, stage-12 §11.5).
+#
+# Why uid/gid: the official image writes the data dir as www-data (uid/gid 33), so this
+# file defaults DIGUP_MEDIA_GID to 33 — the server (uid 990) joins group 33 and reads the
+# tree the scanner owns. The chown 33:33 above is what makes the first boot work (the same
+# measured EACCES class as the base file's chown 990, in reverse).
+#
+# The exclusions (stage-12 §11.3): a Nextcloud data dir is not only files — previews,
+# thumbnails, versions and temporaries live in appdata_<instanceid>/, and indexing those
+# copies is pure pollution of the index. The engine skips folders by EXACT PATH, so the
+# appdata exclusion is composed from the deployment's own instance id:
+#
+#   docker compose -f docker-compose.nextcloud.yml exec nextcloud \
+#     php occ config:system:get instanceid
+#
+# …and CACHEDIR.TAG-tagged folders (preview/, thumbnails/, versions/, cache/ inside appdata
+# are exactly those) are auto-skipped by the engine's cache-folder rule even before the
+# appdata exclusion applies — one gate, measured: estimate counts the users' files only,
+# the junk copies not one (the pilot numbers are in IMPLEMENTATION_STATUS.md). Folders per
+# deployment go appended via DIGUP_SERVER_EXTRA_EXCLUDE (colon-separated, the engine's
+# pathsep list).
+#
+# The token map: this stack registers Nextcloud under the name `nextcloud` in
+# DIGUP_SERVER_READ_TOKENS — the app gets THAT token and nothing else. Several Nextcloud
+# instances may share one server (mount each data dir at its own prefix, register one map
+# entry each): revoking one instance touches no other, and the server log names the
+# principal on every guarded request (security.py PrincipalLog).
+#
+# Indexing never starts by itself (base file, §5): index through the DigUp UI with the
+# admin token, from the server machine. Root-scope rule (base file header): this index
+# folder belongs to this root layout; a moved mount needs one prune job.
+#
+# Nextcloud's SSRF firewall: PHP requests to private addresses (this compose network) are
+# blocked by Nextcloud's firewall by default — the app README documents the config.php
+# line `'allow_local_servers' => true`; the config volume below keeps it persistent.
+
+name: digup-server-nextcloud
+
+services:
+  nextcloud:
+    image: nextcloud:${DIGUP_NEXTCLOUD_TAG:-28-apache}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${DIGUP_NEXTCLOUD_PUBLISH_PORT:-8081}:80"
+    environment:
+      NEXTCLOUD_ADMIN_USER: ${DIGUP_NEXTCLOUD_ADMIN_USER:?the first run installs headlessly — name the admin account}
+      NEXTCLOUD_ADMIN_PASSWORD: ${DIGUP_NEXTCLOUD_ADMIN_PASSWORD:?the first run installs headlessly — set the admin password}
+      NEXTCLOUD_TRUSTED_DOMAINS: ${DIGUP_NEXTCLOUD_TRUSTED_DOMAINS:-127.0.0.1 localhost}
+      APACHE_DISABLE_REWRITE_IP: "1"
+    volumes:
+      - ${DIGUP_NEXTCLOUD_DATA:?the Nextcloud data directory (its files live under <user>/files) — required}:/var/www/html/data
+      - ${DIGUP_NEXTCLOUD_CONFIG_DIR:-./data/nextcloud/config}:/var/www/html/config
+      - ${DIGUP_NEXTCLOUD_APPS_DIR:-./data/nextcloud/apps}:/var/www/html/custom_apps
+
+  server:
+    build:
+      context: ..
+      dockerfile: server/docker/Dockerfile
+      target: server-runtime
+    image: digup-server:local
+    restart: unless-stopped
+    stop_grace_period: 90s
+    group_add:
+      - "${DIGUP_MEDIA_GID:-33}"          # the data dir's group: the official image writes it as www-data
+    ports:
+      - "127.0.0.1:${DIGUP_PUBLISH_PORT:-8787}:8787"
+    depends_on:
+      - nextcloud
+    environment:
+      DIGUP_SERVER_INDEX: /data/index
+      DIGUP_SERVER_ROOTS: /media/photos
+      DIGUP_SERVER_MODELS: /data/models
+      DIGUP_SERVER_CONFIG: /data/config
+      # The Nextcloud junk exclusion, composed from this deployment's instance id — and
+      # nothing about this file indexes copies of the users' previews.
+      DIGUP_SERVER_EXCLUDE: /media/photos/appdata_${DIGUP_NEXTCLOUD_INSTANCE_ID:?run occ config:system:get instanceid after the install and set it here — the appdata folder holds previews/thumbnails/versions}:${DIGUP_SERVER_EXTRA_EXCLUDE:-}
+      DIGUP_SERVER_EXCLUDE_EXT: ${DIGUP_SERVER_EXCLUDE_EXT:-}
+      # The token map (§11.2): Nextcloud's app carries the read-scope entry named
+      # `nextcloud`; the operator keeps the admin token. The guard is on because a
+      # token-guarded deployment is exactly what names its hosts.
+      DIGUP_SERVER_READ_TOKENS: nextcloud:${DIGUP_NEXTCLOUD_READ_TOKEN:?a secret for the Nextcloud app — read scope, i.e. search media health}
+      DIGUP_SERVER_ADMIN_TOKEN: ${DIGUP_SERVER_ADMIN_TOKEN:?a secret for the operator — index jobs and estimates}
+      DIGUP_SERVER_ALLOWED_HOSTS: ${DIGUP_SERVER_ALLOWED_HOSTS:-server,127.0.0.1,localhost}
+      DIGUP_SERVER_ENCODER_IDLE: ${DIGUP_SERVER_ENCODER_IDLE:-300}
+      DIGUP_SERVER_PREWARM: ${DIGUP_SERVER_PREWARM:-1}
+      DIGUP_SERVER_BACKFILL: ${DIGUP_SERVER_BACKFILL:-1}
+      DIGUP_SERVER_JOB_LOG_SIZE: ${DIGUP_SERVER_JOB_LOG_SIZE:-1048576}
+      DIGUP_SERVER_ESTIMATE_TIMEOUT_S: ${DIGUP_SERVER_ESTIMATE_TIMEOUT_S:-120}
+      DIGUP_SERVER_JOB_TIMEOUT_S: ${DIGUP_SERVER_JOB_TIMEOUT_S:-3600}
+    volumes:
+      - ${DIGUP_NEXTCLOUD_INDEX_DIR:-./data/nextcloud/index}:/data/index
+      - ${DIGUP_NEXTCLOUD_MODELS_DIR:-./data/nextcloud/models}:/data/models
+      - ${DIGUP_NEXTCLOUD_SERVER_CONFIG_DIR:-./data/nextcloud/server-config}:/data/config
+      - ${DIGUP_NEXTCLOUD_DATA}:/media/photos:ro

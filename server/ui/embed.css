@@ -1,0 +1,110 @@
+/* DigUp embed widget styles — additions only, on top of style.css (the shared measured
+   palette, stage-12-integrations.md §11.4). The embed page is a compact grid: header
+   search line, filter chips, results tiles. It inherits the theme variables (data-theme
+   on <html>, driven by prefers-color-scheme or the host app's postMessage). */
+
+.embed { margin: 0; }
+.embed main { padding: 0 0.9rem 1rem; }
+
+.embed-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.6rem 0.9rem 0.2rem;
+}
+.embed-bar #q {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 1rem;
+  padding: 0.45rem 0.7rem;
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  background: var(--field);
+  color: var(--text);
+}
+.embed-count {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--soft);
+}
+.embed-count select {
+  padding: 0.2rem 0.35rem;
+  border: 1px solid var(--edge);
+  border-radius: 5px;
+  background: var(--field);
+  color: var(--text);
+}
+
+.embed-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.9rem 0.1rem;
+}
+.chip {
+  font: inherit;
+  font-size: 0.82rem;
+  padding: 0.25rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+}
+.chip.on { border-color: var(--accent); color: var(--accent); }
+.chip-check { display: flex; align-items: center; gap: 0.4rem; cursor: pointer; }
+
+.embed-grid {
+  list-style: none;
+  margin: 0.6rem 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
+  gap: 0.7rem;
+}
+.tile {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-height: 6.5rem;
+  padding: 0.45rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  cursor: pointer;
+  position: relative;
+}
+.tile.strong { border-color: var(--good); }
+.tile img {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  border-radius: 5px;
+}
+.tile .kind {
+  align-self: flex-start;
+  font-size: 0.7rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--soft);
+  padding: 0.05rem 0.45rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg);
+}
+.tile .name {
+  font-size: 0.82rem;
+  line-height: 1.25;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow-wrap: anywhere;
+}
+.tile .z, .tile .loc { font-size: 0.72rem; color: var(--soft); }
+.tile.strong .z { color: var(--good); }
+#results:empty + p { margin-top: 1.5rem; }

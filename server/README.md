@@ -208,6 +208,37 @@ rows carry — every row fell out of scope, search answered zero, health stayed 
 No prune was needed to fix it: the same command with the original env remounts the tree
 where the rows point (search back to 10 strong per query, 0.7–0.8 s at 132k files).
 
+### Nextcloud (and other host applications) — the Stage-12 shape
+
+`docker-compose.nextcloud.yml` runs Nextcloud and the DigUp server as **one stack**: the
+Nextcloud data dir mounts read-only at `/media/photos` (the server's root), the two talk on
+the stack's own network, and the DigUp **Nextcloud app** (its own repository,
+`digup-nextcloud`: a PHP app installed like any Nextcloud app) queries the API
+server-to-server with a read-scope token the operator pastes into its settings. The design,
+the ACL rules (users see only their own + shared-with-them files — filtered inside
+Nextcloud, by Nextcloud's own permission APIs), and the no-mutation discipline
+(read-only mount, no app DB tables, read APIs only) are the binding contract in
+`docs/implementation/stage-12-integrations.md`. Operator notes:
+
+- **Instance id:** the compose file composes the `appdata_<instanceid>` exclusion (previews,
+  thumbnails, versions live there) from `DIGUP_NEXTCLOUD_INSTANCE_ID`, taken after install
+  from `php occ config:system:get instanceid`. CACHEDIR-tagged junk auto-skips by the
+  engine's own rule; the gate is `POST /estimate` counting the users' files only.
+- **Permissions:** the official image writes the data dir as `www-data` (33) — this file
+  defaults `DIGUP_MEDIA_GID` to 33 so the server's uid 990 reads it; `chown -R 33:33` the
+  bind folders before the first boot.
+- **Tokens:** Nextcloud gets the map entry `nextcloud:<secret>` (`DIGUP_NEXTCLOUD_READ_TOKEN`)
+  — search/media/health, never index/estimate; the operator keeps the admin token. Several
+  Nextcloud instances can share one server (each data dir at its own prefix, one map entry
+  each; the server log names the principal on every guarded request).
+- **SSRF:** Nextcloud's firewall blocks PHP requests to private addresses by default; the
+  app's README documents `config.php` `'allow_local_servers' => true` (the config volume
+  keeps it persistent).
+- **The GPU on another box:** the app's server URL is just a URL — the AI server may be a
+  different machine (LAN bind + token + allowed hosts, the shipped shapes), and the data
+  dir reaches it as a read-only NFS/SMB mount. File indexer indexes files: that mount is
+  the standing prerequisite, documented, not a bug.
+
 ## The web app (desktop parity, Stage 10)
 
 `server/ui/` is a browser client of the published API — vanilla HTML/CSS/JS, no build step,

@@ -42,8 +42,8 @@ from .engine import EngineConfig, SearchService
 from .engine.cli import CLIError, estimate_lines, status as cli_status
 from .engine.protocol import EngineExited, EngineRefused
 from .jobs import JobBusy, JobRunner
-from .security import (Auth, HostOriginGuard, allowed_hosts_from_env, auth_from_env,
-                       BearerAuth)
+from .security import (Auth, Cors, HostOriginGuard, PrincipalLog, allowed_hosts_from_env,
+                       allowed_origins_from_env, auth_from_env, BearerAuth)
 
 # The engine's FileKind rawValues (Sources/DigUpKit FileKind): the API refuses anything
 # else with a 422 — the engine would silently drop it, and silence is not honesty.
@@ -352,8 +352,19 @@ def create_app(config: EngineConfig) -> FastAPI:
     # server, and a Docker-network / reverse-proxy deployment opts in by naming its hosts.
     # The bearer gate (below) is installed first so the Host guard runs outside it: refuse a
     # wrong host before authenticating against it.
+    #
+    # Stage 12 (docs/implementation/stage-12-integrations.md) extends the same opt-in shape:
+    # add_middleware wraps LAST-added = outermost, so the stack is
+    #   PrincipalLog → Cors → HostOriginGuard → BearerAuth → routes:
+    # the audit line sees every guarded request and its accepted principal; CORS answers the
+    # widget preflights and marks allowlisted origins for the guard; the guard refuses a
+    # wrong host before authentication; the bearer gate compares tokens. All three new knobs
+    # (`DIGUP_SERVER_READ_TOKENS`, `DIGUP_SERVER_ALLOWED_ORIGINS`, and the named-token
+    # attribution) are inert when unset, like every knob in this file.
     app.add_middleware(BearerAuth, auth=auth_from_env(os.environ))
     app.add_middleware(HostOriginGuard, allowed_hosts=allowed_hosts_from_env(os.environ))
+    app.add_middleware(Cors, allowed_origins=allowed_origins_from_env(os.environ))
+    app.add_middleware(PrincipalLog)
 
     # Engine supervision facts become HTTP facts, quoted, not dressed up.
     @app.exception_handler(EngineExited)

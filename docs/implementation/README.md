@@ -9,6 +9,10 @@ Companion documents:
   it and probing the environment. Start there.
 - [review-round.md](review-round.md) — the adversarial review before the PR: every finding that
   was real, its fix, the test that pins it, and what was deliberately left alone with its reason.
+- [stage-12-integrations.md](stage-12-integrations.md) — the integration contract for serving
+  applications *of* the library (Nextcloud first): the shared-stack shape, the named-token map,
+  the data-dir exclusion gate, the CORS allowlist and its guard exception, the embed widget,
+  the multi-instance honesty. Its §11.x numbers are quoted in code comments.
 - `api.md`, `deployment.md`, `operations.md` — written as those parts are implemented.
 
 ---

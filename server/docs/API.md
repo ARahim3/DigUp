@@ -300,6 +300,7 @@ behavior. The deployment turns it on with environment variables
 |---|---|---|
 | `DIGUP_SERVER_TOKEN` | read | every `/api/v1` endpoint except `health`, `docs`, `openapi.json` |
 | `DIGUP_SERVER_ADMIN_TOKEN` | admin | `POST /api/v1/index` and `POST /api/v1/estimate`, on top of the read scope |
+| `DIGUP_SERVER_READ_TOKENS` | read (named) | `name:token` pairs, comma-separated: **each entry guards the read scope**, exactly like `DIGUP_SERVER_TOKEN`, and the access log names the entry that asked (`principal=nc-a`) |
 
 * No credential on a guarded endpoint → `401` with `WWW-Authenticate: Bearer`. A token that is
   not this server's → `401`. The **read** token on an admin endpoint → `403` saying so.
@@ -307,6 +308,12 @@ behavior. The deployment turns it on with environment variables
   apps, agents, dashboards) get the read token and nothing else; keep the admin token with the
   operator. An **admin-only** deployment (no `DIGUP_SERVER_TOKEN`) guards the mutating endpoints
   and leaves the read side open for every client on the machine.
+* The **named map** is for a server answering several deployments (several Nextcloud instances,
+  dashboard tiles, Immich): one secret per client, revocation per client, attribution per client.
+  Names are lowercased, the first value wins per name, and a malformed entry is skipped with a
+  named warning in the log — a silently-dropped token is an outage nobody asked for. The admin
+  token covers the read scope too (an admin client searches like a read client); its log line
+  says `admin (read scope)` when it presents on the read side.
 * `GET /api/v1/health`, `/api/v1/docs` and `/api/v1/openapi.json` are deliberately unguarded:
   the container's `HEALTHCHECK` calls `/health` with no credential (a guarded health endpoint
   would mark a live container unhealthy), and the API's own documentation page is documentation,
@@ -324,6 +331,30 @@ curl -s -X POST http://127.0.0.1:8787/api/v1/index \
   -H 'content-type: application/json' -H "Authorization: Bearer $DIGUP_ADMIN_TOKEN" \
   -d '{"prune": true}'
 ```
+
+## CORS for browser widgets (`DIGUP_SERVER_ALLOWED_ORIGINS`)
+
+Off by default and needed by neither the server's own UI (same origin, `/`) nor server-to-server
+clients (PHP, curl, agents: browsers do not attach `Origin` to their fetches, so nothing here
+constrains them). It exists for **in-browser widgets hosted by other applications** —
+`GET /embed.html`, the compact search page this server serves (docs/implementation/
+stage-12-integrations.md §11.4), embedded by a host app (a Nextcloud app page, an Immich
+workspace panel):
+
+* `DIGUP_SERVER_ALLOWED_ORIGINS` is a comma-separated list of **exact origins**
+  (`http://nextcloud.lan:8081`, scheme+host+port): no wildcards, no path, no trailing slash.
+* A preflight (`OPTIONS` with an allowlisted `Origin`) answers 204:
+  `access-control-allow-origin: <origin>`, `allow-methods: POST, GET, OPTIONS`,
+  `allow-headers: authorization, content-type`, `max-age: 600`, `vary: Origin`.
+* A request from an allowlisted origin gets its response decorated with
+  `access-control-allow-origin` + `vary: Origin`; any other origin gets nothing — the
+  cross-origin read is refused by the browser exactly where this list says.
+* The Host/Origin guard's cross-origin-POST rule keeps its teeth: the widget's POST passes
+  only because CORS (installed outside the guard) blessed that exact origin first, and the
+  Host allowlist still outranks everything. Non-allowlisted browsers keep the §7 rule.
+* The embed widget carries the read token in `?token=`, which moves to `sessionStorage` and
+  leaves the URL line (history/bookmarks/host logs never see it); previews are authorized
+  blob fetches, never `<img src?token=…>`.
 
 ## Multiple clients on one index
 
