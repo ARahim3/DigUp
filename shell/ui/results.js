@@ -61,6 +61,31 @@ function copyResult(event, hit, navigated) {
   return true;
 }
 
+/// Ctrl+Shift+C / Ctrl+Shift+R on a result: its path as *text* — absolute, or inside the search folder
+/// that contains it — for pasting into an open/upload dialog, where a copied file won't paste (issue
+/// #148). Text selected in the page, or in the field before the arrows chose a result, stays a text
+/// copy (WebKitGTK copies it on the same keys). True when it took the keys.
+async function copyPathText(event, hit, navigated, absolute) {
+  const field = document.activeElement;
+  const fieldText = field?.selectionStart != null && field.selectionStart !== field.selectionEnd;
+  const textSelected = fieldText ? !navigated : Boolean(window.getSelection()?.toString());
+  if (!hit || textSelected) return false;
+  event.preventDefault();
+  const text = absolute ? hit.path
+    : await invoke("relative_path_text", { path: hit.path, roots: state.info.folders ?? [] });
+  try {
+    // The native clipboard — the same route Ctrl+C's copy_file takes. navigator.clipboard is
+    // not dependable in Tauri webviews (their pages are served from a custom scheme,
+    // http://tauri.localhost on Windows, a non-secure context where the web clipboard is
+    // unavailable), so the hotkeys ride the native channel: copy_text needs no capability
+    // and no secure origin (issue #148 pre-push review).
+    await invoke("copy_text", { text });
+  } catch (error) {
+    failed(error);
+  }
+  return true;
+}
+
 /// Where a result opens: a PDF's page past the first, a recording's or video's moment past its first second (the Mac
 /// app's Moments).
 function placeToOpen(hit) {

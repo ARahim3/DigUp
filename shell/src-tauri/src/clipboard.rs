@@ -75,3 +75,60 @@ pub fn copy_file(window: &tauri::WebviewWindow, path: &Path) -> Result<(), Strin
 pub fn copy_file(_: &tauri::WebviewWindow, _: &Path) -> Result<(), String> {
     Err("the shell copies files on Windows and Linux (on a Mac, the DigUp app does)".into())
 }
+
+/// Copy a result's path as plain text (Ctrl+Shift+C / Ctrl+Shift+R, issue #148): the same native
+/// clipboard route as `copy_file` above, because that one is what the app has always pasted with.
+/// The webview API (`navigator.clipboard`) is not a dependable floor here — Tauri serves its pages
+/// from a custom scheme, `http://tauri.localhost` on Windows, which WebKit/WebView2 treat as a
+/// non-secure context where the clipboard API is unavailable — so the hotkeys ride the native
+/// channel, which needs no capability, no plugin, and no secure origin.
+#[cfg(windows)]
+pub fn copy_text(window: &tauri::WebviewWindow, text: &str) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::GlobalFree;
+    use windows_sys::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
+    use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+    const CF_UNICODETEXT: u32 = 13;
+    let wide: Vec<u16> = std::ffi::OsStr::new(text).encode_wide().chain([0]).collect();
+    let owner = window.hwnd().map_err(|error| error.to_string())?.0 as _;
+    // SAFETY: the block is sized for the text and its NUL and written within that; once the
+    // clipboard takes it, it owns it (freed here only when it didn't).
+    unsafe {
+        let memory = GlobalAlloc(GMEM_MOVEABLE, wide.len() * 2);
+        if memory.is_null() {
+            return Err("no memory for the clipboard".into());
+        }
+        std::ptr::copy_nonoverlapping(wide.as_ptr().cast::<u8>(), GlobalLock(memory) as *mut u8, wide.len() * 2);
+        GlobalUnlock(memory);
+        // The window owns the clipboard: without an owner, Windows won't take the data.
+        if OpenClipboard(owner) == 0 {
+            GlobalFree(memory);
+            return Err("the clipboard is busy".into());
+        }
+        EmptyClipboard();
+        let taken = !SetClipboardData(CF_UNICODETEXT, memory).is_null();
+        CloseClipboard();
+        if !taken {
+            GlobalFree(memory);
+            return Err("the clipboard didn't take the text".into());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+pub fn copy_text(window: &tauri::WebviewWindow, text: &str) -> Result<(), String> {
+    use gtk::prelude::*;
+    let text = text.to_string();
+    window
+        .run_on_main_thread(move || {
+            let clipboard = gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD);
+            clipboard.set_text(&text);
+        })
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+pub fn copy_text(_: &tauri::WebviewWindow, _: &str) -> Result<(), String> {
+    Err("the shell copies text on Windows and Linux (on a Mac, the DigUp app does)".into())
+}
