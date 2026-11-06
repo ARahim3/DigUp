@@ -91,6 +91,9 @@ final class SearchPanelController {
     var rows: [ResultRow] { results.groups.flatMap(\.rows) + (showWeaker ? results.weaker : []) }
     var selectedRow: ResultRow? { rows.first { $0.id == selection } }
 
+    /// The search folders, as text: "Copy Relative Path" for the rows' menus (issue #148).
+    var searchFolderPaths: [String] { engine.folders.roots.map(\.path) }
+
     // MARK: Showing
 
     func toggle() {
@@ -347,6 +350,14 @@ final class SearchPanelController {
         case 31 where modifiers == .command:  // ⌘O: the same search in the window, for a bigger look
             openInWindow()
             return true
+        case 8, 18 where modifiers == [.command, .shift]:
+            // ⌘⇧C / ⌘⇧R: the selected file's path as text — absolute, inside its search folder — for
+            // pasting into an open/upload dialog, where a copied file won't paste (issue #148). Text
+            // the person selected in the query field stays a text copy, as ⌘C's rule above.
+            let textSelected = (field?.currentEditor()?.selectedRange.length ?? 0) > 0
+            if textSelected, !navigated { return false }
+            copyPathSelected(relative: event.keyCode == 18)
+            return true
         case 8 where modifiers == .command:
             // ⌘C copies the selected file, except right after you selected some of the query text (the panel opens
             // with the last query selected, and arrowing to a result means you want the file).
@@ -393,6 +404,21 @@ final class SearchPanelController {
         // As a file, like ⌘C in Finder: paste into a folder, a chat or a mail.
         pasteboard.writeObjects([row.url as NSURL])
         flash("Copied \(row.name)")
+    }
+
+    /// ⌘⇧C / ⌘⇧R: the selected file's path as *text* — absolute, or inside the search folder that
+    /// contains it (the longest when folders nest; issue #148). For pasting into an open/upload
+    /// dialog, where a copied file won't paste. Outside every search folder, absolute. The spelling
+    /// is the row menu's own (`FileDragView.relativeSpelling`), so keys and menu always agree.
+    func copyPathSelected(relative: Bool) {
+        guard let row = selectedRow else { return }
+        let path = row.url.path
+        let text = relative
+            ? FileDragView.relativeSpelling(of: path, folders: engine.folders.roots.map(\.path))
+            : path
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        flash(text == path ? "Copied the path" : "Copied \(text)")
     }
 
     /// The search window, with this query (and only one kind, if given): for a bigger look.

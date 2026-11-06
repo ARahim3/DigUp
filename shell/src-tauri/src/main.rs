@@ -421,6 +421,57 @@ fn copy_file(window: tauri::WebviewWindow, path: String) -> Result<(), String> {
     clipboard::copy_file(&window, Path::new(&path)).inspect_err(|error| eprintln!("digup-shell: can't copy {path}: {error}"))
 }
 
+/// Ctrl+Shift+C / Ctrl+Shift+R on a result (and the window menu's two lines): the file's path as *text*
+/// — absolute, or inside the search folder that contains it — for pasting into an open/upload dialog,
+/// where a copied file won't paste (issue #148). `roots` is the page's list of search folders; a path
+/// no root contains copies absolute. The page hands the text to `copy_text` below.
+#[tauri::command]
+fn relative_path_text(path: String, roots: Vec<String>) -> String {
+    relative_path(&path, &roots).unwrap_or(path)
+}
+
+/// The path text onto the system clipboard: Windows CF_UNICODETEXT / GTK clipboard text — the native
+/// channel the file copy (Ctrl+C) already uses, needing no capability and no secure web origin
+/// (issue #148: the web `navigator.clipboard` is unavailable on Tauri's custom-scheme origins).
+#[tauri::command]
+fn copy_text(window: tauri::WebviewWindow, text: String) -> Result<(), String> {
+    clipboard::copy_text(&window, &text).inspect_err(|error| eprintln!("digup-shell: can't copy text: {error}"))
+}
+
+/// The path inside the search folder that contains it — the longest match wins (a folder inside
+/// another listed one); compared case-insensitively, as Windows spells folders; `/` shown. None when
+/// no root holds it (then the caller copies the absolute path) — and when it *is* a root itself,
+/// where there is no shorter spelling left. A root spelled `/` (searching the whole Unix filesystem)
+/// holds every absolute path.
+fn relative_path(path: &str, roots: &[String]) -> Option<String> {
+    let shown = path.replace('\\', "/");
+    roots
+        .iter()
+        .map(|root| {
+            let stem = root.replace('\\', "/");
+            let stem = stem.trim_end_matches('/'); // any number of trailing separators: "C:\Initial\"
+            let hit = if stem.is_empty() {
+                usize::from(shown.starts_with('/')) // the root "/" — the trimmed stem matches by prefix
+            } else if shown == stem {
+                stem.len()
+            } else if shown.len() > stem.len()
+                && shown.as_bytes()[stem.len()] == b'/'
+                && shown[..stem.len()].eq_ignore_ascii_case(stem)
+            {
+                stem.len()
+            } else {
+                0
+            };
+            (hit, stem.len())
+        })
+        .filter(|(hit, _)| *hit > 0)
+        .max_by_key(|(hit, _)| *hit)
+        .and_then(|(_, stem_len)| {
+            let rest = shown[stem_len..].trim_start_matches('/').to_string();
+            (!rest.is_empty()).then_some(rest)
+        })
+}
+
 /// A result dragged out of the window (to a file manager, a mail, a chat) on Windows and the Mac: the system's own drag
 /// of the file, with its thumbnail (`icon`, a picture already rendered) or DigUp's icon under the pointer, started while
 /// the button is down. On Linux the page drags it itself (WebKit's drag starts from the press, as Wayland wants).
@@ -652,7 +703,7 @@ fn main() {
             panel_area, settings_info, set_open_at_login, set_center_panel, set_processor_only, debug_query, debug_report, window_info,
             app_state, open_window, open_settings, choose_folders, index_now, quit_app, close_window, pause_indexing,
             remove_folder, set_skipped, set_skip_types, set_index_hours, code_setup_info, set_code_folders, choose_code_folders,
-            remove_code_folder, turn_off_code, set_code_editor, window_resized, copy_file, drag_out, set_hotkey, hold_hotkey,
+            remove_code_folder, turn_off_code, set_code_editor, window_resized, copy_file, relative_path_text, copy_text, drag_out, set_hotkey, hold_hotkey,
             set_tray_click, check_for_updates, offer_update, set_update_checks, open_licenses
         ])
         .build(tauri::generate_context!())
@@ -1051,7 +1102,9 @@ fn show_panel(app: &AppHandle) {
     }
     let _ = panel.show();
     let _ = panel.set_focus();
-    let _ = panel.emit("panel-shown", ());
+    // The folders travel with the event: the panel's relative-path copy (issue #148) needs the shell's
+    // current list, and a panel page never asks for one.
+    let _ = panel.emit("panel-shown", app.state::<Arc<Shell>>().inner().folders());
     if cfg!(debug_assertions) {
         println!("panel: shown");
     }
@@ -2014,6 +2067,36 @@ fn reload(app: &AppHandle, now: bool) {
             println!("search: reload {reply:?}");
         }
     });
+}
+
+#[cfg(test)]
+mod copy_path_tests {
+    use super::relative_path;
+
+    /// Issue #148's shapes: the folder that contains the file, the longest when folders nest;
+    /// Windows' backslashes spelled as `/`; case-insensitive as Windows spells them; no root, the
+    /// file outside every root, and the root itself give nothing (the callers copy absolute then).
+    #[test]
+    fn relative_to_the_search_folder_that_contains_it() {
+        assert_eq!(relative_path("/home/me/Pics/a/b.png", &["/home/me/Pics".into()]),
+                   Some("a/b.png".into()));
+        assert_eq!(relative_path("C:\\Initial\\Secret\\note.md", &["C:\\Initial\\".into()]),
+                   Some("Secret/note.md".into()));
+        assert_eq!(relative_path("/home/me/Pics/a.png", &["/home/me".into(), "/home/me/Pics".into()]),
+                   Some("a.png".into()));   // the longest folder wins
+        assert_eq!(relative_path("/HOME/me/Pics/a.png", &["/home/Me/Pics/".into()]),
+                   Some("a.png".into()));  // Windows' spelling
+        assert_eq!(relative_path("/home/me/Else/a.png", &["/home/me/Pics".into()]), None);
+        assert_eq!(relative_path("/home/me/Pics", &["/home/me/Pics".into()]), None);   // the root itself
+        assert_eq!(relative_path("/home/me/Pics/a.png", &[]), None);
+        // Review cases: the root spelled "/" holds every absolute path (the longest-folder rule
+        // still picks a deeper folder first), and a root with trailing separators — one or many.
+        assert_eq!(relative_path("/home/me/Pics/a.png", &["/".into()]), Some("home/me/Pics/a.png".into()));
+        assert_eq!(relative_path("/home/me/Pics/a.png", &["/".into(), "/home/me".into()]), Some("Pics/a.png".into()));
+        assert_eq!(relative_path("/", &["/".into()]), None);
+        assert_eq!(relative_path("C:\\Initial\\Secret\\note.md", &["C:\\Initial\\\\".into()]),
+                   Some("Secret/note.md".into()));   // two trailing separators
+    }
 }
 
 #[cfg(test)]

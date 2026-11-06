@@ -122,10 +122,10 @@ struct SearchPanelView: View {
         let row = controller.selectedRow
         if let row, row.kind == .code {
             let line = row.segment == .lines ? " at line \(row.codeLine)" : ""
-            return "↩ \(row.openTitle)\(line)   ⌘↩ Reveal   ␣ Quick Look   ⌘C Copy"
+            return "↩ \(row.openTitle)\(line)   ⌘↩ Reveal   ␣ Quick Look   ⌘C Copy   ⌘⇧C Path"
         }
         let place = row?.jump.map { " at \($0)" } ?? ""
-        return "↩ \(row?.openTitle ?? "Open")   ⌘↩ Reveal   ␣ Quick Look\(place)   ⌘C Copy"
+        return "↩ \(row?.openTitle ?? "Open")   ⌘↩ Reveal   ␣ Quick Look\(place)   ⌘C Copy   ⌘⇧C Path"
     }
 
     private var statusText: String {
@@ -163,6 +163,7 @@ private struct ResultList: View {
                             PanelRow(row: row, selected: row.id == controller.selection)
                                 .id(row.id)
                                 .overlay(FileDragArea(url: row.url, openTitle: row.openTitle,
+                                                      searchFolders: controller.searchFolderPaths,
                                                       onClick: { controller.select(row) },
                                                       onOpen: {
                                                           controller.select(row)
@@ -195,6 +196,7 @@ private struct ResultList: View {
                                     .id(row.id)
                                     .opacity(0.85)
                                     .overlay(FileDragArea(url: row.url, openTitle: row.openTitle,
+                                                          searchFolders: controller.searchFolderPaths,
                                                           onClick: { controller.select(row) },
                                                           onOpen: {
                                                               controller.select(row)
@@ -430,6 +432,10 @@ struct FileDragArea: NSViewRepresentable {
     let url: URL
     /// "Open at 0:06": what double-click and the menu's first item do.
     var openTitle = "Open"
+    /// The search folders' paths: the menu's "Copy Relative Path" (issue #148) makes its spelling
+    /// against the longest one that contains the file; with none (the window rows pass no folders
+    /// today) the line is not offered.
+    var searchFolders: [String] = []
     let onClick: () -> Void
     let onOpen: () -> Void
 
@@ -438,6 +444,7 @@ struct FileDragArea: NSViewRepresentable {
     func updateNSView(_ view: FileDragView, context: Context) {
         view.url = url
         view.openTitle = openTitle
+        view.searchFolders = searchFolders
         view.onClick = onClick
         view.onOpen = onOpen
     }
@@ -446,6 +453,7 @@ struct FileDragArea: NSViewRepresentable {
 final class FileDragView: NSView, NSDraggingSource {
     var url: URL?
     var openTitle = "Open"
+    var searchFolders: [String] = []
     var onClick: () -> Void = {}
     var onOpen: () -> Void = {}
     private var mouseDownEvent: NSEvent?
@@ -497,7 +505,42 @@ final class FileDragView: NSView, NSDraggingSource {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(url.path, forType: .string)
         })
+        if !searchFolders.isEmpty {
+            // Window rows don't thread their folders (only the panel's pass controller.searchFolderPaths
+            // today), and with no folders the relative line only echoes the absolute path under a
+            // relative label — so it is offered where folders are known, not promised everywhere.
+            menu.addItem(ActionMenuItem("Copy Relative Path") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(Self.relativeSpelling(of: url.path, folders: self.searchFolders), forType: .string)
+            })
+        }
         return menu
+    }
+
+    /// The file's path inside the search folder that contains it — the longest when folders nest,
+    /// case-insensitive (issue #148, mirroring the shell's `relative_path`; the shell compares ASCII
+    /// as Windows spells folders, here the whole alphabet — a Mac folder in any script gets its
+    /// relative spelling too). Trailing separators are trimmed, any number; a root spelled `/`
+    /// holds every absolute path. Outside every folder, absolute.
+    static func relativeSpelling(of path: String, folders: [String]) -> String {
+        let shown = path.replacingOccurrences(of: "\\", with: "/")
+        let stems = folders.map { folder in
+            var stem = folder.replacingOccurrences(of: "\\", with: "/")
+            while stem.hasSuffix("/") && stem != "/" { stem = String(stem.dropLast()) }
+            return stem == "/" ? "" : stem   // the root "/": everything absolute sits under it
+        }
+        let holding = stems
+            .filter { stem in
+                stem.isEmpty ? shown.hasPrefix("/")
+                    : (shown == stem
+                        || (shown.count > stem.count
+                            && shown[shown.index(shown.startIndex, offsetBy: stem.count)] == "/"
+                            && shown.prefix(stem.count).caseInsensitiveCompare(stem) == .orderedSame))
+            }
+            .max { $0.count < $1.count }
+        guard let stem = holding else { return path }
+        let rest = shown.dropFirst(stem.count).drop(while: { $0 == "/" })
+        return rest.isEmpty ? path : String(rest)
     }
 
     func draggingSession(_ session: NSDraggingSession,

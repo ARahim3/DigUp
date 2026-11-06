@@ -380,7 +380,8 @@ function wire(item, hit) {
       [`Show in ${FILE_MANAGER}`, () => reveal(hit)],
       null,
       ["Copy", () => invoke("copy_file", { path: hit.path }).catch(failed)],
-      ["Copy Path", () => navigator.clipboard.writeText(hit.path).catch(() => {})],
+      ["Copy Path", () => navigator.clipboard.writeText(hit.path).catch(failed)],
+      ["Copy Relative Path", () => copyPathText({ preventDefault: () => {} }, hit, true, false)],
     ]);
   };
 }
@@ -1001,6 +1002,16 @@ document.addEventListener("keydown", (event) => {
     event.preventDefault();
     hideMenu();
     return;
+  }
+  if (modifier && event.shiftKey && !event.altKey) {
+    // Ctrl+Shift+C / Ctrl+Shift+R on a result: its path as text, absolute or inside its search folder
+    // (issue #148). Text selected in the field/page keeps its own copy — copyPathText declines then.
+    const key = event.key.toLowerCase();
+    if (key === "c" || key === "r") {
+      copyPathText(event, state.hasResults && state.query.trim() ? selectedHit() : null,
+                   state.navigated, key === "c");
+      return;
+    }
   }
   if (modifier && !event.altKey && !event.shiftKey) {
     const number = Number(event.key);

@@ -42,6 +42,8 @@ const state = {
   error: null,
   indexing: null,        // {done, total} while the index helper works through new files
   caveat: null,          // why results may be incomplete right now (the shell's status.rs)
+  info: { folders: [] }, // the shell's search folders, fresh with every panel-shown: the
+                         // relative-path copy (results.js) spells paths against these
 };
 let debugPending = false;
 
@@ -481,8 +483,15 @@ document.addEventListener("keydown", (event) => {
       break;
     case "c":
     case "C":
-      if (!modifier || event.altKey || event.shiftKey || state.selection === WEAKER) return;
+      if (!modifier || event.altKey) return;
+      if (event.shiftKey) { copyPathText(event, selectedHit(), state.navigated, true); return; }
+      if (state.selection === WEAKER) return;
       copyResult(event, selectedHit(), state.navigated);
+      break;
+    case "r":
+    case "R":
+      if (!modifier || event.altKey || !event.shiftKey) return;
+      copyPathText(event, selectedHit(), state.navigated, false);
       break;
     case "o":
     case "O":
@@ -493,7 +502,10 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-tauri.event.listen("panel-shown", () => {
+tauri.event.listen("panel-shown", ({ payload }) => {
+  // The shell's current search folders ride along (issue #148: Ctrl+Shift+R copies a path relative to
+  // them; showing the panel is as good a moment as any to have them be current).
+  if (Array.isArray(payload)) state.info.folders = payload;
   closeBig();
   // Like Spotlight: the last query, selected.
   $query.focus();
