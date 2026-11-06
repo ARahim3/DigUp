@@ -253,6 +253,62 @@ fn folder_arguments(settings: &Settings, code_folders: &[String]) -> Vec<String>
     args
 }
 
+/// The search helper's launch arguments: the index, the current folders' exclusions and code
+/// folders, and the folders themselves last. `setup` makes them from the settings at startup, and
+/// `apply_folders` rebuilds them on every change, so a helper starting after an idle exit searches
+/// what Settings shows — not what was current when the app launched (issue #170: the saved startup
+/// list was replayed, and folders added during the session dropped out of the helper's scope, its
+/// summaries, and the search result filter).
+fn search_arguments(index: Option<&Path>, settings: &Settings, code_folders: &[String], roots: &[String]) -> Vec<String> {
+    let mut args = vec!["search-service".to_string()];
+    if let Some(index) = index {
+        args.extend(["--index".to_string(), index.display().to_string()]);
+    }
+    args.extend(folder_arguments(settings, code_folders));
+    args.extend(roots.iter().cloned());
+    args
+}
+
+#[cfg(test)]
+mod search_launch_tests {
+    use super::*;
+
+    fn settings() -> Settings {
+        Settings {
+            folders: vec!["C:\\Initial".into(), "E:\\AddedExternal".into()],
+            skipped: vec!["C:\\Initial\\Secret".into()],
+            skip_types: vec!["tmp".into()],
+            code_folders: vec!["D:\\code".into()],
+            code_skipped: vec!["D:\\code\\vendor".into()],
+            ..Settings::default()
+        }
+    }
+
+    /// The exact shape #170 lost: a helper restarted from saved arguments must carry the folders
+    /// added during the session, their exclusions, and the code folders — the same list setup
+    /// would build if the app started now.
+    #[test]
+    fn search_arguments_carry_the_current_folders() {
+        let s = settings();
+        let args = search_arguments(Some(Path::new("C:\\digup-index")), &s, &s.code_folders, &s.folders);
+        let joined = args.join("|");
+        assert_eq!(args.first().unwrap(), "search-service");
+        assert!(joined.contains("--index|C:\\digup-index"), "{joined}");
+        assert!(joined.contains("--exclude|C:\\Initial\\Secret"), "{joined}");
+        assert!(joined.contains("--exclude-ext|tmp"), "{joined}");
+        assert!(joined.contains("--code-root|D:\\code"), "{joined}");
+        assert!(joined.contains("--code-exclude|D:\\code\\vendor"), "{joined}");
+        assert_eq!(args[args.len() - 2..], ["C:\\Initial", "E:\\AddedExternal"]);
+    }
+
+    #[test]
+    fn search_arguments_without_an_index_folder() {
+        let s = Settings { folders: vec!["/home/me/Pictures".into()], ..Settings::default() };
+        let args = search_arguments(None, &s, &[], &s.folders);
+        assert_eq!(args, ["search-service", "/home/me/Pictures"]);
+    }
+}
+
 // MARK: Commands
 
 /// The panel's and the window's questions for `search-service`.
@@ -693,10 +749,7 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
     } else {
         options.code_roots.iter().map(|root| root.display().to_string()).collect()
     };
-    let mut search_args = vec!["search-service".to_string()];
-    search_args.extend(options.index.iter().flat_map(|index| ["--index".to_string(), index.display().to_string()]));
-    search_args.extend(folder_arguments(&settings, &code_folders));
-    search_args.extend(roots);
+    let search_args = search_arguments(options.index.as_deref(), &settings, &code_folders, &roots);
     let search = SearchService::new(
         Launch {
             program: options.helper.clone(),
@@ -855,12 +908,23 @@ fn apply_folders(app: &AppHandle) {
     for folder in &folders {
         let _ = app.asset_protocol_scope().allow_directory(folder, true);
     }
-    let request = folders_request(&shell);
+    send_folders_request(&shell);
+    watch_folders(app);
+}
+
+/// Tell the running search helper the current folders, and save the same list as the launch
+/// arguments of the next helper to start: the running one takes the request; the one that starts
+/// after an idle exit takes the arguments — which used to stay the app's startup list, losing
+/// folders added during the session from its scope, its summaries and the search filter (#170).
+fn send_folders_request(shell: &Arc<Shell>) {
+    let (roots, code) = (shell.folders(), shell.code_folders());
+    let settings = shell.settings.lock().unwrap().clone();
+    shell.search.set_launch_args(search_arguments(shell.options.index.as_deref(), &settings, &code, &roots));
+    let request = folders_request(shell);
     let search = shell.clone();
     tauri::async_runtime::spawn(async move {
         let _ = search.search.ask(request).await;
     });
-    watch_folders(app);
 }
 
 /// The search service's "folders": what it searches (without code folders, it closes the code index).
@@ -1416,6 +1480,11 @@ fn turn_off_code(app: AppHandle, shell: State<'_, Arc<Shell>>) -> Result<(), Str
         settings.save(&shell.settings_path).map_err(|error| format!("can't save the settings: {error}"))?;
     }
     let shell = shell.inner().clone();
+    // The saved launch arguments follow the cleared code folders too: a restarted helper must
+    // not reopen the code index the person just turned off (#170's mechanism, same staleness).
+    let (roots, code) = (shell.folders(), shell.code_folders());
+    let settings = shell.settings.lock().unwrap().clone();
+    shell.search.set_launch_args(search_arguments(shell.options.index.as_deref(), &settings, &code, &roots));
     let request = folders_request(&shell);
     tauri::async_runtime::spawn(async move {
         let _ = shell.search.ask(request).await;

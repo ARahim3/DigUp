@@ -113,7 +113,10 @@ fn reap(child: &mut Child) -> Option<i32> {
 
 /// `digup search-service`: started on the first request, and again after it died.
 pub struct SearchService {
-    launch: Launch,
+    /// How to start it. `setup` makes the arguments from the settings at startup; `apply_folders`
+    /// rebuilds them when the folders change, so a helper that starts after an idle exit searches
+    /// what Settings shows, not what was current when the app launched (issue #170).
+    launch: Mutex<Launch>,
     running: Arc<Mutex<Option<Searching>>>,
     next_id: AtomicU64,
     on_event: EventSink,
@@ -130,11 +133,18 @@ struct Searching {
 impl SearchService {
     pub fn new(launch: Launch, on_event: impl Fn(Value) + Send + Sync + 'static) -> SearchService {
         SearchService {
-            launch,
+            launch: Mutex::new(launch),
             running: Arc::default(),
             next_id: AtomicU64::new(1),
             on_event: Arc::new(on_event),
         }
+    }
+
+    /// The arguments for the next helper to start (folders, exclusions, code folders): kept current
+    /// by `apply_folders`. A running helper gets the live `folders` request; this is for the one
+    /// that starts when the running one exits by itself (issue #170).
+    pub fn set_launch_args(&self, args: Vec<String>) {
+        self.launch.lock().unwrap().args = args;
     }
 
     /// Sends a request and waits for its reply.
@@ -171,7 +181,12 @@ impl SearchService {
     }
 
     fn start(&self) -> Result<Searching, String> {
-        let (child, stdin, stdout) = self.launch.spawn()?;
+        // Snapshot the arguments, then spawn outside the lock: the mutex guard of a chained
+        // `.clone().spawn()` lives to the end of the statement, which would hold the launch
+        // mutex across fork/exec (hundreds of ms with Windows AV scanning) and stall
+        // `set_launch_args` while a helper is being born.
+        let launch = self.launch.lock().unwrap().clone();
+        let (child, stdin, stdout) = launch.spawn()?;
         let number = STARTED.fetch_add(1, Ordering::Relaxed);
         let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>> = Arc::default();
         let (replies, on_event, slot) = (pending.clone(), self.on_event.clone(), self.running.clone());
