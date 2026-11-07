@@ -2,6 +2,60 @@
 
 One document, kept current (docs/implementation/README.md §10). Newest first.
 
+## 2026-11-07 — Stage 12 field pilot green: Nextcloud 28 + DigUp server, one box, ACL measured
+
+**Stack (ai-ubuntu-computer, measured numbers):** `nextcloud:28-apache` (loopback :8090) +
+`digup-server:local` (loopback :8791), compose project `digup-server-nextcloud`; corpus2
+fixtures only (36 photos under three users, 25 planted junk copies inside
+`appdata_<instanceid>`), public content, no personal data anywhere in the run.
+
+Gates, in the order `docs/implementation/stage-12-integrations.md` lists them:
+
+- **Junk exclusion:** `POST /estimate` (admin token) → 37 indexable of the mounted tree
+  (36 images + 1 document; appdata and the skeleton seeds counted 0, `left_out: 2`) — after
+  the fix that matters: `estimate_argv` now carries the job's `--exclude` flags (an estimate
+  without them promised 120 files against a 36-file job; pinned by a new suite test).
+- **Index:** job `736362e4a1c0` `done` in 40 s → 45 searchable, 45 vectors, 1 failed file
+  (the engine's own counts, relayed).
+- **Search:** five queries, 3 hits / 3 strong each, 12.9–28.6 ms.
+- **Token scopes:** tokenless search 401; read-token index/estimate 403; admin estimate 200;
+  health 200; principal log lines land (`principal=nextcloud`, `principal=admin`) — after
+  the audit logger got its own stdout handler (uvicorn's config leaves application loggers
+  handlerless).
+- **App ACL (the §11.1 boundary, over the app's own API, session-authenticated):** alice 3
+  dog hits (own), bob 3 office hits (own), carol 1 tabby (own); **shared files map**: bob
+  1 shared dog hit, alice 1 shared office hit (recipient-view paths); carol 0 for dogs /
+  office; bob 0 leakage on the office-desk keyword that names alice's tree. Preview of a
+  mapped hit serves `image/jpeg` to the recipient; the same file id answered **404** for a
+  user it was not shared with (core's own check, not ours).
+- **App surfaces:** page 200 with the top-bar entry in core's app state; admin settings
+  section + form render (non-admin 403 on both the form and the save route); Test
+  connection answers 200 with the engine's live counts (46 files, 45 searchable, 45 vectors,
+  build_tag b11461); the token appears in **no** page or settings HTML.
+- **Read-only contract:** 36/36 user files byte-identical to the pre-pilot baseline
+  (`sha256 -c`); the only changed tree content is Nextcloud's own preview cache under
+  `appdata_*`; the DB diff over `oc_appconfig` is appconfig rows only
+  (`enabled`, `installed_version`, `types`, four app keys) — no new tables, no file writes
+  (source grep: no Filesystem/DB/write API in `lib/`).
+- **Restart/stop:** `docker restart` (Nextcloud) and stop/start (server, `stop_grace_period
+  90s`) survive: exit **143** + `Application shutdown complete`, health 200 after, search +
+  preview green post-restart.
+
+**Suite with the two fixes: 117 passed, 1 deselected, 0 skipped, 111.09 s** (the new
+estimate-argv test included; the deselected test remains the `-m slow` timing run).
+
+Measured Nextcloud 28 facts (the app repo documents them): the bootable class is
+`OCA\<ns>\AppInfo\Application` (a class elsewhere never boots); section/setting registration
+goes through `IManager::registerSection/registerSetting` at boot (the info.xml `<settings>`
+map is not read); the public section interface is `IIconSection`; page and form responses are
+`TemplateResponse` (`AppTemplate` and `OCP\AppFramework\Template` do not exist at 28);
+`getSharedWith`'s recipient list crashes on a non-null node (limit `-1`, node `null`);
+`IShare::getTarget()` is the source path, not a recipient-view path (the mapping reads the
+share's node id out of the asking user's view root); `Node::getRelativePath()` is not in the
+Node API; the SSRF guard's per-request flag is inert on 28 for app requests —
+`allow_local_servers => true` in config.php is the deployment shape (the app's probe detail
+says so); the core preview route is `/core/preview.php?fileId=…`.
+
 ## 2026-11-05 — 1.8M-tree bench run COMPLETE: 131,972-file library indexed, job record `done`
 
 **LAN opt-in shape added + field-proven (same day):** `deploy/docker-compose.lan.yml`

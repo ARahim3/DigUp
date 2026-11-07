@@ -73,7 +73,15 @@ class EngineConfig:
         # children, never through a PID-1 shell wrapper — so the JSON path is the right one
         # here. (The Stage-2 "silent estimate --json" report was exactly this: a script
         # running as PID 1. ParentWatch working as designed; reconnaissance §15 item 8.)
-        return [self.binary, "estimate", *self.roots, "--index", self.index, "--json"]
+        # The excludes ride along (stage-12 §11.3, measured on the Nextcloud pilot): the
+        # forecast must describe the tree the indexer WOULD walk — an estimate counting the
+        # folders the job will exclude is a forecast of work nobody will do.
+        argv = [self.binary, "estimate", *self.roots, "--index", self.index]
+        if self.excluded:
+            argv += sum([["--exclude", p] for p in self.excluded], [])
+        if self.excluded_extensions:
+            argv += ["--exclude-ext", ",".join(self.excluded_extensions)]
+        return argv + ["--json"]
 
     def speed_argv(self, *, when_quiet_s: float = 5.0, tries: int = 3) -> list[str]:
         return [self.binary, "speed", "--model", "--json", "--when-quiet", f"{when_quiet_s:g}",

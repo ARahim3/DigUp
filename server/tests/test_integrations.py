@@ -257,6 +257,23 @@ def test_the_embed_widget_uses_the_published_api_and_hides_the_token():
 
 # ── the token map over the REAL API + engine: what the Nextcloud app's calls do ──────────
 
+def test_estimate_argv_carries_the_excludes_the_job_will_honour():
+    """Stage-12 §11.3, measured on the Nextcloud pilot: the forecast must describe the
+    tree the indexer WOULD walk. An estimate that counted the folders the job excludes
+    promised work nobody will do (the pilot counted 120 with 36 real files)."""
+    from digup_server.engine import EngineConfig
+    cfg = EngineConfig(index="/idx", roots=("/media/photos",), excluded=("/media/photos/appdata_x",),
+                       excluded_extensions=("heic",))
+    argv = cfg.estimate_argv()
+    assert argv[:3] == ["digup", "estimate", "/media/photos"]
+    assert argv.count("--exclude") == 1 and "--exclude" in argv
+    assert argv[argv.index("--exclude") + 1] == "/media/photos/appdata_x"
+    assert argv[argv.index("--exclude-ext") + 1] == "heic"
+    assert argv[-1] == "--json"
+    plain = EngineConfig(index="/idx", roots=("/r",)).estimate_argv()
+    assert "--exclude" not in plain and "--exclude-ext" not in plain   # knobs inert when unset
+
+
 def test_the_map_protects_the_real_api_end_to_end(corpus, index, monkeypatch):
     from conftest import _cfg
     from digup_server.api import create_app

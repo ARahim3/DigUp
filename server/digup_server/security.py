@@ -28,10 +28,20 @@ from __future__ import annotations
 import hmac
 import json
 import logging
+import sys
 from dataclasses import dataclass, field
 from typing import Iterable
 
 PRINCIPAL_LOG = logging.getLogger("digup.auth")
+# uvicorn's logging config configures only `uvicorn.*` loggers: an application logger's INFO
+# records die with no handler attached anywhere. The audit line is the feature, so the module
+# carries its own handler (stdout — the container log). Propagation stays on (the suite's
+# caplog reads through the root), and setLevel opens INFO for the audit lines.
+if not PRINCIPAL_LOG.handlers:
+    _handler = logging.StreamHandler(sys.stdout)
+    _handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S"))
+    PRINCIPAL_LOG.addHandler(_handler)
+PRINCIPAL_LOG.setLevel(logging.INFO)
 
 STATE_CHANGING = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
