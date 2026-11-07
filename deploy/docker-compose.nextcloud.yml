@@ -155,6 +155,9 @@ services:
       # moving it — the mount is read-only in Nextcloud's own configuration too
       # (files_external readonly), and the DigUp server binds the SAME host folder.
       - ${DIGUP_NEXTCLOUD_EXTSTORAGE:-./data/nextcloud/extstorage}:/extstorage:ro
+      # Official-image before-starting hook (see the script): grants www-data the
+      # tree's group inside the CONTAINER, so the apache worker can read the bind.
+      - ${DIGUP_NEXTCLOUD_EXTSTORAGE_HOOK:-./nextcloud-hooks/extstorage-group.sh}:/docker-entrypoint-hooks.d/before-starting/extstorage-group.sh:ro
 
   server:
     build:
