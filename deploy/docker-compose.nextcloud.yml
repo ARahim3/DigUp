@@ -89,6 +89,13 @@
 # Nextcloud's SSRF firewall: PHP requests to private addresses (this compose network) are
 # blocked by Nextcloud's firewall by default — the app README documents the config.php
 # line `'allow_local_servers' => true`; the config volume below keeps it persistent.
+#
+# LAN exposure of Nextcloud's web port (opt-in): `docker-compose.nextcloud.lan.yml`
+# appends a LAN host binding for the nextcloud service (the API stays loopback: the app
+# reaches it inside the compose network). The hostname your LAN DNS resolves to must be
+# in DIGUP_NEXTCLOUD_TRUSTED_DOMAINS — the official image applies that env only at FIRST
+# INSTALL (measured 2026-11-07), so on an installed stack add it with
+# `php occ config:system:set trusted_domains <n> --value=<host>`.
 
 name: digup-server-nextcloud
 

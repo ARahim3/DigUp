@@ -1,0 +1,26 @@
+# ── Opt-in LAN exposure for the Nextcloud + DigUp stack ──────────────────────────────
+# Appends a SECOND host binding for the NEXTCLOUD web port (the DigUp API stays
+# loopback-only: the app reaches it server-to-server inside the compose network).
+# The base file's 127.0.0.1 binding stays in place (compose merges `ports` lists), so
+# local use never breaks. The address is REQUIRED, set per run:
+#
+#   DIGUP_LAN_BIND=192.0.2.10 DIGUP_NEXTCLOUD_TRUSTED_DOMAINS="127.0.0.1 localhost \
+#   nextcloud nc.example.lan" \
+#   docker compose -f docker-compose.nextcloud.yml -f docker-compose.nextcloud.lan.yml \
+#     --profile dav up -d
+#
+# The hostname your LAN DNS resolves to (here: nc.example.lan) must be in
+# DIGUP_NEXTCLOUD_TRUSTED_DOMAINS — Nextcloud answers untrusted Host headers with 400
+# "Remote Address (…): Not Trusted" (measured). Wildcards are refused by core.
+#
+# Same honesty note as docker-compose.lan.yml: this exposes Nextcloud's OWN login —
+# every device on the network can reach the Nextcloud login page (and through the app,
+# the searches of the users who log in there). Home LAN use is what this file is for;
+# on a network you do not own, put TLS + hardening in front instead.
+#
+# DIGUP_NEXTCLOUD_PUBLISH_PORT moves the port; the LAN binding follows it (the
+# container always binds 80 internally).
+services:
+  nextcloud:
+    ports:
+      - "${DIGUP_LAN_BIND:?opt-in by design — the host's own LAN address (ip -4 route get 8.8.8.8); Nextcloud keeps its own login in front, see the header}:${DIGUP_NEXTCLOUD_PUBLISH_PORT:-8081}:80"

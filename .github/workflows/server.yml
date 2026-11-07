@@ -246,6 +246,15 @@ jobs:
           DIGUP_NEXTCLOUD_ADMIN_PASSWORD=ci-secret DIGUP_NEXTCLOUD_INSTANCE_ID=octciexampleid \
           DIGUP_NEXTCLOUD_READ_TOKEN=ci-read-token DIGUP_SERVER_ADMIN_TOKEN=ci-admin-token \
           DIGUP_LAN_BIND=192.0.2.1 docker compose -f docker-compose.nextcloud.yml -f docker-compose.lan.yml config --quiet
+          # …and the LAN overlay of the NEXTCLOUD web port itself (docker-compose.
+          # nextcloud.lan.yml: the app reaches the API inside the compose network, so
+          # only the nextcloud service gains the LAN binding; trusted domains are an
+          # env/operator concern, documented in the overlay header).
+          DIGUP_NEXTCLOUD_DATA=/srv/nextcloud/data DIGUP_NEXTCLOUD_ADMIN_USER=ci-admin \
+          DIGUP_NEXTCLOUD_ADMIN_PASSWORD=ci-secret DIGUP_NEXTCLOUD_INSTANCE_ID=octciexampleid \
+          DIGUP_NEXTCLOUD_READ_TOKEN=ci-read-token DIGUP_SERVER_ADMIN_TOKEN=ci-admin-token \
+          DIGUP_NEXTCLOUD_PUBLISH_PORT=8081 DIGUP_LAN_BIND=192.0.2.1 \
+          docker compose -f docker-compose.nextcloud.yml -f docker-compose.nextcloud.lan.yml config --quiet
           # The WebDAV shape (§11.7): per-user davfs2 mounts as the media tree, env-only —
           # the instance id is NOT required (appdata is not in any user's dav view, the
           # composed exclusion is a no-op), the index layout is its own folder, and the
