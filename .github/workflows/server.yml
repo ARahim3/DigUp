@@ -246,6 +246,26 @@ jobs:
           DIGUP_NEXTCLOUD_ADMIN_PASSWORD=ci-secret DIGUP_NEXTCLOUD_INSTANCE_ID=octciexampleid \
           DIGUP_NEXTCLOUD_READ_TOKEN=ci-read-token DIGUP_SERVER_ADMIN_TOKEN=ci-admin-token \
           DIGUP_LAN_BIND=192.0.2.1 docker compose -f docker-compose.nextcloud.yml -f docker-compose.lan.yml config --quiet
+          # The WebDAV shape (§11.7): per-user davfs2 mounts as the media tree, env-only —
+          # the instance id is NOT required (appdata is not in any user's dav view, the
+          # composed exclusion is a no-op), the index layout is its own folder, and the
+          # Nextcloud service keeps its own data volume untouched.
+          DIGUP_NEXTCLOUD_DATA=/srv/nextcloud/data DIGUP_NEXTCLOUD_ADMIN_USER=ci-admin \
+          DIGUP_NEXTCLOUD_ADMIN_PASSWORD=ci-secret \
+          DIGUP_NEXTCLOUD_READ_TOKEN=ci-read-token DIGUP_SERVER_ADMIN_TOKEN=ci-admin-token \
+          DIGUP_SERVER_ROOTS=/media/dav/ci-alice:/media/dav/ci-bob DIGUP_MEDIA_TARGET=/media/dav DIGUP_MEDIA_BIND=/media/dav \
+          DIGUP_NEXTCLOUD_INDEX_DIR=./data/nextcloud/index-dav \
+          docker compose -f docker-compose.nextcloud.yml config --quiet
+          # …and the same shape WITH the dav mount container (the sudo-free shape the
+          # header documents): profile + propagation + mount env, all schema-checked.
+          DIGUP_NEXTCLOUD_DATA=/srv/nextcloud/data DIGUP_NEXTCLOUD_ADMIN_USER=ci-admin \
+          DIGUP_NEXTCLOUD_ADMIN_PASSWORD=ci-secret \
+          DIGUP_NEXTCLOUD_READ_TOKEN=ci-read-token DIGUP_SERVER_ADMIN_TOKEN=ci-admin-token \
+          DIGUP_SERVER_ROOTS=/media/dav/ci-alice:/media/dav/ci-bob DIGUP_MEDIA_TARGET=/media/dav DIGUP_MEDIA_BIND=/media/dav \
+          DIGUP_MEDIA_BIND_OPTS=ro,rslave DAV_HOST_DIR=/media/dav \
+          DIGUP_NEXTCLOUD_INDEX_DIR=./data/nextcloud/index-dav \
+          NEXTCLOUD_URL=http://nextcloud DAV_USERS="ci-alice ci-bob" DAV_APPPW="ci-alice:x ci-bob:y" \
+          docker compose -f docker-compose.nextcloud.yml --profile dav config --quiet
 
       - name: The server runtime image boots, answers, serves the UI, stops cleanly
         run: |

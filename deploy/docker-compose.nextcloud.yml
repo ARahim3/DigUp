@@ -50,6 +50,42 @@
 # admin token, from the server machine. Root-scope rule (base file header): this index
 # folder belongs to this root layout; a moved mount needs one prune job.
 #
+# The WebDAV shape (stage-12 §11.7 — the per-user davfs2 deployment): instead of the raw
+# data dir, the server's roots are ONE FOLDER OF PER-USER WebDAV MOUNTS — each user's dav
+# view mounted READ-ONLY at <root>/<uid>/ — so every file under <root>/<uid>/ is, by
+# construction, in that user's own view (own files + shares; groupfolders and received
+# external shares included). The mount is the setup: with `--profile dav` this stack runs
+# a `dav` mount container (davfs2 + FUSE + mount propagation, deploy/dav/) that mounts
+# every user itself — no host mount step, no fstab, no host secrets file, no sudo:
+#
+#   NEXTCLOUD_URL=http://nextcloud  (the compose-network name; add `nextcloud` to
+#                                   DIGUP_NEXTCLOUD_TRUSTED_DOMAINS)
+#   DAV_USERS="alice bob carol"
+#   DAV_APPPW="alice:<pw> bob:<pw> carol:<pw>"   (occ user:add-app-password <user>)
+#   DIGUP_SERVER_ROOTS=/media/dav/alice:/media/dav/bob:/media/dav/carol \
+#     — ONE root per mounted user, colon-separated. Measured 2026-11-07: the engine's
+#       walk does not cross mount points, so a walk rooted AT each dav view works, while
+#       one walk through the shared parent sees zero subtrees. §11.5's multi-root list
+#       is exactly this shape.
+#   DIGUP_MEDIA_TARGET=/media/dav \
+#   DIGUP_MEDIA_BIND=$PWD/data/ncdav DIGUP_MEDIA_BIND_OPTS=ro,rslave \
+#   DAV_HOST_DIR=$PWD/data/ncdav \
+#   DIGUP_NEXTCLOUD_INDEX_DIR=./data/nextcloud/index-dav   (index folder per root layout!)
+#   (no DIGUP_NEXTCLOUD_INSTANCE_ID needed — appdata is not in any dav view)
+#   docker compose -f docker-compose.nextcloud.yml --profile dav up -d --build
+#
+# …with the app's settings in `webdav` mapping mode and the same prefix (/media/dav).
+# The server's media bind rides the propagation (rslave): the server SEES mounts appear
+# and vanish LIVE — stop/start the dav container is the whole remount procedure, no
+# server restart. The dav container is privileged (FUSE needs SYS_ADMIN + /dev/fuse,
+# the standard fuse-in-container shape); its whole job is these ro mounts, it serves
+# nothing and binds nothing else. Ghost-row rule unchanged: this root layout owns its
+# own index folder. Accepted costs (measured numbers in IMPLEMENTATION_STATUS.md):
+# shares duplicate in the index (one row per viewer-mount), davfs2 crawl latency, app
+# passwords per user. Wins: zero Nextcloud-host setup (its built-in WebDAV endpoint IS
+# the share), server-side-encryption-safe (dav serves plaintext), per-user ACL comes
+# from the mount, read-only enforced at the mount itself.
+#
 # Nextcloud's SSRF firewall: PHP requests to private addresses (this compose network) are
 # blocked by Nextcloud's firewall by default — the app README documents the config.php
 # line `'allow_local_servers' => true`; the config volume below keeps it persistent.
@@ -57,6 +93,34 @@
 name: digup-server-nextcloud
 
 services:
+  dav:
+    # The mount helper of the WebDAV shape (header + §11.7): davfs2 in a container,
+    # mounts every user's dav view at /mnt/dav/<uid> and propagates them to the host
+    # directory the server binds. Opt-in: --profile dav.
+    profiles: ["dav"]
+    build:
+      context: ./dav
+      dockerfile: Dockerfile
+    image: digup-davfs:local
+    restart: unless-stopped
+    stop_grace_period: 30s
+    privileged: true            # FUSE mount + propagation (SYS_ADMIN); mounts only, serves nothing
+    devices:
+      - /dev/fuse:/dev/fuse
+    environment:
+      # NOT `:?`-forced on purpose: compose interpolates profile-off services too, and
+      # the data-shape runs must not need dav variables. The loud gate is the entrypoint
+      # itself: with the profile ON these are required, and it fails fast naming each.
+      NEXTCLOUD_URL: "${NEXTCLOUD_URL:-}"     # in this stack: http://nextcloud
+      DAV_USERS: "${DAV_USERS:-}"             # space-separated user ids
+      DAV_APPPW: "${DAV_APPPW:-}"             # space-separated user:app-password pairs
+      DAV_UID: ${DAV_UID:-990}          # the tree's owner: the server container's user
+      DAV_GID: ${DAV_GID:-990}
+    volumes:
+      # Default = exactly the host directory the server binds (same chain, one less env
+      # var to keep in sync): dav mounts INTO what the server reads.
+      - ${DAV_HOST_DIR:-${DIGUP_MEDIA_BIND:-${DIGUP_NEXTCLOUD_DATA}}}:/mnt/dav:shared
+
   nextcloud:
     image: nextcloud:${DIGUP_NEXTCLOUD_TAG:-28-apache}
     restart: unless-stopped
@@ -88,12 +152,17 @@ services:
       - nextcloud
     environment:
       DIGUP_SERVER_INDEX: /data/index
-      DIGUP_SERVER_ROOTS: /media/photos
+      DIGUP_SERVER_ROOTS: ${DIGUP_SERVER_ROOTS:-/media/photos}
       DIGUP_SERVER_MODELS: /data/models
       DIGUP_SERVER_CONFIG: /data/config
       # The Nextcloud junk exclusion, composed from this deployment's instance id — and
-      # nothing about this file indexes copies of the users' previews.
-      DIGUP_SERVER_EXCLUDE: /media/photos/appdata_${DIGUP_NEXTCLOUD_INSTANCE_ID:?run occ config:system:get instanceid after the install and set it here — the appdata folder holds previews/thumbnails/versions}:${DIGUP_SERVER_EXTRA_EXCLUDE:-}
+      # nothing about this file indexes copies of the users' previews. The path follows
+      # DIGUP_MEDIA_TARGET so the exclusion always names the mounted tree. In the WebDAV
+      # shape (root layout `<prefix>/<uid>/…`, §11.7) appdata is NOT in any user's dav
+      # view, so the exclusion is inert there and the instance id may stay unset (the
+      # composed path points at a folder that does not exist: the engine skips nothing,
+      # no-op by the engine's exact-path rule).
+      DIGUP_SERVER_EXCLUDE: ${DIGUP_MEDIA_TARGET:-/media/photos}/appdata_${DIGUP_NEXTCLOUD_INSTANCE_ID:-}${DIGUP_SERVER_EXTRA_EXCLUDE:+:}${DIGUP_SERVER_EXTRA_EXCLUDE:-}
       DIGUP_SERVER_EXCLUDE_EXT: ${DIGUP_SERVER_EXCLUDE_EXT:-}
       # The token map (§11.2): Nextcloud's app carries the read-scope entry named
       # `nextcloud`; the operator keeps the admin token. The guard is on because a
@@ -111,4 +180,10 @@ services:
       - ${DIGUP_NEXTCLOUD_INDEX_DIR:-./data/nextcloud/index}:/data/index
       - ${DIGUP_NEXTCLOUD_MODELS_DIR:-./data/nextcloud/models}:/data/models
       - ${DIGUP_NEXTCLOUD_SERVER_CONFIG_DIR:-./data/nextcloud/server-config}:/data/config
-      - ${DIGUP_NEXTCLOUD_DATA}:/media/photos:ro
+      # The media tree the server reads, READ-ONLY: the Nextcloud data dir by default
+      # (data shape), any folder by env — the WebDAV shape binds its dav-mount parent
+      # (see the header). The target must match DIGUP_SERVER_ROOTS and the app's prefix.
+      # DIGUP_MEDIA_BIND_OPTS: the bind suffix — `ro` default; the WebDAV shape adds
+      # `,rslave` so the dav container's mounts ride the propagation and the server
+      # sees remounts live (no server restart for (re)mounts).
+      - ${DIGUP_MEDIA_BIND:-${DIGUP_NEXTCLOUD_DATA}}:${DIGUP_MEDIA_TARGET:-/media/photos}:${DIGUP_MEDIA_BIND_OPTS:-ro}

@@ -137,6 +137,58 @@ count is excluded, exactly, in the engine's own answer. Numbers land in
 * App-store packaging is a later milestone: personal install (`occ app:enable`) first,
   review process after.
 
+## §11.7 WebDAV deployment: per-user davfs2 mounts as the server's roots
+
+The user's deployment decision (2026-11-06): the share reaches the server over
+Nextcloud's **built-in WebDAV endpoint**, not over a file-server export. The user's
+follow-up (2026-11-07): **no host sudo** — the mounts must come up from the compose
+file alone. The shape that satisfies both:
+
+* The Nextcloud machine runs **nothing extra** (its `/remote.php/dav/files/<user>/` is
+  the share). On the server machine, **the compose `dav` service does the mounting**
+  (`--profile dav`, `deploy/dav/`): davfs2 in a privileged container (FUSE needs
+  `/dev/fuse` + SYS_ADMIN — the standard fuse-in-container shape), mounting each user's
+  dav view **read-only** at `/mnt/dav/<uid>/` (`ro` + `uid=990` + `0640/0750` — the
+  Nextcloud bytes are un-writable through the mount by construction, readable by the
+  server container and nobody else). Credentials ride the compose env chain
+  (`DAV_USERS`, `DAV_APPPW="user:pw …"`) into the container's root-owned 600
+  `/etc/davfs2/secrets`; per user they are **app passwords**
+  (`occ user:auth-tokens:add <user>`). `deploy/nextcloud-webdav.sh` remains the
+  documented **host-mount alternative** (fstab/automount deployments).
+* **Propagation, measured 2026-11-07**: the dav container's bind is `:shared` and the
+  server's media bind rides it `ro,rslave` (`DIGUP_MEDIA_BIND_OPTS`), so mounts appear
+  and vanish **live** in the server — stop/start the dav container is the whole remount
+  procedure, **no server restart** (measured: dav stop → estimate 0 files → dav start →
+  153 files back on the same running server process). Graceful stop unmounts through the
+  entrypoint's TERM trap. Two image facts this box measured: the mounting environment
+  needs a **passwd entry for uid 990** (davfs2 resolves the tree's owner via getpwuid —
+  "can't read user data base" otherwise), and **`buf_size 64`** in `davfs2.conf` (the
+  1.7.x read breakage on modern kernels, "reading directory: Invalid argument" —
+  Launchpad #2129131).
+* **Roots are per user** (measured 2026-11-07): the engine's walk **does not cross
+  mount points** — a walk rooted AT each dav view works, one walk through the shared
+  parent sees zero subtrees. So `DIGUP_SERVER_ROOTS=/media/dav/alice:/media/dav/bob:…`
+  — §11.5's multi-root colon list is exactly this shape.
+* **The ACL moves into the mount**: a path under `<root>/<uid>/` is, by construction, a
+  file in user `<uid>`'s own view (shares, groupfolders, received external shares,
+  virtual files included — none of these exist in the raw data dir). The app's
+  `mapping_mode=webdav` maps `<prefix>/<uid>/<rel>`: own files resolve in the asking
+  user's view root; foreign-root hits resolve in the OWNER's view root (the mount
+  mirrors it 1:1) and are confirmed by the asking user's own-view `getById` — the same
+  core ACL boundary as the data shape, with the share-list prefix test replaced by the
+  mount semantics. fileId dedup collapses the same file indexed under several viewers'
+  mounts (a share embeds once per viewer-mount — the accepted cost, measured).
+* **Why this beats NFS for this deployment**: server-side encryption survives (dav
+  serves plaintext, NFS would hand the engine ciphertext); it is internet-safe (HTTPS +
+  app passwords, no NFS export, no LAN-trust); zero privileged host setup; ACL per user
+  for free. **Its costs, stated, not hidden**: shared trees duplicate in the index and
+  in GPU time (per viewer-mount); davfs2 crawl latency; app passwords per user; the
+  crawl reads through the web server (load on the Nextcloud box). Big libraries stay on
+  the §11.5 mount shape; this is the encryption-safe/internet-safe/small-medium shape.
+* **Ghost-row rule carries over**: this root layout owns its own index folder
+  (`index-dav`); the 0-files signature (mounts down, or roots one level short) is
+  self-diagnosing — the app's Test connection says so when the server reports 0 files.
+
 ## Pilot gates (this box, measured; numbers in `IMPLEMENTATION_STATUS.md`)
 
 1. Suite: all passed, **0 skipped**, with `test_integrations.py` included (zero-skip rule).
@@ -157,3 +209,12 @@ count is excluded, exactly, in the engine's own answer. Numbers land in
    standard mechanism every Nextcloud app uses, named, not hidden.
 7. Survival: `docker compose restart` (both services) → the app still answers; graceful
    stop of the server → exit 143 with `Application shutdown complete`.
+8. **dav-container shape (2026-11-07, this box)**: `--profile dav` mounts three users'
+   dav views read-only, propagated live into the running server (153 files across
+   `/media/dav/<uid>` roots); full ACL gate battery green over dav roots (per-user hit
+   sets, shared-file hits deduped to the viewer's own path, preview 200/404 scopes,
+   token scopes 401/200/403 + admin estimate 200); mount-flap without a server restart
+   (dav stop → estimate 0 files → dav start → 153 files back); graceful stop: server
+   exit 143 + `Application shutdown complete`, dav unmount trap line, index survived
+   (post-restart search 5 hits, top z 5.0); fixture checksums identical after the whole
+   session (36/36; the only churn was Nextcloud's own appdata preview cache).
