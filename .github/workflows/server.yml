@@ -241,6 +241,7 @@ jobs:
           DIGUP_NEXTCLOUD_DATA=/srv/nextcloud/data DIGUP_NEXTCLOUD_ADMIN_USER=ci-admin \
           DIGUP_NEXTCLOUD_ADMIN_PASSWORD=ci-secret DIGUP_NEXTCLOUD_INSTANCE_ID=octciexampleid \
           DIGUP_NEXTCLOUD_READ_TOKEN=ci-read-token DIGUP_SERVER_ADMIN_TOKEN=ci-admin-token \
+          DIGUP_NEXTCLOUD_EXTSTORAGE=/srv/nextcloud/extstorage \
           docker compose -f docker-compose.nextcloud.yml config --quiet
           DIGUP_NEXTCLOUD_DATA=/srv/nextcloud/data DIGUP_NEXTCLOUD_ADMIN_USER=ci-admin \
           DIGUP_NEXTCLOUD_ADMIN_PASSWORD=ci-secret DIGUP_NEXTCLOUD_INSTANCE_ID=octciexampleid \
