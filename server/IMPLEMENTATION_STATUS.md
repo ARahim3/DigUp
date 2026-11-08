@@ -172,7 +172,40 @@ full flow gate (minted file 0600, unkeyed 401, app key → target `nextcloud` ro
 403 rotate by app key, tokens file 0600 carrying exactly the new values, media untouched
 (0), app search after rotate 3 hits all under `/media/app`; served UI markup carries the
 new sections (`appkeys`, `targets`, `keys-regenerate` present, main-page `statusline`
-absent).
+absent). The bench stack (:8787, the real tree) rebuilt on the same CUDA image (11.8.0-devel
+base, `CUDA_ARCHS=61`, `SWIFT_TESTS=0`, engine layer cache hit) and recreated on the full
+chain: index intact (131,972 files / 131,758 searchable / 403,831 vectors / pending 0),
+contract unchanged (tokenless 401, read-token index 403, admin search 200), 10/10 queries
+10 hits + 10 strong at 0.83–1.09 s (top_z 2.86–7.14), and stage 13 inert on an env-keyed
+standalone: no keys file minted, `targets` shows `media 131,972`, `GET /tokens` 200 with no
+value echoed, `POST /tokens` 400.
+
+**Round 2 (same day, the user's live test of :8787 and :8090): the minted shape opens the
+main index's reads; the gear's API key section is Copy + Regenerate only.** The user's test
+hit the guarded shape (`status unavailable` nag on the main page) and the gear's paste field
+bothered them — the brief: the standalone app searches with no key, keys exist for the
+applications. The bearer gate now distinguishes the sources: keys the deployment TYPED in its
+environment keep guarding every call (test_security's shape, untouched); keys the server MINTED
+guard the index operations, the keys surface, and each application's own index — the main
+index's reads (status/search/status targets/embed_ahead) answer key-less on the operator's box.
+The media-id side is scoped with it: a handle owned by an application's roots answers `403` to
+the open principal and `200` to that application's key (preview/text/file). The gear's section
+lost the paste field, Save, Clear: rows = label | value | Copy in a uniform grid (one row
+height, equal padding/border, ellipsis-clipped key text, Copy carries the whole value), plus
+Regenerate; the browser adopts its admin key on Regenerate. The app got the matching shape
+(0.4.2): the preview pane's `display: flex` out-specified `[hidden]` — the pane, its bar
+(‹ ›, ✕, Open-in-Files) and the border rendered on the empty page and ✕ "did nothing";
+`#digup-detail[hidden] { display: none; }` (the line the lightbox already had) fixes all
+three complaints at once. Measured: suite run 14 — **135 passed / 1 deselected / 0 failed /
+0 skipped, 164.25 s** (two new contracts: open main reads with guarded mutations/keys/app
+target; open principal never previews an application's files); demo flow gate 4 on the
+rebuilt minted stack (`status no key 200 target media`, `index/estimate no key 401`,
+`tokens no key 403`, app-target read `401` key-less, app key `200` own target + `403`
+cross-target, 202→409→done, app 36/36, media untouched) and rotate gate 2 (rotated 200, old
+keys 401 on the same call, new keys answer, file 0600 carrying new values, media untouched,
+search after rotate all under the app's roots); bench :8787 relaunched TOKENLESS on the new
+CUDA image: "wakeboarding" un-keyed 10 hits 10 strong 0.72 s, 10/10 queries strong
+0.73–0.92 s, served UI: no paste field, grid rows live, search works with no key.
 
 ## 2026-11-08 — Pilot: live progress, Access UI, the excludes fix, and the engine picks GPU
 
@@ -1067,8 +1100,10 @@ suite (container)       contract suite, 4 mounts, -rs               — 133 pass
                         server/tests/proof.sh index+search+eval     — / 0 failed / 0 skipped
                         (EXIT=0, R@1 0.71 / R@5 0.88)                (2026-11-08, run 13);
                                                                      proof.sh green (Stage 2)
-digup-server-cuda:local bench compose stack, healthy, 127.0.0.1:8787 — media index 131,972 files,
-                        (UI-rework rebuild owed, 2026-11-08)          GTX 1070 (GPU 0) pinned
+digup-server-cuda:local bench compose stack, healthy, 127.0.0.1:8787 — media index 131,972 files
+                        (TOKENLESS launch + round-2 UI,            / 131,758 searchable,
+                        rebuilt 2026-11-08: 10/10 strong 0.73–     GTX 1070 (GPU 0) pinned
+                        0.92 s, main page searches with no key)
 digup-server-nextcloud-* pilot stack :8791 API / :8090 web,         — media-resume job in flight
                         app 0.4.1 deployed (one "API key" field)      (sampler 3 min, resumable)
 digup-demo-server-1     UI-rework demo: compose app-targets frag,   — media + `nextcloud` targets,
