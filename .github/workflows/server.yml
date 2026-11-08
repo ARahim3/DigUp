@@ -236,6 +236,8 @@ jobs:
           docker compose -f docker-compose.yml -f docker-compose.ghcr.yml config --quiet
           docker compose -f docker-compose.yml -f docker-compose.ghcr.yml -f docker-compose.ghcr.nvidia.yml --profile nvidia config --quiet
           DIGUP_LAN_BIND=192.0.2.1 docker compose -f docker-compose.yml -f docker-compose.lan.yml config --quiet
+          DIGUP_APP_TARGET_NAME=nextcloud DIGUP_APP_TARGET_HOST_DIR=/srv/app-data docker compose -f docker-compose.yml -f docker-compose.app-targets.yml config --quiet
+          DIGUP_APP_TARGET_NAME=nextcloud DIGUP_APP_TARGET_HOST_DIR=/srv/app-data docker compose -f docker-compose.yml -f docker-compose.app-targets.yml -f docker-compose.nvidia.yml --profile nvidia config --quiet
           DIGUP_LAN_BIND=192.0.2.1 docker compose -f docker-compose.yml -f docker-compose.lan.yml -f docker-compose.nvidia.yml --profile nvidia config --quiet
           DIGUP_LAN_BIND=192.0.2.1 docker compose -f docker-compose.yml -f docker-compose.ghcr.yml -f docker-compose.lan.yml config --quiet
           DIGUP_NEXTCLOUD_DATA=/srv/nextcloud/data DIGUP_NEXTCLOUD_ADMIN_USER=ci-admin \

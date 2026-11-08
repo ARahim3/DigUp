@@ -1,0 +1,43 @@
+# Stage 13 opt-in application-targets fragment: the standalone server also indexes and
+# answers for an APPLICATION's own folder, in its OWN index, next to (never inside) its
+# media index. docs/API.md "Named indexes" is the contract; targets.py documents the
+# registry. The default deployment (plain docker-compose.yml) is byte-identical without
+# this file — the feature engages only when you include -f this-file.
+#
+# Bring-up (full chain rule: all files, all boot env, never defaults):
+#
+#   DIGUP_APP_TARGET_NAME=nextcloud \
+#   DIGUP_APP_TARGET_HOST_DIR=/path/to/the/application/data \
+#   docker compose -f docker-compose.yml -f docker-compose.app-targets.yml up -d
+#
+# (DIGUP_APP_TARGET_INDEX_HOST_DIR names the host folder for the target's index; the
+# default sits beside the media index, ./data/index-<name>.)
+#
+# Then the flow, end to end:
+#   1. The server mints the target's application key at first boot (nothing to type —
+#      mint_tokens; stored 0600 in the config folder, recreation-safe) and the admin key.
+#      Minting turns auth on, so the admin key is bootstrapped from the file on the
+#      operator's own mount: `cat data/config/tokens.json`.
+#   2. Open the UI → gear → Settings → Access: paste the admin key (this browser's key),
+#      and the Application keys section now lists the minted keys — copy the app's key.
+#   3. Paste it into the application's DigUp bridge settings (Nextcloud app: server URL +
+#      this key). The bridge's searches, status, and "index now" all answer for the
+#      target's OWN index — the media index is untouched, and a second application gets
+#      its own target the same way (DIGUP_SERVER_APP_TARGETS lists them all, ';'-separated,
+#      and wins over the persisted <config>/targets.json per name).
+#   4. The target's index folder rides its own bind mount (below), so indexing survives
+#      recreation exactly like the media index's; its writer lock, jobs log, and searcher
+#      are per target — a crawl here never queues behind the media crawl.
+services:
+  server:
+    volumes:
+      # The application's data folder, mounted read-only: the server indexes it, the
+      # engine never writes to it (README: indexing reads media, writes only the index).
+      - ${DIGUP_APP_TARGET_HOST_DIR:?set it to the application's data folder (read-only mount)}:/media/app:ro
+      # The target's OWN index folder — a bind of its own, beside the media index's,
+      # so recreation never destroys it (README §5, same rule as every index).
+      - ${DIGUP_APP_TARGET_INDEX_HOST_DIR:-./data/index-${DIGUP_APP_TARGET_NAME:-app}}:/data/index-${DIGUP_APP_TARGET_NAME:-app}
+    environment:
+      # name=roots:index — roots colon-separated (as in DIGUP_SERVER_ROOTS), the index
+      # the LAST folder, under /data (a bind mount, so it survives recreation).
+      DIGUP_SERVER_APP_TARGETS: ${DIGUP_APP_TARGET_NAME:-app}=/media/app:/data/index-${DIGUP_APP_TARGET_NAME:-app}

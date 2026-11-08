@@ -58,6 +58,10 @@ def test_root_serves_the_vanilla_ui(media_client):
     assert 'id="api-key"' in html and "DIGUP_SERVER_READ_TOKENS" in html
     assert "Settings → Access" in appjs.text and "digupBearer" in appjs.text
     assert "window.prompt" not in appjs.text                 # main UI: no load-time prompt
+    # Stage 13: the minted application keys and the named indexes render in the panel
+    # (admin scope only — the JS hides the sections when the endpoints refuse).
+    assert 'id="appkeys-sec"' in html and 'id="targets-sec"' in html
+    assert "/api/v1/tokens" in appjs.text and "/api/v1/targets" in appjs.text
 
 
 def test_the_space_key_keeps_buttons_and_links_activated(media_client):

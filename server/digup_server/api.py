@@ -28,6 +28,7 @@ import time
 import uuid
 from collections import OrderedDict
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
@@ -42,8 +43,9 @@ from .engine import EngineConfig, SearchService
 from .engine.cli import CLIError, estimate_lines, status as cli_status
 from .engine.protocol import EngineExited, EngineRefused
 from .jobs import JobBusy, JobRunner
-from .security import (Auth, Cors, HostOriginGuard, PrincipalLog, allowed_hosts_from_env,
-                       allowed_origins_from_env, auth_from_env, BearerAuth)
+from .security import (Cors, HostOriginGuard, PrincipalLog, allowed_hosts_from_env,
+                       allowed_origins_from_env, BearerAuth, mint_tokens)
+from .targets import MAIN_TARGET, Target, build_registry
 
 # The engine's FileKind rawValues (Sources/DigUpKit FileKind): the API refuses anything
 # else with a 422 — the engine would silently drop it, and silence is not honesty.
@@ -228,16 +230,20 @@ class StatusCache:
         self._fetch = fetch
         self._ttl_s = ttl_s
         self._lock = threading.Lock()
-        self._at = 0.0
-        self._data: dict | None = None
+        self._by_key: dict[str, tuple[float, dict]] = {}
 
     def get(self, config) -> dict:
+        """Cached per index folder: with named indexes (stage-13) one cache answers
+        several targets, and one target's counts must never be served for another."""
+        key = str(config)
         with self._lock:
             now = time.monotonic()
-            if self._data is None or now - self._at > self._ttl_s:
-                self._data = self._fetch(config)
-                self._at = now
-            return self._data
+            stamp = self._by_key.get(key)
+            if stamp is None or now - stamp[0] > self._ttl_s:
+                data = self._fetch(config)
+                self._by_key[key] = (now, data)
+                return data
+            return stamp[1]
 
 
 class HitCache:
@@ -295,15 +301,135 @@ def config_from_env() -> EngineConfig:
 
 
 def create_app(config: EngineConfig) -> FastAPI:
-    """The app over one supervised search-service. `state.search` is the adapter client,
-    `state.jobs` the job runner; `hit_cache` issues the media handles (§6: ids, never
-    client paths)."""
+    """The app over supervised search-services — one per named index (stage-13).
+
+    The main media index (`media`, the deployment's own roots + index folder) behaves
+    exactly as it always has. Application targets (targets.py) are additional
+    (roots, index) pairs with their own search-service child, their own job runner
+    (their own flock beside their own index, their own jobs log), supervised lazily:
+    a target's machinery spawns on the first request that addresses it, so a server
+    with registered targets and no traffic to them costs exactly one engine.
+    `hit_cache` issues the media handles (§6: ids, never client paths) across all
+    targets — paths are absolute; the target owning a path is resolved from the
+    registry. The bearer gate binds tokens to targets (security.BearerAuth), so an
+    application answers for its own index only."""
+
+    config_dir = os.environ.get("DIGUP_SERVER_CONFIG") or os.path.join(config.index, "server-config")
+    registry = build_registry(os.environ, main_roots=config.roots,
+                              main_index=config.index, config_dir=config_dir)
+    auth = mint_tokens(os.environ, config_dir,
+                       tuple(n for n in registry if n != MAIN_TARGET))
+    status_ttl = float(os.environ.get("DIGUP_SERVER_STATUS_TTL_S", "15"))
+    # One CLI-status cache for every read (the status endpoints, health's identity,
+    # the /targets counts): keyed per index folder, so targets never share counts.
+    status_cache = StatusCache(lambda cfg: cli_status(cfg), status_ttl)
 
     hit_cache = HitCache()
     estimate_busy = threading.Lock()      # one full-tree crawl at a time (the UI retry
                                           # click and a second tab must not stack crawls)
-    status_cache = StatusCache(lambda cfg: cli_status(cfg),
-                               float(os.environ.get("DIGUP_SERVER_STATUS_TTL_S", "15")))
+
+    @dataclass
+    class Scope:
+        cfg: EngineConfig
+        service: SearchService
+        jobs: JobRunner
+        status: "StatusCache"
+
+    scopes: dict[str, Scope] = {}
+    scope_build = threading.Lock()        # one spawn per target, ever
+
+    def scope_for(name: str) -> Scope:
+        """The main scope always exists (the lifespan owns it); app targets spawn on
+        first use: search-service child (prewarmed best-effort), job runner, status.
+
+        The main target resolves `app.state.search` at call time: the lifespan sets
+        it first, and it is the published seam the API tests inject a refusing
+        searcher through (the 503 contract, test_api) — the scope must answer with
+        the state's service, not a freshly spawned one."""
+        if name in scopes:
+            return scopes[name]
+        target = registry.get(name)
+        if target is None:
+            raise HTTPException(status_code=404,
+                                detail=f"no such index target {name!r} — see /api/v1/targets")
+        with scope_build:
+            if name in scopes:
+                return scopes[name]
+            if target.main:
+                live = getattr(app.state, "search", None)
+                if live is not None:
+                    scopes[MAIN_TARGET] = Scope(cfg=config, service=live,
+                                                jobs=getattr(app.state, "jobs", None),
+                                                status=status_cache)
+                    return scopes[MAIN_TARGET]
+            cfg = EngineConfig(index=target.index, roots=target.roots, binary=config.binary,
+                               excluded=config.excluded,
+                               excluded_extensions=config.excluded_extensions,
+                               models_dir=config.models_dir, encoder_idle=config.encoder_idle)
+            os.makedirs(target.index, exist_ok=True)
+            service = SearchService(cfg)
+            service.start()
+            try:
+                service.prewarm()
+            except (EngineExited, EngineRefused, TimeoutError):
+                pass                      # first search respawns; a preview call must not die here
+            runner = JobRunner(cfg, config_dir=config_dir,
+                               log_name=f"jobs-{name}.jsonl",
+                               after_done=lambda: (service.reload(), service.prewarm()),
+                               backfill=os.environ.get("DIGUP_SERVER_BACKFILL", "1") != "0",
+                               sync_timeout_s=float(os.environ.get("DIGUP_SERVER_JOB_TIMEOUT_S", "3600")),
+                               log_rotate_bytes=int(os.environ.get("DIGUP_SERVER_JOB_LOG_SIZE",
+                                                                   1_048_576)))
+            scopes[name] = Scope(cfg=cfg, service=service, jobs=runner, status=status_cache)
+            return scopes[name]
+
+    def target_for_path(path: str) -> str:
+        """Which target owns a media path: the longest matching root wins (a target
+        folder mounted under the media root is the more specific owner), falling back
+        to the main target."""
+        best, best_len = MAIN_TARGET, -1
+        resolved = Path(path).resolve()
+        for name, target in registry.items():
+            for root in target.roots:
+                r = Path(root).resolve()
+                if (resolved == r or str(resolved).startswith(str(r) + os.sep)) \
+                        and len(str(r)) > best_len:
+                    best, best_len = name, len(str(r))
+        return best
+
+    def request_target(request: Request) -> str:
+        return request.scope.get("digup.target", MAIN_TARGET)
+
+    # Counts for the /api/v1/targets list, all from the engine and WITHOUT spawning
+    # anything for a GET: a target whose searcher is already running answers with its
+    # live status (`files`/`searchable` — the searcher is the target's own engine, the
+    # authority on a store it has open; a store whose writer has exited can keep its
+    # fresh rows in the WAL, pinned by the searcher's reads, where the CLI's separate
+    # open does not see them — measured in the suite: main db 4096 B + live -wal,
+    # searcher 12 rows, CLI 0). An unspawned target reads the read-only CLI status
+    # (its kinds table totals the files, `vectors` counts the searchable rows — a
+    # store with no searcher open is fully checkpointed there); mid-reload refusals
+    # fall back to it. An index folder with no store file has nothing to report
+    # (null), and creating a store is never a GET's business.
+    def target_counts(target: Target) -> dict:
+        if not os.path.isdir(target.index) or not os.path.exists(os.path.join(target.index,
+                                                                               "index.sqlite")):
+            return {"files": None, "searchable": None}
+        scope = scopes.get(target.name)
+        if scope is not None:
+            try:
+                live = _strip(scope.service.status())
+                return {"files": live.get("files"), "searchable": live.get("searchable")}
+            except (EngineExited, EngineRefused, TimeoutError):
+                pass                       # mid reload→prewarm: the CLI's words, below
+        cfg = EngineConfig(index=target.index, roots=target.roots, binary=config.binary,
+                           models_dir=config.models_dir)
+        try:
+            facts = status_cache.get(cfg)
+        except (EngineExited, EngineRefused, TimeoutError, FileNotFoundError, OSError):
+            return {"files": None, "searchable": None}
+        return {"files": sum(k.get("files", 0) for k in facts.get("kinds", [])),
+                "searchable": facts.get("vectors")}
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -321,7 +447,6 @@ def create_app(config: EngineConfig) -> FastAPI:
                 pass               # the searcher respawns on demand; startup must not die here
         # One writer, serialized; after a done job the searcher is brought current with
         # the sequence the contract suite proved: reload() → prewarm().
-        config_dir = os.environ.get("DIGUP_SERVER_CONFIG") or os.path.join(config.index, "server-config")
         # A job's ceiling: 3600 s fits the corpora the suite walks (15–60 files finish in
         # ~20 s). A first pass of a real media tree outlives an hour — measured 2026-11-04:
         # 19,007/131,972 files done when the default expired; the job recorded *interrupted*
@@ -334,9 +459,15 @@ def create_app(config: EngineConfig) -> FastAPI:
                            log_rotate_bytes=int(os.environ.get("DIGUP_SERVER_JOB_LOG_SIZE",
                                                                1_048_576)))
         app.state.jobs = runner
+        scopes[MAIN_TARGET] = Scope(cfg=config, service=service, jobs=runner, status=status_cache)
+        app.state.scopes = scopes
         yield                      # uvicorn owns the children; quit() ends them
         runner.shutdown()          # a running job is logged *interrupted* — the truthful state
         service.quit()
+        for name, scope in list(scopes.items()):
+            if name != MAIN_TARGET:
+                scope.jobs.shutdown()
+                scope.service.quit()
 
     app = FastAPI(
         title="DigUp server",
@@ -361,7 +492,7 @@ def create_app(config: EngineConfig) -> FastAPI:
     # wrong host before authentication; the bearer gate compares tokens. All three new knobs
     # (`DIGUP_SERVER_READ_TOKENS`, `DIGUP_SERVER_ALLOWED_ORIGINS`, and the named-token
     # attribution) are inert when unset, like every knob in this file.
-    app.add_middleware(BearerAuth, auth=auth_from_env(os.environ))
+    app.add_middleware(BearerAuth, auth=auth)
     app.add_middleware(HostOriginGuard, allowed_hosts=allowed_hosts_from_env(os.environ))
     app.add_middleware(Cors, allowed_origins=allowed_origins_from_env(os.environ))
     app.add_middleware(PrincipalLog)
@@ -389,15 +520,15 @@ def create_app(config: EngineConfig) -> FastAPI:
     async def job_busy(_request, exc: JobBusy):
         raise HTTPException(status_code=409, detail=str(exc))
 
-    def service(app: FastAPI) -> SearchService:
-        return app.state.search
-
     # ── GET /api/v1/health — the engine's identity, from its own files and counts ──────
+    # The container's healthcheck reads the MAIN target only: "the container is healthy"
+    # is about the deployment's own index; app targets are lazily supervised.
 
     @app.get("/api/v1/health")
     def health() -> dict:
-        live = _strip(service(app).status())
-        identity = status_cache.get(config)
+        main = scope_for(MAIN_TARGET)
+        live = _strip(main.service.status())
+        identity = main.status.get(main.cfg)
         return {
             "ok": True,
             "engine": {
@@ -411,29 +542,35 @@ def create_app(config: EngineConfig) -> FastAPI:
         }
 
     # ── GET /api/v1/status — counts: the searcher's live + the CLI's per-kind table ────
+    # `?target=name` addresses a named index (admin answers any; an application token is
+    # bound to its own — see security.BearerAuth). Default: the main media index.
 
     @app.get("/api/v1/status")
-    def status() -> dict:
-        live = _strip(service(app).status())
-        cli = status_cache.get(config)
+    def status(request: Request) -> dict:
+        sc = scope_for(request_target(request))
+        live = _strip(sc.service.status())
+        cli = sc.status.get(sc.cfg)
         return {
             **live,
+            "target": request_target(request),
             "kinds": cli["kinds"],
             "fingerprints": cli["fingerprints"],
             "build_tag": cli["build_tag"],
             "vectors_version": cli["vectors_version"],
             "index_size": cli["index_size"],
             # The server's own configuration, published for the UI's info panel: which
-            # folders the index serves. These are the deployment's paths (env-configured),
-            # never client-supplied — showing them is not path acceptance (§7).
-            "roots": list(config.roots),
+            # folders the index serves. These are the deployment's paths (env-configured
+            # or targets-registered), never client-supplied — showing them is not path
+            # acceptance (§7).
+            "roots": list(sc.cfg.roots),
         }
 
     # ── POST /api/v1/search — ranking passes through untouched ─────────────────────────
 
     @app.post("/api/v1/search")
-    def search(req: SearchRequest) -> SearchReply:
-        reply = service(app).search(
+    def search(req: SearchRequest, request: Request) -> SearchReply:
+        sc = scope_for(request_target(request))
+        reply = sc.service.search(
             req.q, kinds=req.kinds, limit=req.limit, code=req.code,
             meaning=req.meaning, prefix_last=req.prefix_last)
         stripped = _strip(reply)
@@ -449,7 +586,8 @@ def create_app(config: EngineConfig) -> FastAPI:
     # subprocess.run child of the API process, which is exactly what the engine expects.
 
     @app.post("/api/v1/estimate")
-    def estimate(_req: EstimateRequest) -> dict:
+    def estimate(_req: EstimateRequest, request: Request) -> dict:
+        sc = scope_for(request_target(request))
         if not estimate_busy.acquire(blocking=False):
             raise HTTPException(status_code=409,
                                 detail="an estimate is already running — the engine walks "
@@ -461,28 +599,32 @@ def create_app(config: EngineConfig) -> FastAPI:
         # walking; the endpoint just stays honest about how long it will wait for it).
         timeout = float(os.environ.get("DIGUP_SERVER_ESTIMATE_TIMEOUT_S", "120"))
         try:
-            return {"folders": estimate_lines(config, timeout=timeout)}
+            return {"folders": estimate_lines(sc.cfg, timeout=timeout)}
         finally:
             estimate_busy.release()
 
-    # ── POST /api/v1/index + GET /api/v1/jobs — one writer, honest states ─────────────
+    # ── POST /api/v1/index + GET /api/v1/jobs — one writer per index, honest states ────
     # Indexing never starts by itself (README §5): a job arrives here, runs serialized
     # under the adapter's flock, and a second request answers 409 with the live job's id.
+    # Named indexes (stage-13): the flock lives beside each target's own index folder,
+    # so "one at a time" is per target — a Nextcloud crawl and the media crawl never
+    # queue behind each other, and each keeps its own jobs log (`jobs-<name>.jsonl`).
     # States are `queued/running/done/interrupted/busy`; a done job's counts are the
     # engine's events, and the searcher is reloaded + prewarmed after it.
 
     @app.post("/api/v1/index", status_code=202)
-    def index(req: IndexRequest | None = None) -> dict:
+    def index(req: IndexRequest | None = None, *, request: Request) -> dict:
+        sc = scope_for(request_target(request))
         prune = req.prune if req is not None else False
-        return {"ok": True, "job": app.state.jobs.start(prune=prune)}
+        return {"ok": True, "job": sc.jobs.start(prune=prune)}
 
     @app.get("/api/v1/jobs")
-    def jobs() -> dict:
-        return {"jobs": app.state.jobs.jobs()}
+    def jobs(request: Request) -> dict:
+        return {"jobs": scope_for(request_target(request)).jobs.jobs()}
 
     @app.get("/api/v1/jobs/{job_id}")
-    def job(job_id: str) -> dict:
-        found = app.state.jobs.job(job_id)
+    def job(job_id: str, request: Request) -> dict:
+        found = scope_for(request_target(request)).jobs.job(job_id)
         if found is None:
             raise HTTPException(status_code=404, detail=f"no job {job_id}")
         return {"job": found}
@@ -492,8 +634,9 @@ def create_app(config: EngineConfig) -> FastAPI:
     # panel's trick, same op).
 
     @app.post("/api/v1/embed_ahead")
-    def embed_ahead(req: EmbedAheadRequest) -> dict:
-        return _strip(service(app).embed_ahead(req.q, code=req.code))
+    def embed_ahead(req: EmbedAheadRequest, request: Request) -> dict:
+        sc = scope_for(request_target(request))
+        return _strip(sc.service.embed_ahead(req.q, code=req.code))
 
     # ── GET /api/v1/media/{id}/preview + /text — server-issued handles, engine's files.
     # Handles come only from published search replies (HitCache): a client never sends a
@@ -501,24 +644,27 @@ def create_app(config: EngineConfig) -> FastAPI:
     # <index>/previews; served only when the reply's path resolves inside that folder.
 
     @app.get("/api/v1/media/{media_id}/preview")
-    def preview(media_id: str, pixels: int = Query(256, ge=32, le=2048)) -> FileResponse:
+    def preview(media_id: str, request: Request,
+                pixels: int = Query(256, ge=32, le=2048)) -> FileResponse:
         entry = hit_cache.get(media_id)
         if entry is None:
             raise HTTPException(status_code=404, detail=f"no media handle {media_id}")
-        reply = service(app).render(entry["path"], kind=entry["kind"], loc=entry["loc"],
-                                    pixels=pixels)
-        previews = (Path(config.index) / "previews").resolve()
+        sc = scope_for(target_for_path(entry["path"]))    # the target that owns the path
+        reply = sc.service.render(entry["path"], kind=entry["kind"], loc=entry["loc"],
+                                  pixels=pixels)
+        previews = (Path(sc.cfg.index) / "previews").resolve()
         image = Path(reply["image"]).resolve()
         if not str(image).startswith(str(previews) + os.sep):
             raise HTTPException(status_code=500, detail="render answered outside previews")
         return FileResponse(image, media_type="image/jpeg")
 
     @app.get("/api/v1/media/{media_id}/text")
-    def media_text(media_id: str) -> dict:
+    def media_text(media_id: str, request: Request) -> dict:
         entry = hit_cache.get(media_id)
         if entry is None:
             raise HTTPException(status_code=404, detail=f"no media handle {media_id}")
-        return _strip(service(app).text(entry["segment_id"], code=entry["code"]))
+        sc = scope_for(target_for_path(entry["path"]))
+        return _strip(sc.service.text(entry["segment_id"], code=entry["code"]))
 
     # ── GET /api/v1/media/{id}/file — the file itself, the desktop's "Open" (Stage 10).
     # Same discipline as /preview: only a server-issued handle, and the path it names must
@@ -535,7 +681,8 @@ def create_app(config: EngineConfig) -> FastAPI:
         if entry is None:
             raise HTTPException(status_code=404, detail=f"no media handle {media_id}")
         path = Path(entry["path"]).resolve()
-        roots = [Path(r).resolve() for r in config.roots]
+        owner = registry[target_for_path(entry["path"])]   # the target whose roots own it
+        roots = [Path(r).resolve() for r in owner.roots]
         if not any(path == r or path.is_relative_to(r) for r in roots):
             raise HTTPException(status_code=404, detail="file is outside the server's media roots")
         try:                                    # the type, the size, the span — from one open
@@ -579,6 +726,45 @@ def create_app(config: EngineConfig) -> FastAPI:
             return StreamingResponse(ranged(), status_code=206, media_type=media_type,
                                      headers=headers)
         return FileResponse(path, media_type=media_type, headers=headers)
+
+    # ── GET /api/v1/targets — the named indexes this server supervises (stage-13) ──────
+    # An application token sees its own target only (the binding the bearer gate
+    # enforces); read/admin tokens see the full registry. Counts come from the CLI
+    # status read-only (no engine spawn for a listing), cached like every status fact.
+
+    @app.get("/api/v1/targets")
+    def targets(request: Request) -> dict:
+        principal = request.scope.get("digup.principal", "")
+        app_target = principal[4:] if principal.startswith("app:") else None
+        out = []
+        for name, target in registry.items():
+            if app_target is not None and name != app_target:
+                continue
+            out.append({"name": name, "roots": list(target.roots), "index": target.index,
+                        "main": target.main, **target_counts(target)})
+        return {"targets": out}
+
+    # ── GET /api/v1/tokens — the keys the server minted itself, admin scope only ───────
+    # Minted keys (mint_tokens) exist precisely because the operator never typed them,
+    # and this is the only place they are ever shown. Environment-configured secrets are
+    # reported as configured, never echoed — same rule the Nextcloud bridge lives by.
+
+    @app.get("/api/v1/tokens")
+    def tokens(request: Request) -> dict:
+        principal = request.scope.get("digup.principal", "")
+        # The gate records an admin token on a read route as "admin (read scope)" —
+        # this IS the admin scope's surface, so both forms are accepted here.
+        if principal != "admin" and principal != "admin (read scope)":
+            raise HTTPException(status_code=403,
+                                detail="application keys are shown to the admin token only")
+        apps = [{"name": name[4:],
+                 "token": auth.readers[name] if name in auth.minted else None,
+                 "generated": name in auth.minted}
+                for name in auth.readers if name.startswith("app:")]
+        return {"admin": auth.admin if "admin" in auth.minted else None,
+                "admin_configured": auth.admin is not None,
+                "read_configured": auth.read is not None,
+                "apps": apps}
 
     # ── The UI, same origin (so CORS is not needed at all — Stage 6) ───────────────────
 

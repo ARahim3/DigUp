@@ -128,6 +128,50 @@ $("api-key-clear").onclick = () => {
   location.reload();
 };
 
+// ── application keys + indexes (stage-13): minted keys and the named indexes, shown to
+// the admin key's owner when the gear opens. 401/403 (read key, no key) hides both
+// sections — the endpoints answer only for the scope that may see them. ────────────────
+function keyRow(label, value) {
+  const kids = [el("span", "appkey-name", label)];
+  if (value) {
+    const copy = el("button", null, "Copy");
+    copy.type = "button";
+    copy.onclick = () => navigator.clipboard?.writeText(value);
+    kids.push(el("code", "appkey-token", value), copy);
+  } else {
+    kids.push(el("span", "appkey-name", "set in the server's environment (not shown)"));
+  }
+  return el("div", "appkey-line", ...kids);
+}
+
+async function loadAccess() {
+  try {
+    const t = await api("/api/v1/tokens");
+    const rows = [];
+    if (t.admin) {
+      rows.push(keyRow("admin", t.admin));
+    }
+    for (const a of t.apps || []) {
+      rows.push(keyRow(`${a.name} — answers for its own index`, a.token));
+    }
+    $("appkeys").replaceChildren(...rows);
+    $("appkeys-sec").hidden = rows.length === 0;
+  } catch {
+    $("appkeys-sec").hidden = true;
+  }
+  try {
+    const tg = await api("/api/v1/targets");
+    const rows = (tg.targets || []).map((t) => keyRow(
+      `${t.name}${t.main ? " — this server's own media index" : ""} · `
+      + `${t.files === null ? "not indexed" : `${t.files} files · ${t.searchable} searchable`} · `
+      + `${t.roots.join(", ")}`, null));
+    $("targets").replaceChildren(...rows);
+    $("targets-sec").hidden = rows.length === 0;
+  } catch {
+    $("targets-sec").hidden = true;
+  }
+}
+
 // ── settings: the server's own controls (appearance, index, estimate, the counts) live
 // behind the gear, so the page itself stays a search box and its results ──────────────
 
@@ -147,7 +191,10 @@ $("gear").onclick = () => {
   box.hidden = !box.hidden;
   $("gear").setAttribute("aria-expanded", String(!box.hidden));
   $("gear").classList.remove("attention");   // pointing done: the panel is open
-  if (!box.hidden) box.querySelector("select, button, input")?.focus();   // keyboard users
+  if (!box.hidden) {
+    box.querySelector("select, button, input")?.focus();   // keyboard users
+    loadAccess();                                           // keys + indexes, admin scope
+  }
 };
 $("settings-close").onclick = closeSettings;
 document.addEventListener("click", (event) => {

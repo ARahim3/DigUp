@@ -300,7 +300,7 @@ behavior. The deployment turns it on with environment variables
 |---|---|---|
 | `DIGUP_SERVER_TOKEN` | read | every `/api/v1` endpoint except `health`, `docs`, `openapi.json` |
 | `DIGUP_SERVER_ADMIN_TOKEN` | admin | `POST /api/v1/index` and `POST /api/v1/estimate`, on top of the read scope |
-| `DIGUP_SERVER_READ_TOKENS` | read (named) | `name:token` pairs, comma-separated: **each entry guards the read scope**, exactly like `DIGUP_SERVER_TOKEN`, and the access log names the entry that asked (`principal=nc-a`) |
+| `DIGUP_SERVER_READ_TOKENS` | read (named) | `name:token` pairs, comma-separated: **each entry guards the read scope**, exactly like `DIGUP_SERVER_TOKEN`, and the access log names the entry that asked (`principal=nc-a`). The separator is the LAST colon, so names may carry colons — the target-bound form `app:<target>` guards that target's index only (see "Named indexes") |
 
 * No credential on a guarded endpoint → `401` with `WWW-Authenticate: Bearer`. A token that is
   not this server's → `401`. The **read** token on an admin endpoint → `403` saying so.
@@ -318,8 +318,11 @@ behavior. The deployment turns it on with environment variables
   the container's `HEALTHCHECK` calls `/health` with no credential (a guarded health endpoint
   would mark a live container unhealthy), and the API's own documentation page is documentation,
   not media data.
-* The web UI prompts for the token on the first `401`, keeps it in `localStorage`
-  (`digupBearer`), and sends it on every request. A second `401` is reported, not re-prompted.
+* The web UI keeps the key this browser sends in `localStorage` (`digupBearer`) and sends it
+  on every request. The key is typed, saved, and cleared in the gear panel (**Settings →
+  Access**) — there is no load-time prompt; a `401` with no stored key points at the gear,
+  and a `401` with a stored key reports the server's words, so a wrong key cannot loop the
+  page. (The embed widget, which has no settings panel of its own, keeps its prompt.)
 * Tokens are compared with `hmac.compare_digest`. `tests/test_security.py` pins the whole table
   above, including the open health/docs/UI paths.
 
@@ -366,6 +369,64 @@ the flock, and one job queue. Search is safe to hammer; index jobs are serialize
 one runs. Keep every client on the same root layout (an index folder belongs to one set of root
 paths — remounting media under a new path needs one prune job), and never point two root layouts
 at the same index folder.
+
+## Named indexes — per-application indexes (`DIGUP_SERVER_APP_TARGETS`)
+
+One server, many indexes. The deployment's own media index (`media`, the roots+index the
+environment names) is what the UI and `/api/v1/*` answer by default — the standalone server,
+exactly as before. An **application target** is a named pair of (roots, index folder) the same
+server supervises *independently*: its own `search-service` child, its own writer (the flock
+lives beside each index folder, so crawls on different indexes never queue behind each other),
+its own jobs log (`jobs-<name>.jsonl`), its own previews folder, its own token. A Nextcloud
+bridge pointing at this API with its target's token builds and searches **its own index** —
+the media index is untouched by its crawl, and a second application gets its own target the
+same way.
+
+```
+DIGUP_SERVER_APP_TARGETS=nextcloud=/media/nextcloud:/data/index-nextcloud;dc=/media/dc:/data/index-dc
+```
+
+Entries are `;`-separated, each is `name=roots:index` (the roots colon-separated, the index
+the LAST folder — the same colon shape as `DIGUP_SERVER_ROOTS`); names are
+lowercase slugs (`media` is reserved for the main index), paths absolute, and a target's
+index may not be the main index — separate indexes are the point. A persisted
+`<config>/targets.json` joins the registry the same way; env wins per name. Malformed
+entries refuse startup with the entry quoted.
+
+**Minted application keys.** When targets exist and their tokens are not configured, the
+server mints them (`secrets.token_urlsafe(24)`), stores them in `<config>/tokens.json`
+(0600, config folder = recreation-safe: a recreation never silently revokes a connected
+application), and shows them in the UI (gear → Settings → Access → Application keys, admin
+key required) and via `GET /api/v1/tokens` (admin scope only). Minting fires only when
+targets exist; a standalone, token-less deployment keeps running unguarded and unchanged.
+The first mint turns auth on, so the admin key is bootstrapped from the file itself on the
+operator's own config mount (`cat <config>/tokens.json`) — and pasted into the UI once.
+Environment-configured secrets are never copied into the file and never echoed by the API —
+`/api/v1/tokens` shows `configured: true` for them and values only for minted ones.
+
+**Endpoint scoping.** Every guarded endpoint addresses a target: `?target=name` names it
+explicitly; the default is `media` — except for an `app:<name>` token, whose default is its own
+target (the binding is what the token carries, so an application calls plain paths). The bearer
+gate binds: `admin` answers every target; `DIGUP_SERVER_TOKEN` and plain
+named tokens answer the main index (their contract, unchanged); an `app:<name>` token answers
+its target's index and nothing else — any other target answers `403`. Mutating routes
+(`index`, `estimate`) accept an app token **for its own target**: the bridge queues its own
+crawl, and never anyone else's. One estimate runs at a time **server-wide** (a full-tree crawl
+is the expensive walk, wherever its roots are); one index job at a time is **per target** —
+the writer lock lives beside each index folder, so crawls of different indexes run in
+parallel. `GET /api/v1/targets` lists the registry: counts come from a running target's
+live searcher (the authority on a store it has open), from the read-only CLI status for a
+target whose searcher is not spawned (no engine spawn for a listing), and are `null` for an
+index folder with no store yet; an app token sees only its own. Media handles resolve their
+target from the path's owning roots, so `/preview`, `/text`, and `/file` work identically
+across indexes. `GET /api/v1/health` reports the main target (container health is the
+deployment's own index). The access log carries the resolution: every audited line names the
+principal **and the target it addressed** (`principal=app:nc target=nc`).
+
+Deploy shape: `deploy/docker-compose.app-targets.yml` (opt-in `-f`) mounts the application's
+data folder read-only and registers one target; bring-up needs the full chain and env
+(see the file's header). `tests/test_targets.py` pins the registry, the minting rules, the
+binding table, and the end-to-end flow over the real engine.
 
 ## Deploy shape (what a client can assume)
 

@@ -62,6 +62,21 @@
           never sends those values back over the API, so they are typed here once, from
           the deployment's own config.</p>
       </section>
+      <section class="set-sec" id="appkeys-sec" hidden>
+        <span class="set-title">Application keys</span>
+        <div id="appkeys" class="set-lines"></div>
+        <p class="set-note">Keys the server minted for the applications it serves — paste one
+          into the application's settings (a Nextcloud bridge, a dashboard tile). Each
+          application key answers for its OWN index and nothing else; minted keys appear
+          here (admin key required), keys set in the server's environment are never shown.</p>
+      </section>
+      <section class="set-sec" id="targets-sec" hidden>
+        <span class="set-title">Indexes</span>
+        <div id="targets" class="set-lines"></div>
+        <p class="set-note">Every index this server supervises: its own media index, and each
+          application's own index (registered with DIGUP_SERVER_APP_TARGETS — roots plus a
+          private index folder, each with its own writer, lock, and job history).</p>
+      </section>
       <section class="set-sec">
         <span class="set-title">Index</span>
         <div class="set-controls">

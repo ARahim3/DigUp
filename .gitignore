@@ -51,3 +51,6 @@ AGENTS.md
 
 # ghcr pull-and-run scratch stack (compose state, index, job logs) — same category as deploy/data
 deploy/data-ghcr/
+
+# stage-13 app-targets demo scratch stack (compose state, index, job logs)
+deploy/data-demo/

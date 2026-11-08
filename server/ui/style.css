@@ -114,6 +114,12 @@ input[type="password"] { background: var(--field); font: inherit; color: var(--t
   border: 1px solid var(--edge); border-radius: 8px; padding: 0.42rem 0.6rem; min-width: 16rem; }
 #settings .set-note { color: var(--soft); font-size: 0.78rem; margin: 0.45rem 0 0;
   overflow-wrap: anywhere; }
+#settings .set-lines { display: flex; flex-direction: column; gap: 0.35rem; }
+.appkey-line { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.appkey-name { color: var(--soft); font-size: 0.78rem; flex: 1 1 10rem; min-width: 0; }
+.appkey-token { font: 0.78rem ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--field); border: 1px solid var(--edge); border-radius: 6px;
+  padding: 0.2rem 0.45rem; overflow-wrap: anywhere; }
 /* a 401 with no stored key points at the gear: a soft pulse until the panel opens */
 #gear.attention { animation: gear-pulse 1.6s ease-in-out 3; }
 @keyframes gear-pulse { 50% { box-shadow: 0 0 0 3px var(--accent); } }

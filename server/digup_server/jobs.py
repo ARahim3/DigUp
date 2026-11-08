@@ -68,9 +68,10 @@ class JobRunner:
                  after_done: Callable[[], None] | None = None,
                  backfill: bool = True, linger_s: float = 8.0,
                  sync_timeout_s: float = 3600.0,
-                 log_rotate_bytes: int = 1_048_576):
+                 log_rotate_bytes: int = 1_048_576,
+                 log_name: str = JOB_LOG):
         self._config = config
-        self._log_path = os.path.join(config_dir, JOB_LOG)
+        self._log_path = os.path.join(config_dir, log_name)   # named indexes keep their own
         self._after_done = after_done      # the searcher's reload→prewarm, wired by the app
         self._backfill, self._linger = backfill, linger_s
         self._timeout = sync_timeout_s

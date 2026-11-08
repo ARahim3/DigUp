@@ -28,9 +28,14 @@ from __future__ import annotations
 import hmac
 import json
 import logging
+import os
+import secrets
 import sys
 from dataclasses import dataclass, field
 from typing import Iterable
+from urllib.parse import parse_qs
+
+from .targets import MAIN_TARGET
 
 PRINCIPAL_LOG = logging.getLogger("digup.auth")
 # uvicorn's logging config configures only `uvicorn.*` loggers: an application logger's INFO
@@ -209,11 +214,14 @@ class Cors:
 class Auth:
     """The deployment's tokens. `read` guards every `/api/v1` endpoint; `admin` guards the
     mutating/heavy ones on top of it. `readers` is the named map: every entry guards the same
-    read scope and is logged under its own name. All None/empty (the default) is no auth."""
+    read scope and is logged under its own name. All None/empty (the default) is no auth.
+    `minted` names the entries the server issued itself (stage-13 minted keys) — the ones
+    `/api/v1/tokens` may show; env-configured secrets are never in it and never echoed."""
 
     read: str | None = None
     admin: str | None = None
     readers: dict[str, str] = field(default_factory=dict)
+    minted: tuple[str, ...] = ()
 
     @property
     def enabled(self) -> bool:
@@ -221,7 +229,9 @@ class Auth:
 
     def token_names(self, supplied: str) -> tuple[str, ...]:
         """Every scope this exact token serves — () when it is nobody's. `admin` covers the
-        read scope too (an admin client searches like a read client)."""
+        read scope too (an admin client searches like a read client). An entry named
+        `app:<target>` (minted for an application target) answers for THAT target's index
+        only — the bearer gate enforces the binding (BearerAuth, named indexes)."""
         names: list[str] = []
         if self.admin is not None and hmac.compare_digest(supplied, self.admin):
             return ("admin",)
@@ -251,13 +261,16 @@ def auth_from_env(env: dict[str, str]) -> Auth:
 
 
 def read_tokens_from_env(env: dict[str, str]) -> dict[str, str]:
-    """`DIGUP_SERVER_READ_TOKENS=nc-a:tokA,nc-b:tokB` → `{nc-a: tokA, nc-b: tokB}`.
+    """`DIGUP_SERVER_READ_TOKENS=nc-a:tokA,app:nc:tokB` → `{nc-a: tokA, app:nc: tokB}`.
 
-    Names keep the FIRST entry of a duplicate, values keep the FIRST token seen for a name;
-    names are lowercased (the log prints them as given to the env). An entry without a colon
-    is a typo, skipped — and named in a warning, because a silently-dropped token is an outage
-    nobody asked for. No wildcards, no scopes beyond read: revoking one entry revokes exactly
-    that client (docs/implementation/stage-12-integrations.md §11.2).
+    Names keep the FIRST entry of a duplicate; names are lowercased (the log prints them
+    as given to the env). The separator is the LAST colon: names may contain colons
+    (the target-bound form `app:<target>` — stage-13), tokens must not (minted tokens are
+    `token_urlsafe` — alphanumeric, `-`, `_`). An entry without a colon is a typo,
+    skipped — and named in a warning, because a silently-dropped token is an outage nobody
+    asked for. No wildcards, no scopes beyond read: revoking one entry revokes exactly
+    that client (docs/implementation/stage-12-integrations.md §11.2). Plain names guard
+    the main media index; `app:<name>` guards that target's index only (BearerAuth).
     """
     raw = (env.get("DIGUP_SERVER_READ_TOKENS") or "").strip()
     readers: dict[str, str] = {}
@@ -265,7 +278,7 @@ def read_tokens_from_env(env: dict[str, str]) -> dict[str, str]:
         entry = entry.strip()
         if not entry:
             continue
-        name, sep, token = entry.partition(":")
+        name, sep, token = entry.rpartition(":")
         if not sep or not name.strip() or not token.strip():
             PRINCIPAL_LOG.warning("DIGUP_SERVER_READ_TOKENS: entry %r is not a 'name:token' "
                                   "pair — skipped", entry)
@@ -274,12 +287,125 @@ def read_tokens_from_env(env: dict[str, str]) -> dict[str, str]:
     return readers
 
 
+# ── minted application keys (stage-13, docs/API.md "Named indexes") ──────────────────────
+# When the operator registers application targets, the applications need tokens — and
+# hand-writing secrets into the environment is an option, not a requirement. The server
+# mints what is missing (secrets.token_urlsafe(24)), stores them in <config>/tokens.json
+# (the config folder is recreation-safe, the same rule as jobs.jsonl: recreation never
+# silently revokes a connected application), and shows them in the admin UI
+# (GET /api/v1/tokens, admin scope only). Rules that keep the surface honest:
+#   * minting fires ONLY when application targets exist — a target-less, token-less
+#     standalone deployment keeps running exactly as it has, unguarded and unchanged;
+#   * environment-configured secrets are never copied into the file and never echoed by
+#     the API: the file records only what the server generated, /api/v1/tokens shows
+#     only what the server generated;
+#   * an admin key is minted too when the deployment has none — the UI needs one to show
+#     the keys, and `Auth.minted` marks exactly which values are displayable.
+
+TOKENS_FILE = "tokens.json"
+
+
+def mint_tokens(env: dict[str, str], config_dir: str,
+                app_target_names: tuple[str, ...]) -> Auth:
+    """The deployment's Auth, with minted keys filled in for the app targets env left
+    unbound. Restart-stable: values come from <config>/tokens.json and are re-used."""
+    auth = auth_from_env(env)
+    if not app_target_names:
+        return auth                                   # standalone: minting inert
+
+    path = os.path.join(config_dir, TOKENS_FILE)
+    stored = _read_tokens_file(path)
+    readers = dict(auth.readers)
+    minted: list[str] = []
+
+    admin = auth.admin
+    if admin is None:
+        # A key in the file IS a minted key (server-generated), fresh-minted or from a
+        # previous boot — displayable either way, so `/api/v1/tokens` shows the keys
+        # the operator never typed even after a restart.
+        admin = stored.get("admin")
+        if admin is None:
+            admin = secrets.token_urlsafe(24)
+        minted.append("admin")
+
+    for name in app_target_names:
+        key = f"app:{name}"
+        if key in readers:                            # env already bound this target
+            continue
+        token = stored.get("readers", {}).get(key)
+        if token is None:
+            token = secrets.token_urlsafe(24)
+        readers[key] = token
+        minted.append(key)                            # server-generated: displayable
+
+    minted_auth = Auth(read=auth.read, admin=admin, readers=readers,
+                       minted=tuple(minted))
+    _write_tokens_file(path, minted_auth)
+    return minted_auth
+
+
+def _read_tokens_file(path: str) -> dict:
+    try:
+        with open(path, encoding="utf-8") as handle:
+            raw = json.load(handle)
+    except FileNotFoundError:
+        return {}
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"{path}: not valid JSON ({exc}) — fix it or delete it; "
+                           "the server will not mint over a corrupt keys file") from exc
+    return raw if isinstance(raw, dict) else {}
+
+
+def _write_tokens_file(path: str, auth: Auth) -> None:
+    """Persist ONLY minted values, atomically, 0600 (the keys file holds secrets).
+    The config folder is the server's own to create — minting runs at startup, before
+    any job has made it (the deployment bind-mounts it, a test tmp dir may not exist)."""
+    payload = {}
+    if "admin" in auth.minted and auth.admin:
+        payload["admin"] = auth.admin
+    readers = {name: auth.readers[name] for name in auth.minted
+               if name.startswith("app:") and name in auth.readers}
+    if readers:
+        payload["readers"] = readers
+    existing = _read_tokens_file(path)
+    merged = {**{k: v for k, v in existing.items() if k in ("admin", "readers")}, **payload}
+    union = {**(existing.get("readers") or {}), **(payload.get("readers") or {})}
+    if union:
+        merged["readers"] = union
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = path + ".new"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(merged, handle)
+    os.replace(tmp, path)
+    os.chmod(path, 0o600)
+
+
+def query_target(scope) -> str | None:
+    """The target a request explicitly addresses (`?target=name`); None when it does not."""
+    params = parse_qs(scope.get("query_string", b"").decode("latin-1"))
+    value = (params.get("target") or [""])[0].strip()
+    return value or None
+
+
 class BearerAuth:
     """ASGI middleware for the token scopes. Tokens are compared with
-    `hmac.compare_digest`; they are configuration (compose env), never in the repo. The
-    request's accepted principal (`read`, a map name, `admin`) lands on the scope for
-    PrincipalLog — an admin token answers the read scope too, so its principal is recorded
-    with the admin scope it presents."""
+    `hmac.compare_digest`; they are configuration (compose env) or minted keys
+    (`mint_tokens`), never in the repo. The request's accepted principal (`read`, a map
+    name, `admin`) lands on the scope for PrincipalLog — an admin token answers the read
+    scope too, so its principal is recorded with the admin scope it presents.
+
+    Named indexes (stage-13): every request addresses a TARGET. `?target=name` names
+    it explicitly; the default is the main media index — except for an app-bound
+    token, whose default is its OWN target (the binding is what the token carries,
+    so an application calls plain paths). The gate binds tokens to targets: `admin`
+    answers every target; `read` and plain named tokens answer the main media index
+    (that is what they were before this feature existed — their behavior is
+    unchanged); an `app:<name>` token answers the named target's index and NOTHING
+    else — on any other target it is refused. The resolved target lands on the scope
+    (`digup.target`) for the endpoints, and mutating routes (index/estimate) accept
+    an app token only for its own target: an application can queue work on its own
+    index, never on anyone else's."""
 
     def __init__(self, app, auth: Auth | None = None) -> None:
         self.app = app
@@ -305,21 +431,53 @@ class BearerAuth:
             await _refuse(scope, send, 401, "this server asks for a bearer token")
             return
         names = self.auth.token_names(supplied)
-        if admin:
-            if "admin" in names:
-                scope["digup.principal"] = "admin"
+        if not names:
+            await _refuse(scope, send, 401, "the bearer token is not this server's token")
+            return
+
+        requested = query_target(scope)
+        app_target = next((n[4:] for n in names if n.startswith("app:")), None)
+        # An app-bound token addresses ITS OWN target by default — the binding is what
+        # the token carries, so the bridge calls plain paths (/search, /index). An
+        # explicit `?target=` it does not match is refused below.
+        target = app_target if (app_target is not None and requested is None) \
+            else (requested or MAIN_TARGET)
+        if target == MAIN_TARGET:
+            # The main media index: admin, `read`, and plain named tokens answer it —
+            # the pre-stage-13 contract, unchanged. Only an app-BOUND token is refused
+            # here: it was minted for one application's own index (the `app:<name>` form).
+            if app_target is not None:
+                await _refuse(scope, send, 403,
+                              "that token answers the application's own index; the media "
+                              "index needs this server's read or admin token")
+                return
+        elif not ("admin" in names or app_target == target):
+            await _refuse(scope, send, 403,
+                          f"target {target!r} is answered by its own application token "
+                          "(or the admin token) — not by this one")
+            return
+
+        if admin and "admin" not in names:
+            # Mutating routes: admin always; an app token for its OWN target queues its
+            # own crawl (the application's bridge indexes its own index, stage-13).
+            if app_target is not None and app_target == target:
+                scope["digup.principal"] = f"app:{app_target}"
+                scope["digup.target"] = target
                 await self.app(scope, receive, send)
                 return
-            if names:
-                await _refuse(scope, send, 403,
-                              "that is this server's read-scope token; indexing and estimating "
-                              "need the admin token")
-                return
-        elif names:
-            scope["digup.principal"] = "admin (read scope)" if "admin" in names else names[0]
-            await self.app(scope, receive, send)
+            await _refuse(scope, send, 403,
+                          "that is this server's read-scope token; indexing and estimating "
+                          "need the admin token")
             return
-        await _refuse(scope, send, 401, "the bearer token is not this server's token")
+
+        if admin:
+            scope["digup.principal"] = "admin"
+        elif "admin" in names:
+            scope["digup.principal"] = "admin (read scope)"   # an admin token on the read side
+        else:
+            scope["digup.principal"] = names[0]               # read, named, app:<target>
+        scope["digup.target"] = target
+        await self.app(scope, receive, send)
 
 
 class PrincipalLog:
@@ -354,9 +512,14 @@ class PrincipalLog:
             await self.app(scope, receive, _watch)
         finally:
             if state["status"] is not None:
-                PRINCIPAL_LOG.info("%s %s -> %s principal=%s",
+                # `target=` rides only when the bearer gate resolved one (named indexes,
+                # stage 13): with several indexes on one server, the audit line says
+                # WHICH index the principal asked.
+                target = scope.get("digup.target")
+                PRINCIPAL_LOG.info("%s %s -> %s principal=%s%s",
                                    scope.get("method", "?"), path, state["status"],
-                                   scope.get("digup.principal", "none"))
+                                   scope.get("digup.principal", "none"),
+                                   f" target={target}" if target else "")
 
 
 def _bearer(scope) -> str | None:
