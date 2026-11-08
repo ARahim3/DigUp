@@ -50,6 +50,15 @@ class EngineConfig:
                    memory_limit_mb: int | None = None, time_limit_s: int | None = None,
                    new_limit: int | None = None, linger_s: float | None = None) -> list[str]:
         argv = [self.binary, "index-service", *self.roots, "--index", self.index]
+        # The excludes ride along — the SAME list estimate and search get (stage-12 §11.3:
+        # "the forecast must describe the tree the indexer WOULD walk"). Measured 2026-11-08
+        # on the Nextcloud pilot: without them the job walked the tree's appdata folder —
+        # 1,470,439 preview files — while estimate (which had them) reported 131,972.
+        # The engine's shared parser accepts --exclude/--exclude-ext on index-service.
+        if self.excluded:
+            argv += sum([["--exclude", p] for p in self.excluded], [])
+        if self.excluded_extensions:
+            argv += ["--exclude-ext", ",".join(self.excluded_extensions)]
         if backfill:
             argv.append("--backfill")
         if prune:

@@ -272,6 +272,16 @@ def test_estimate_argv_carries_the_excludes_the_job_will_honour():
     assert argv[-1] == "--json"
     plain = EngineConfig(index="/idx", roots=("/r",)).estimate_argv()
     assert "--exclude" not in plain and "--exclude-ext" not in plain   # knobs inert when unset
+    # Measured 2026-11-08 on the pilot: the job path was the gap — index-service ran with
+    # no excludes and walked the tree's appdata (1.47M preview files) while estimate
+    # (carrying them) reported 131,972. The job must carry the SAME list.
+    job = cfg.index_argv()
+    assert job[:3] == ["digup", "index-service", "/media/photos"]
+    assert job.count("--exclude") == 1 and job.count("--exclude-ext") == 1
+    assert job[job.index("--exclude") + 1] == "/media/photos/appdata_x"
+    assert job[job.index("--exclude-ext") + 1] == "heic"
+    plain_job = EngineConfig(index="/idx", roots=("/r",)).index_argv()
+    assert "--exclude" not in plain_job and "--exclude-ext" not in plain_job
 
 
 def test_the_map_protects_the_real_api_end_to_end(corpus, index, monkeypatch):
