@@ -401,7 +401,11 @@ entries refuse startup with the entry quoted.
 configured, the server mints them (`secrets.token_urlsafe(24)`), stores them in
 `<config>/tokens.json` (0600, config folder = recreation-safe: a recreation never silently
 revokes a connected application), and shows them in the UI (gear → Settings → **API key** —
-each key is one row: name, value, **Copy**) and via `GET /api/v1/tokens` (admin scope only).
+the server's key is one row: **API key | value | Copy | Regenerate**) and via
+`GET /api/v1/tokens`. **In a minted deployment the keys surface is key-free** (2026-11-08
+UX brief, round 6 — the ticket model): the gear reads the row with no key in the browser,
+exactly as the main page searches with no key. An `app:` key and an env-keyed deployment are
+refused there (`403`, admin scope only — the env-shape's gate keeps 401-ing every call).
 Minting fires only when targets exist; a standalone, token-less deployment keeps running
 unguarded and unchanged. **The minted shape keeps the main index's READS open** (2026-11-08
 user brief — "the standalone app just uses the directory set in the environment"): a key-less
@@ -420,6 +424,20 @@ every minted value (admin and app keys) is freshly minted, persisted 0600, and l
 immediately — the old values answer `401` from this call on. Environment-configured keys
 are never rotated (a rotation must not silently override the deployment's own config); a
 deployment with nothing minted answers `400`.
+
+**The standalone box mints its key at boot (`DIGUP_SERVER_MINT_KEYS=1`).** With the knob the
+server mints its admin key with no application registered — the gear shows it with **Copy**,
+and the box stays searchable with no key (the minted shape's open main reads). This is the
+ticket the applications bring: `POST /api/v1/targets` (admin key) with
+`{"name": "<slug>", "roots": ["<abs>", …], "index": "<abs, optional>"}` registers the
+application at the **running** server — the startup validator runs at runtime (slug rules,
+absolute paths, "not the main index", name reserved `media`, duplicates `409`), the server
+mints the application's **private key** (returned once here, persisted 0600), gives it its own
+index folder (default `<config>/index-<name>`), and persists the registration
+(`<config>/targets.json` — a restart re-reads both files). From that call on the application's
+key answers only its target: its own status, search, previews, and its own crawl
+(`POST /api/v1/index` — background, one writer, never touching the main index, invisible to
+the main page). Key-less and application-keyed requests cannot register.
 
 **Endpoint scoping.** Every guarded endpoint addresses a target: `?target=name` names it
 explicitly; the default is `media` — except for an `app:<name>` token, whose default is its own

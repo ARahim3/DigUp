@@ -34,6 +34,9 @@
 #      target's OWN index — the media index is untouched, and a second application gets
 #      its own target the same way (DIGUP_SERVER_APP_TARGETS lists them all, ';'-separated,
 #      and wins over the persisted <config>/targets.json per name).
+#      Stage 14: applications can also REGISTER AT RUNTIME with the admin key —
+#      `POST /api/v1/targets {"name": …, "roots": […]}` mints their private key, gives
+#      them their own index folder, and persists the registration (docs/API.md).
 #   4. The target's index folder rides its own bind mount (below), so indexing survives
 #      recreation exactly like the media index's; its writer lock, jobs log, and searcher
 #      are per target — a crawl here never queues behind the media crawl.

@@ -125,7 +125,7 @@ applyTheme(localStorage.getItem("digup-theme") || "system");
 // pasted there; this browser keeps the admin key in localStorage, so it updates itself).
 // Deployments whose keys come from the environment are never shown and never rotated. ──
 
-function keyRow(label, value) {
+function keyRow(label, value, ...extra) {
   const kids = [el("span", "appkey-name", label)];
   if (value) {
     const copy = el("button", null, "Copy");
@@ -133,7 +133,7 @@ function keyRow(label, value) {
     copy.onclick = () => navigator.clipboard?.writeText(value);
     kids.push(el("code", "appkey-token", value), copy);
   }
-  return el("div", "appkey-line", ...kids);
+  return el("div", "appkey-line", ...kids, ...extra);
 }
 
 async function regenerateKeys() {
@@ -153,13 +153,30 @@ async function regenerateKeys() {
 }
 
 async function loadAccess() {
-  const regen = $("keys-regenerate");
+  // Regenerate is built here and rides the key row's right edge (round-6 UX brief):
+  // one uniform grid — label | key | Copy | Regenerate — no loose button under the
+  // section. It exists only where keys are minted; an env-keyed server answers 400.
+  let regen = $("keys-regenerate");
+  if (!regen) {
+    regen = el("button", null, "Regenerate");
+    regen.id = "keys-regenerate";
+    regen.type = "button";
+    regen.title = "New keys now; the old ones stop working and the applications that "
+                + "have them lose access";
+  }
   const sec = $("api-key-sec");
   regen.hidden = true;
   try {
-    const t = await api("/api/v1/tokens");
-    const rows = [];
-    if (t.admin) rows.push(keyRow("API key", t.admin));
+    const t = await api("/api/v1/tokens");        // keyless in a minted deployment:
+    const rows = [];                             // the gear IS shown the key it mints
+    if (t.admin) {
+      // The admin row carries Regenerate at the row's right edge (round-6 UX brief:
+      // not a loose button under the section) — one uniform grid: label · key · Copy
+      // · Regenerate; the application rows keep the same columns, empty at the right.
+      const adminRow = keyRow("API key", t.admin);
+      adminRow.append(regen);
+      rows.push(adminRow);
+    }
     for (const a of t.apps || []) {
       if (a.token) rows.push(keyRow(`API key — ${a.name}`, a.token));
     }
@@ -748,24 +765,29 @@ $("suggest").replaceChildren(...SUGGESTIONS.map((phrase) => {   // spread: repla
 }));
 
 // ── Estimate: the engine's own forecast for the server's folders (POST /estimate).
-// The button lives in settings; the forecast appears in the page, one honest line.
-// Generation token (like searches have): a second click during a slow crawl must not
-// let the FIRST crawl's late reply write results into a panel that was closed and
-// reopened in between.
+// It lives entirely in the gear panel: the button, the spinning circle while the
+// engine walks, the forecast rows under them — the main page shows no estimate
+// popup at all (2026-11-08 UX brief, round 5). Generation token (like searches
+// have): a second click during a slow crawl must not let the FIRST crawl's late
+// reply write rows into a panel closed and reopened in between.
 let estimateToken = 0;
 $("estimate-btn").onclick = async () => {
   const panel = $("estimate");
   const spin = $("estimate-spin");
-  closeSettings();
-  if (!panel.hidden) { panel.hidden = true; estimateToken++; spin.hidden = true; return; }
+  if (!spin.hidden || !panel.hidden) {          // click again = cancel + clear
+    estimateToken++;
+    spin.hidden = true;
+    panel.hidden = true;
+    panel.replaceChildren();
+    return;
+  }
   const token = ++estimateToken;
-  panel.hidden = false;
-  panel.replaceChildren();                 // empty while it works: the gear's spinner is
-  spin.hidden = false;                     // the progress indicator (no main-page popup)
+  spin.hidden = false;
   try {
     const {folders} = await api("/api/v1/estimate", {method: "POST", body: JSON.stringify({})});
-    if (token !== estimateToken) return;               // a newer click owns the panel now
+    if (token !== estimateToken) return;               // a newer click owns the rows now
     spin.hidden = true;
+    panel.hidden = false;
     panel.replaceChildren(el("p", "note",
       "The engine's own forecast for the folders it indexes. “measured here” = timed on this "
       + "machine by past indexing; “reference times” = the M4 Pro reference, too short for most PCs."));
@@ -794,8 +816,10 @@ $("estimate-btn").onclick = async () => {
     }
   } catch (error) {
     spin.hidden = true;
-    if (token === estimateToken)
+    if (token === estimateToken) {
+      panel.hidden = false;
       panel.replaceChildren(el("p", "warn", `estimate failed: ${error.message}`));
+    }
   }
 };
 
@@ -837,7 +861,11 @@ async function pollJob(id) {
       return;
     }
     showJob(job);
-    if (["done", "interrupted", "busy"].includes(job.state)) { refreshStatus(); return; }
+    if (["done", "interrupted", "busy"].includes(job.state)) {
+      refreshStatus();
+      loadAccess();   // a finished crawl moves the engine's numbers: re-read the
+      return;         // index list so the panel shows the targets that exist now
+    }
     await new Promise((resolve) => setTimeout(resolve, 2000));
   }
 }

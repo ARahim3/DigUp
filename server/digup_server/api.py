@@ -21,8 +21,10 @@ from __future__ import annotations
 
 import contextlib
 import hmac
+import json
 import os
 import re
+import secrets
 import stat
 import threading
 import time
@@ -44,10 +46,10 @@ from .engine import EngineConfig, SearchService
 from .engine.cli import CLIError, estimate_lines, status as cli_status
 from .engine.protocol import EngineExited, EngineRefused
 from .jobs import JobBusy, JobRunner
-from .security import (Auth, Cors, HostOriginGuard, PrincipalLog, _bearer,
-                       allowed_hosts_from_env, allowed_origins_from_env, BearerAuth,
-                       mint_tokens, rotate_minted)
-from .targets import MAIN_TARGET, Target, build_registry
+from .security import (Auth, Cors, HostOriginGuard, PrincipalLog, TOKENS_FILE, _bearer,
+                       _write_tokens_file, allowed_hosts_from_env, allowed_origins_from_env,
+                       BearerAuth, env_secrets, mint_tokens, rotate_minted)
+from .targets import MAIN_TARGET, Target, build_registry, _validated
 
 # The engine's FileKind rawValues (Sources/DigUpKit FileKind): the API refuses anything
 # else with a 422 — the engine would silently drop it, and silence is not honesty.
@@ -128,6 +130,19 @@ class EmbedAheadRequest(BaseModel):
 
     q: str = Field(max_length=512)
     code: bool = False
+
+
+class TargetRegister(BaseModel):
+    """An application registering its own index at a running server (stage 14, the
+    user's flow: the standalone mints its API key; the application brings that key to
+    `POST /api/v1/targets` and gets its OWN minted key + its OWN index folder, which
+    the server crawls in the background, invisible to the main page)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=64)
+    roots: list[str] = Field(min_length=1, max_length=32)
+    index: str | None = None
 
 
 def _strip(reply: dict) -> dict:
@@ -320,7 +335,9 @@ def create_app(config: EngineConfig) -> FastAPI:
     registry = build_registry(os.environ, main_roots=config.roots,
                               main_index=config.index, config_dir=config_dir)
     auth = mint_tokens(os.environ, config_dir,
-                       tuple(n for n in registry if n != MAIN_TARGET))
+                       tuple(n for n in registry if n != MAIN_TARGET),
+                       mint_admin=os.environ.get("DIGUP_SERVER_MINT_KEYS", "").lower()
+                       in ("1", "true", "yes"))
     # POST /api/v1/tokens (rotate) replaces the keys at runtime: the bearer gate and
     # the endpoints read the SAME live object through this holder, so one swap lands
     # everywhere. `Auth` is frozen by design — rotation swaps the reference, never the
@@ -768,6 +785,56 @@ def create_app(config: EngineConfig) -> FastAPI:
                         "main": target.main, **target_counts(target)})
         return {"targets": out}
 
+    # ── POST /api/v1/targets — an application registers at a RUNNING server (stage 14)
+    # The user's flow, made one call: the standalone box mints its API key at boot
+    # (DIGUP_SERVER_MINT_KEYS) and shows it in the gear with Copy; the application
+    # brings that key here with its name + folders, and the server mints its PRIVATE
+    # key, registers its own index folder (default <config>/index-<name>), and persists
+    # the registration (targets.json — a restart keeps it). From here on the
+    # application's key answers only its target: its own status, its own search, its
+    # own crawl, which runs in the background and never touches the main page.
+    # Validation is the startup validator: same slug rules, same absolute-path rules,
+    # same "not the main index" rule — a runtime registration cannot be sloppier than
+    # an environment one.
+
+    @app.post("/api/v1/targets")
+    def register_target(body: TargetRegister, request: Request) -> dict:
+        _admin_scope(request)
+        index = body.index or os.path.join(config_dir, f"index-{body.name.strip().lower()}")
+        try:
+            target = _validated(body.name, os.pathsep.join(body.roots), index,
+                                main_index=config.index)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        if target.name in registry:
+            raise HTTPException(status_code=409,
+                                detail=f"target {target.name!r} is already registered")
+        registry[target.name] = target
+
+        a = current["auth"]
+        key = f"app:{target.name}"
+        readers = dict(a.readers)
+        minted = tuple(a.minted)
+        token = readers.get(key)
+        if token is None or key not in minted:
+            token = secrets.token_urlsafe(24)          # private, minted, shown once here
+            readers[key] = token
+            if key not in minted:
+                minted = minted + (key,)
+        rotated = Auth(read=a.read, admin=a.admin, readers=readers, minted=minted)
+        current["auth"] = rotated
+        gate = _bearer_gate()
+        if gate is not None:
+            gate.auth = rotated
+        _write_tokens_file(os.path.join(config_dir, TOKENS_FILE), rotated)
+        persist = {n: {"roots": list(t.roots), "index": t.index}
+                   for n, t in registry.items() if not t.main}
+        with open(os.path.join(config_dir, "targets.json"), "w", encoding="utf-8") as handle:
+            json.dump(persist, handle, indent=2)
+
+        return {"name": target.name, "roots": list(target.roots), "index": target.index,
+                "token": token, "generated": True}
+
     # ── /api/v1/tokens — the keys the server minted itself, admin scope only ──────────
     # Minted keys (mint_tokens) exist precisely because the operator never typed them,
     # and this is the only place they are ever shown. Environment-configured secrets are
@@ -795,7 +862,8 @@ def create_app(config: EngineConfig) -> FastAPI:
         if a.admin and supplied and hmac.compare_digest(supplied, a.admin):
             return
         raise HTTPException(status_code=403,
-                            detail="the server's keys are shown to the admin token only")
+                            detail="the server's keys and application registrations answer "
+                                   "the admin token only")
 
     def _tokens_payload(a: Auth) -> dict:
         apps = [{"name": name[4:],
@@ -821,6 +889,17 @@ def create_app(config: EngineConfig) -> FastAPI:
 
     @app.get("/api/v1/tokens")
     def tokens(request: Request) -> dict:
+        principal = request.scope.get("digup.principal", "")
+        if (principal in ("", "none") and not env_secrets(current["auth"])
+                and not principal.startswith("app:")):
+            # The ticket model (2026-11-08 UX brief, round 6): a server that MINTED its
+            # keys shows them to its own gear — the UI reads this with no key in the
+            # browser, exactly as the main page searches with no key. The minted shape
+            # already answers main reads keylessly (the gate's rule); this extends it
+            # to the keys row, the ticket the applications copy. A deployment that
+            # TYPED its own secrets never displays them (env_secrets); an application's
+            # key never lists the server's keys (_admin_scope refuses it, as before).
+            return _tokens_payload(current["auth"])
         _admin_scope(request)
         return _tokens_payload(current["auth"])
 

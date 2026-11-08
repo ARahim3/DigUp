@@ -228,6 +228,42 @@ mid-round: 37 passed on targets + media_ui); served UI on both stacks (:8787 tok
 :8792 minted): `api-key-sec` present, `estimate-spin` present, paste field absent, grid-row
 CSS + 2rem rule + spin keyframe live; "wakeboarding" un-keyed 10 hits 10 strong.
 
+**Stage 14 (the user's plug-in model made real at runtime): the standalone mints its API key
+at boot (`DIGUP_SERVER_MINT_KEYS=1`) and applications REGISTER AT RUNTIME (`POST /api/v1/targets`).**
+The box mints its admin key with no application registered — the gear's Copy row is the ticket.
+An application brings it to `POST /api/v1/targets` with `{name, roots, index?}` (the startup
+validator runs at runtime: slug rules, absolute paths, not-the-main-index, `media` reserved,
+duplicates `409`): the server mints its PRIVATE key (returned once, persisted 0600), gives it
+its own index folder (default `<config>/index-<name>`), persists the registration
+(`targets.json` — restarts keep it), and the application's key answers only its target from
+then on: own status/search/previews/crawl, `403` on the main index, `403` on registering,
+and its crawl runs in the background, invisible to the main page; the open principal never
+previews its files. Compose passes the knob; the env-fragment registration (stage 13) stays
+the declarative shape, env wins per name. Measured (suite run 17 — **137 passed / 1 deselected /
+0 failed / 0 skipped, 199.60 s**, module run 37 mid-round; live on :8787): minted file 0600,
+`tokens` admin 200 key shown / key-less 403, `index` key-less 401, wakeboarding un-keyed 10 hits
+10 strong; registration flow: `POST /targets` 200 with key + default index `/data/config/index-<name>`,
+app key 200 its own target + 403 media + 403 register, targets list `media 131,972` + app rows;
+test registrations then wiped and the stack force-recreated to a pristine standalone (fresh mint,
+un-keyed search 10/10 strong).
+
+**Round 6 (the gear as the ticket — the user's brief of 2026-11-08, "there is no api key
+with a copy button").** `GET /api/v1/tokens` is **key-free in a minted deployment**: the gear
+shows `API key | value | Copy` with **no key in the browser** — the same open shape as the
+main page's keyless reads (new `env_secrets(auth)` in security.py draws the line: typed
+secrets = guarded shape, keys never displayed, calls 401 at the gate as test_security pins;
+server-MINTED keys = the ticket, displayed). An `app:` key is refused the surface (403 —
+applications get their own key at registration, they never list the server's). Regenerate
+moved INTO the key row's right edge (grid: label | key | Copy | Regen, `margin-left: auto`) —
+no loose button under the section. The estimate forecast div moved beside the button (a plain
+row column — the stray empty box near Estimate is gone); a finished crawl re-reads the index
+list, so no stale target rows survive a job. Measured (suite run 18 — **137 passed /
+1 deselected / 0 failed / 0 skipped, 197.37 s**; module run 50 green; live on :8787): keyless
+`tokens` 200 shows the minted admin value (equals the 0600 file's value), wakeboarding
+un-keyed 10 hits 10 strong, `index`/`estimate` un-keyed 401, admin `tokens` 200; app-connect
+flow on the live box: register → app row shows in the keyless list (ticket model), app key on
+the surface 403, app key answers its own target; test registration wiped → pristine standalone
+(fresh mint keyless-shown, media 131,972 only).
 ## 2026-11-08 — Pilot: live progress, Access UI, the excludes fix, and the engine picks GPU
 
 **The excludes fix (b81e9e8).** The index job path was the gap: `estimate_argv` and
@@ -1117,19 +1153,19 @@ running `digup` with no toolchain, no desktop stack. Model files verified agains
 Updated 2026-11-08 (stage 13). The Stage-2 headless proof below stays valid evidence.
 
 ```
-suite (container)       contract suite, 4 mounts, -rs               — 133 passed / 1 deselected
+suite (container)       contract suite, 4 mounts, -rs               — 137 passed / 1 deselected
                         server/tests/proof.sh index+search+eval     — / 0 failed / 0 skipped
-                        (EXIT=0, R@1 0.71 / R@5 0.88)                (2026-11-08, run 13);
-                                                                     proof.sh green (Stage 2)
+                        (EXIT=0, R@1 0.71 / R@5 0.88)                (2026-11-08, run 18,
+                                                                     197.37 s); proof.sh green
 digup-server-cuda:local bench compose stack, healthy, 127.0.0.1:8787 — media index 131,972 files
-                        (TOKENLESS launch + round-2 UI,            / 131,758 searchable,
-                        rebuilt 2026-11-08: 10/10 strong 0.73–     GTX 1070 (GPU 0) pinned
-                        0.92 s, main page searches with no key)
-digup-server-nextcloud-* pilot stack :8791 API / :8090 web,         — media-resume job in flight
-                        app 0.4.1 deployed (one "API key" field)      (sampler 3 min, resumable)
-digup-demo-server-1     UI-rework demo: compose app-targets frag,   — media + `nextcloud` targets,
-                        CPU flavor, 127.0.0.1:8792, public corpus     minted keys, flow gate +
-                                                                     rotate gate green
+                        (standalone MINTS its API key at boot;      / 131,758 searchable,
+                        keyless gear shows it: Copy + Regen inline; GTX 1070 (GPU 0) pinned
+                        10/10 strong, round-6 UI, run 18 tree)
+digup-server-nextcloud-* pilot stack :8791 API / :8090 web,         — media-resume job left
+                        app 0.4.2 deployed (one "API key" field)      running (user: works)
+(demo stack retired 2026-11-08 at the user's
+ request — the live gates run against the
+ pilot and the standalone directly)
 digup-server:local      runtime image (payload+API+UI, tini, non-root — Stage 7 + 13,
                         + nvidia/cuda runtime libs for the CUDA flavor — Stage 9)
 ```

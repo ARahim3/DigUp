@@ -61,9 +61,10 @@
       <section class="set-sec">
         <span class="set-title">Estimate</span>
         <div class="set-controls">
+          <div id="estimate" class="set-lines" hidden></div>
           <div class="set-line">
             <button id="estimate-btn" title="What the folders would cost to index — the engine's own forecast">Estimate</button>
-            <span id="estimate-spin" hidden aria-label="estimating" title="estimating — the engine is walking the folders">⟳</span>
+            <span id="estimate-spin" hidden aria-label="estimating" title="estimating — the engine is walking the folders"></span>
           </div>
         </div>
       </section>
@@ -76,8 +77,8 @@
       <section class="set-sec" id="api-key-sec">
         <span class="set-title">API key</span>
         <div id="appkeys" class="set-lines"></div>
-        <button id="keys-regenerate" type="button" hidden
-                title="New keys now; the old ones stop working and the applications that have them lose access">Regenerate</button>
+        <!-- Regenerate is built by app.js and rides the key row's right edge
+             (round-6 UX brief) — the row grid is label | key | Copy | Regenerate. -->
       </section>
     </div>
   </header>
@@ -110,8 +111,6 @@
       <button id="kinds-all" type="button" title="All kinds">all</button>
     </div>
 
-    <p id="engine-says"></p>
-    <div id="estimate" hidden></div>
 
     <!-- State panels. `body[data-page]` (app.js render() sets it: idle | busy | results |
          none) is the ONE switch that shows a panel: the preview pane never reserves space for

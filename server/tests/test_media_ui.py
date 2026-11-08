@@ -67,7 +67,7 @@ def test_root_serves_the_vanilla_ui(media_client):
     # gear's section order is the operator's reading order (2026-11-08 UX brief), and
     # the rows are a uniform grid: label | value | action, one row height, equal
     # padding and borders (the user's "clean and orderly, equal size rows").
-    assert 'id="appkeys"' in html and 'id="targets"' in html and 'id="keys-regenerate"' in html
+    assert 'id="appkeys"' in html and 'id="targets"' in html   # rows; Regen is built in JS
     assert 'id="api-key-sec"' in html and '$("api-key-sec")' in appjs.text
     assert "Set in the server's environment" in appjs.text   # env-keyed shape says so
     assert "Regenerate" in appjs.text and "/api/v1/tokens" in appjs.text
@@ -84,10 +84,28 @@ def test_root_serves_the_vanilla_ui(media_client):
     assert pos == sorted(pos)
     # The main page keeps no status nag (2026-11-08 UX ask): counts live in the panel.
     assert 'id="statusline"' not in html and "status unavailable" not in appjs.text
-    # Estimate progress is a spinning wheel beside the gear's button (round-3 UX ask):
-    # the main page shows no "estimating…" popup.
+    # Estimate: the whole flow lives in the gear panel (round-5 UX brief): the button,
+    # a TRUE CIRCLE spinner (ring + rotating bright quadrant, no glyph), the forecast
+    # rows — and NO main-page estimate popup (the #estimate div is inside the panel).
     assert 'id="estimate-spin"' in html and "estimate-spin" in appjs.text
     assert "estimating — the engine is walking the folders…" not in appjs.text
+    assert html.count('id="estimate"') == 1
+    assert html.index('id="estimate"') > html.index('id="settings"')   # panel-side
+    assert html.index('id="estimate"') < html.index('id="big"')        # not the main page
+    assert "border-radius: 50%" in css[css.index("#estimate-spin"):css.index("@keyframes spin")]
+    assert "flex-wrap: nowrap" in css[css.index("#settings .set-facts"):]  # badges in one row
+    assert "overflow-y: auto" in css[css.index("#settings {"):]
+    # Round 6 (the user's brief): the API-key section is the key ITSELF with Copy —
+    # the keyless gear is shown the minted ticket (`GET /tokens` key-free in a minted
+    # deployment) — and Regenerate rides the key row's right edge, built by app.js
+    # (not a loose button under the section). The row grid: label | key | Copy | Regen.
+    assert 'id="appkeys"' in html
+    assert '"keys-regenerate"' in appjs.text and "adminRow.append(regen)" in appjs.text
+    assert "#keys-regenerate { margin-left: auto; }" in css
+    assert "grid-template-columns: 9rem minmax(0, 1fr) auto auto" in css  # label|key|copy|regen
+    # A finished crawl re-reads the index list: the panel shows the targets that exist
+    # NOW (no stale rows survive a completed job).
+    assert "loadAccess();" in appjs.text[appjs.text.index("pollJob"):]
 
 
 def test_the_space_key_keeps_buttons_and_links_activated(media_client):

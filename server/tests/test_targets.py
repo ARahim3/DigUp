@@ -354,6 +354,11 @@ def test_an_env_keyed_deployment_rotates_nothing(tmp_path, monkeypatch):
         A = {"Authorization": "Bearer adm"}
         t = c.get("/api/v1/tokens", headers=A).json()
         assert t["admin"] is None and t["admin_configured"] is True    # never echoed
+        # The typed-secrets shape stays guarded: a keyless call reaches the endpoint
+        # (the gate's open door is the main index's READS; the keys surface is not a
+        # read) and the endpoint refuses it — 403, keys shown to the admin token only.
+        # Round 6 draws the open-DISPLAY line at SERVER-MINTED keys only.
+        assert c.get("/api/v1/tokens").status_code == 403
         r = c.post("/api/v1/tokens", headers=A)
         assert r.status_code == 400 and "environment" in r.json()["detail"]
         assert not (tmp_path / "server-config" / "tokens.json").exists()
@@ -383,7 +388,12 @@ def test_a_minted_key_deployment_answers_main_reads_openly(tmp_path, monkeypatch
         assert c.post("/api/v1/index", json={}).status_code == 401
         assert c.post("/api/v1/estimate", json={}).status_code == 401
         assert c.get("/api/v1/status", params={"target": "nc"}).status_code == 401
-        assert c.get("/api/v1/tokens").status_code == 403
+        # Round 6 (the ticket model): a minted deployment shows its keys to the gear
+        # WITHOUT a key in the browser — the same open shape as the main page's reads;
+        # an application's own key never lists the server's keys.
+        tk = c.get("/api/v1/tokens").json()
+        assert tk["admin"] == keys["admin"] and any(a["name"] == "nc" for a in tk["apps"])
+        assert c.get("/api/v1/tokens", headers=nc).status_code == 403
         # The app key keeps answering its own target and nothing else.
         assert c.get("/api/v1/status", headers=nc).json()["target"] == "nc"
         assert c.get("/api/v1/status", params={"target": "media"},
@@ -410,3 +420,93 @@ def test_an_open_principal_never_previews_an_applications_files(tmp_path, monkey
         assert c.get(f"/api/v1/media/{media_id}/preview").status_code == 403
         assert c.get(f"/api/v1/media/{media_id}/file").status_code == 403
         assert c.get(f"/api/v1/media/{media_id}/text").status_code == 403
+
+
+# ── stage 14: the standalone mints its key; applications register at runtime ─────────
+
+def test_the_standalone_mints_its_api_key_when_asked(tmp_path, monkeypatch):
+    """DIGUP_SERVER_MINT_KEYS=1: the key exists at boot with no application registered —
+    the gear's Copy row. Main reads stay open; the key guards index/estimate/keys."""
+    from digup_server.api import create_app
+    monkeypatch.setenv("DIGUP_SERVER_MINT_KEYS", "1")
+    monkeypatch.delenv("DIGUP_SERVER_APP_TARGETS", raising=False)
+    monkeypatch.delenv("DIGUP_SERVER_TOKEN", raising=False)
+    monkeypatch.delenv("DIGUP_SERVER_ADMIN_TOKEN", raising=False)
+    monkeypatch.setenv("DIGUP_SERVER_CONFIG", str(tmp_path / "server-config"))
+    with TestClient(create_app(_cfg(tmp_path / "main-index", (tmp_path / "media",)))) as c:
+        path = tmp_path / "server-config" / "tokens.json"
+        keys = json.load(open(path, encoding="utf-8"))
+        adm = keys["admin"]
+        A = {"Authorization": f"Bearer {adm}"}
+        assert adm and stat.S_IMODE(os.stat(path).st_mode) == 0o600
+        assert c.get("/api/v1/status").status_code == 200          # main reads: open
+        assert c.post("/api/v1/index", json={}).status_code == 401  # mutations: keyed
+        assert c.post("/api/v1/estimate", json={}).status_code == 401
+        # Round 6: the minted key is DISPLAYED with no key in the browser — the gear's
+        # Copy row is the ticket; the admin call shows the same value.
+        tk = c.get("/api/v1/tokens").json()
+        assert tk["admin"] == adm and tk["apps"] == []
+        t = c.get("/api/v1/tokens", headers=A).json()
+        assert t["admin"] == adm and t["apps"] == []
+        assert c.post("/api/v1/estimate", headers=A, json={}).status_code == 200
+        # An application's key never lists the server's keys.
+        reg = c.post("/api/v1/targets", headers=A,
+                     json={"name": "demo", "roots": [str(tmp_path / "media")]})
+        assert reg.status_code == 200
+        assert c.get("/api/v1/tokens",
+                     headers={"Authorization": f"Bearer {reg.json()['token']}"}).status_code == 403
+
+
+def test_an_application_registers_at_a_running_server_and_gets_its_own_key(tmp_path,
+                                                                           scratch,
+                                                                           monkeypatch):
+    """The user's flow as one call: standalone key → POST /targets(name, roots) →
+    private minted key + own index folder (default <config>/index-<name>) → its crawl
+    runs in the background; the main page never sees it; the registration survives
+    restart (targets.json + tokens.json)."""
+    from digup_server.api import create_app
+    monkeypatch.setenv("DIGUP_SERVER_MINT_KEYS", "1")
+    monkeypatch.setenv("DIGUP_SERVER_CONFIG", str(tmp_path / "server-config"))
+    with TestClient(create_app(_cfg(tmp_path / "main-index", (tmp_path / "media",)))) as c:
+        keys = json.load(open(tmp_path / "server-config" / "tokens.json", encoding="utf-8"))
+        A = {"Authorization": f"Bearer {keys['admin']}"}
+        r = c.post("/api/v1/targets", headers=A, json={"name": "nc", "roots": [str(scratch)]})
+        assert r.status_code == 200, r.text
+        reg = r.json()
+        assert reg["generated"] is True
+        assert reg["index"] == str(tmp_path / "server-config" / "index-nc")
+        N = {"Authorization": f"Bearer {reg['token']}"}
+        assert c.get("/api/v1/status", headers=N).json()["target"] == "nc"
+        assert c.get("/api/v1/status", params={"target": "media"},
+                     headers=N).status_code == 403
+        # its OWN crawl, in the background — and never anyone else's
+        assert c.post("/api/v1/index", headers=N).status_code == 202
+        job_id = c.get("/api/v1/jobs", headers=N).json()["jobs"][-1]["id"]
+        assert wait_final(c, job_id, N) == "done"
+        assert c.get("/api/v1/status", headers=N).json()["files"] > 0
+        assert c.get("/api/v1/status").json()["files"] == 0            # main untouched
+        # persisted: a restart re-reads both files (the keys and the registration)
+        tj = json.load(open(tmp_path / "server-config" / "targets.json", encoding="utf-8"))
+        assert tj["nc"]["roots"] == [str(scratch)]
+        tk = json.load(open(tmp_path / "server-config" / "tokens.json", encoding="utf-8"))
+        assert tk["readers"]["app:nc"] == reg["token"]
+        # the startup validator runs at runtime: every refusal quotes its rule
+        bad = [({"name": "media", "roots": [str(scratch)]}, 400),
+               ({"name": "nc", "roots": [str(scratch)]}, 409),
+               ({"name": "Bad Name", "roots": [str(scratch)]}, 400),
+               ({"name": "x", "roots": ["relative/root"]}, 400),
+               ({"name": "y", "roots": [str(scratch)],
+                 "index": str(tmp_path / "main-index")}, 400)]
+        for body, want in bad:
+            assert c.post("/api/v1/targets", headers=A, json=body).status_code == want
+        # key-less and application-keyed requests cannot register anything
+        assert c.post("/api/v1/targets",
+                      json={"name": "z", "roots": [str(scratch)]}).status_code == 403
+        assert c.post("/api/v1/targets", headers=N,
+                      json={"name": "z", "roots": [str(scratch)]}).status_code == 403
+        # the open principal never previews the application's files
+        hits = c.post("/api/v1/search", headers=N, json={"q": "campfire stories",
+                      "limit": 5}).json()["hits"]
+        media_id = next(h["media_id"] for h in hits if h["kind"] == "image")
+        assert wait_status(c, f"/api/v1/media/{media_id}/preview", N, 200) == 200
+        assert c.get(f"/api/v1/media/{media_id}/preview").status_code == 403

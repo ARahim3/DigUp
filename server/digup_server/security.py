@@ -306,11 +306,18 @@ TOKENS_FILE = "tokens.json"
 
 
 def mint_tokens(env: dict[str, str], config_dir: str,
-                app_target_names: tuple[str, ...]) -> Auth:
+                app_target_names: tuple[str, ...], mint_admin: bool = False) -> Auth:
     """The deployment's Auth, with minted keys filled in for the app targets env left
-    unbound. Restart-stable: values come from <config>/tokens.json and are re-used."""
+    unbound. Restart-stable: values come from <config>/tokens.json and are re-used.
+
+    `mint_admin` (DIGUP_SERVER_MINT_KEYS, 2026-11-08 user brief): the STANDALONE box
+    mints its own API key at boot with no application registered — the gear shows it
+    with Copy, an application takes it as its ticket to connect (POST /api/v1/targets
+    registers one and mints its private key alongside). Main reads stay open (the
+    minted shape); the key guards index/estimate/keys. Without targets and without
+    the knob, minting stays inert — a plain tokenless server is unchanged."""
     auth = auth_from_env(env)
-    if not app_target_names:
+    if not app_target_names and not mint_admin:
         return auth                                   # standalone: minting inert
 
     path = os.path.join(config_dir, TOKENS_FILE)
@@ -342,6 +349,21 @@ def mint_tokens(env: dict[str, str], config_dir: str,
                        minted=tuple(minted))
     _write_tokens_file(path, minted_auth)
     return minted_auth
+
+
+def env_secrets(auth: Auth) -> bool:
+    """True when the DEPLOYMENT typed any key in its environment. Minted keys
+    (server-generated, `auth.minted`) are not env secrets: the user's brief of
+    2026-11-08 draws the line here — a minted-key deployment guards the index
+    operations and each application's own index, answers the main index's READS
+    openly, and shows its minted keys to the gear (the ticket model: Copy → paste
+    into the application); a deployment that typed its own secrets guards every
+    API call, as before."""
+    if auth.read:
+        return True
+    if auth.admin is not None and "admin" not in auth.minted:
+        return True
+    return any(name not in auth.minted for name in auth.readers)
 
 
 def rotate_minted(auth: Auth, config_dir: str) -> "Auth | None":
@@ -442,18 +464,7 @@ class BearerAuth:
         self.auth = auth or Auth()
 
     def _env_secrets(self) -> bool:
-        """True when the DEPLOYMENT configured any key in its environment. Minted keys
-        (server-generated, `auth.minted`) are not env secrets: the user's brief of
-        2026-11-08 draws the line here — a minted-key deployment guards the index
-        operations and each application's own index, and answers the main index's
-        READS openly (the operator's own box, the plain-LAN trust model); a deployment
-        that typed its own secrets guards every API call, as before."""
-        a = self.auth
-        if a.read:
-            return True
-        if a.admin is not None and "admin" not in a.minted:
-            return True
-        return any(name not in a.minted for name in a.readers)
+        return env_secrets(self.auth)
 
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] != "http" or not self.auth.enabled:

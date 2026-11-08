@@ -89,6 +89,11 @@ services:
       DIGUP_SERVER_ALLOWED_HOSTS: ${DIGUP_SERVER_ALLOWED_HOSTS:-}
       DIGUP_SERVER_TOKEN: ${DIGUP_SERVER_TOKEN:-}
       DIGUP_SERVER_ADMIN_TOKEN: ${DIGUP_SERVER_ADMIN_TOKEN:-}
+      # The standalone box mints its own API key at boot (gear → API key: Copy the key;
+      # applications bring it to POST /api/v1/targets and get their own private key and
+      # their own index — docs/API.md "Named indexes"). Main-page reads stay key-free;
+      # the minted key guards index/estimate/keys. Unset keeps a plain tokenless server.
+      DIGUP_SERVER_MINT_KEYS: ${DIGUP_SERVER_MINT_KEYS:-}
     volumes:
       - ${DIGUP_INDEX_DIR:-./data/index}:/data/index
       - ${DIGUP_MODELS_DIR:-./data/models}:/data/models
