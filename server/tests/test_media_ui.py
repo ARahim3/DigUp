@@ -94,7 +94,16 @@ def test_root_serves_the_vanilla_ui(media_client):
     assert html.index('id="estimate"') < html.index('id="big"')        # not the main page
     assert "border-radius: 50%" in css[css.index("#estimate-spin"):css.index("@keyframes spin")]
     assert "flex-wrap: nowrap" in css[css.index("#settings .set-facts"):]  # badges in one row
-    assert "overflow-y: auto" in css[css.index("#settings {"):]
+    # Round 7 (the layout brief): the panel NEVER scrolls — `overflow-y: auto` made a
+    # clipping box (controls cut at the edges, a scrollbar stealing width, the modal
+    # able to leave the viewport). The API-key row's grid is minmax()-bounded: the old
+    # `9rem ... auto auto` minimum (~24.6 rem) sat ABOVE the ~21 rem control column —
+    # a ~120 px overflow past the panel's right edge, growing on narrow windows.
+    panel_head = css[css.index("#settings {"):]
+    assert "overflow-x: clip" in panel_head[:400] and "overflow-y: auto" not in panel_head[:400]
+    row_grid = css[css.index(".appkey-line { display: grid"):]
+    assert "grid-template-columns: minmax(6rem, 9rem) minmax(0, 1fr)" in row_grid
+    assert "min-content min-content" in row_grid[:220] and ".appkey-line > * { min-width: 0; }" in row_grid
     # Round 6 (the user's brief): the API-key section is the key ITSELF with Copy —
     # the keyless gear is shown the minted ticket (`GET /tokens` key-free in a minted
     # deployment) — and Regenerate rides the key row's right edge, built by app.js
@@ -102,10 +111,22 @@ def test_root_serves_the_vanilla_ui(media_client):
     assert 'id="appkeys"' in html
     assert '"keys-regenerate"' in appjs.text and "adminRow.append(regen)" in appjs.text
     assert "#keys-regenerate { margin-left: auto; }" in css
-    assert "grid-template-columns: 9rem minmax(0, 1fr) auto auto" in css  # label|key|copy|regen
+    # Round 7 (the layout brief): Estimate is a REAL toggle switch (native checkbox +
+    # a track/knob label in the 2rem row system) gating the Estimate button, its
+    # forecast rows stacked directly above the control line (`#estimate-ctl` grid) —
+    # no empty space above the pill, and the Appearance select fills its column.
+    assert 'id="estimate-toggle"' in html and "estimateOn()" in appjs.text
+    assert "estimate-ctl" in css and "#settings select#theme { width: 100%" in css
+    assert ".estimate-switch input:checked + .estimate-switch-label" in css
     # A finished crawl re-reads the index list: the panel shows the targets that exist
     # NOW (no stale rows survive a completed job).
     assert "loadAccess();" in appjs.text[appjs.text.index("pollJob"):]
+    # Round 7: the gear ADOPTS the minted admin key it is shown — its own controls
+    # (Index now, Estimate, Regenerate) are admin-scope by the minted shape's design,
+    # so the operator's gear uses the key the server just displayed to it. A stale
+    # stored key is dropped only where a keyless main read proves the minted shape.
+    assert 'localStorage.setItem("digupBearer", t.admin)' in appjs.text
+    assert 'localStorage.removeItem("digupBearer")' in appjs.text and "loadAccess.retried" in appjs.text
 
 
 def test_the_space_key_keeps_buttons_and_links_activated(media_client):

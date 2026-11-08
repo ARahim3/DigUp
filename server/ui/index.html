@@ -60,9 +60,14 @@
       </section>
       <section class="set-sec">
         <span class="set-title">Estimate</span>
-        <div class="set-controls">
+        <div class="set-controls" id="estimate-ctl">
           <div id="estimate" class="set-lines" hidden></div>
           <div class="set-line">
+            <label class="estimate-switch" title="Estimate on: the Estimate button runs the engine's forecast">
+              <input id="estimate-toggle" type="checkbox" checked aria-label="Estimate on">
+              <span class="estimate-switch-label" aria-hidden="true"></span>
+              <span class="estimate-switch-text">on</span>
+            </label>
             <button id="estimate-btn" title="What the folders would cost to index — the engine's own forecast">Estimate</button>
             <span id="estimate-spin" hidden aria-label="estimating" title="estimating — the engine is walking the folders"></span>
           </div>
@@ -111,6 +116,7 @@
       <button id="kinds-all" type="button" title="All kinds">all</button>
     </div>
 
+    <p id="engine-says"></p>
 
     <!-- State panels. `body[data-page]` (app.js render() sets it: idle | busy | results |
          none) is the ONE switch that shows a panel: the preview pane never reserves space for

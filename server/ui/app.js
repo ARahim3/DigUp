@@ -169,6 +169,17 @@ async function loadAccess() {
   try {
     const t = await api("/api/v1/tokens");        // keyless in a minted deployment:
     const rows = [];                             // the gear IS shown the key it mints
+    if (t.admin && localStorage.getItem("digupBearer") !== t.admin) {
+      // The gear's own controls (Index now, Estimate, Regenerate) are admin-scope by
+      // the minted shape's design — so this browser takes the key it was just SHOWN,
+      // exactly as Regenerate hands it the new key today. No typing, no paste, no
+      // popup: the standalone box's own operator uses its own box's key, and a stored
+      // key that the server no longer recognizes (rotated, re-minted, from another
+      // deployment) is REPLACED by the value shown now — the gear self-heals. The main
+      // page's key-free reads are untouched. A server configured by environment shows
+      // no value (admin null) → nothing is adopted → guarded deployments stay guarded.
+      localStorage.setItem("digupBearer", t.admin);
+    }
     if (t.admin) {
       // The admin row carries Regenerate at the row's right edge (round-6 UX brief:
       // not a loose button under the section) — one uniform grid: label · key · Copy
@@ -196,6 +207,22 @@ async function loadAccess() {
     // styling ask, round 3).
     sec.hidden = rows.length === 0 && regen.hidden;
   } catch {
+    // A stored key that the server refuses. In the MINTED shape the main index's reads
+    // are open, so a keyless `status` answers 200 — the stored key is stale (rotated,
+    // or from a server that was re-minted): drop it and re-read, the gear then shows
+    // the key that exists NOW. In the guarded (environment-keys) shape a keyless
+    // `status` answers 401, so the stored key is kept: it is the deployment's config,
+    // not something the UI may discard. One retry only — never a loop.
+    if (!loadAccess.retried && localStorage.getItem("digupBearer")) {
+      loadAccess.retried = true;
+      try {
+        const probe = await fetch("/api/v1/status", {headers: {"content-type": "application/json"}});
+        if (probe.status === 200) {
+          localStorage.removeItem("digupBearer");
+          return loadAccess();
+        }
+      } catch { /* the server is not answering at all: show the rows as empty */ }
+    }
     $("appkeys").hidden = true;          // read key / no key: the rows are not for this scope
     sec.hidden = regen.hidden;           // nothing the panel can offer this scope
   }
@@ -233,7 +260,8 @@ $("gear").onclick = () => {
   $("gear").classList.remove("attention");   // pointing done: the panel is open
   if (!box.hidden) {
     box.querySelector("select, button, input")?.focus();   // keyboard users
-    loadAccess();                                           // keys + indexes, admin scope
+    loadAccess.retried = false;       // a fresh open may try the stale-key recovery once
+    loadAccess();                     // keys + indexes, admin scope
   }
 };
 $("settings-close").onclick = closeSettings;
@@ -765,15 +793,40 @@ $("suggest").replaceChildren(...SUGGESTIONS.map((phrase) => {   // spread: repla
 }));
 
 // ── Estimate: the engine's own forecast for the server's folders (POST /estimate).
-// It lives entirely in the gear panel: the button, the spinning circle while the
-// engine walks, the forecast rows under them — the main page shows no estimate
-// popup at all (2026-11-08 UX brief, round 5). Generation token (like searches
-// have): a second click during a slow crawl must not let the FIRST crawl's late
-// reply write rows into a panel closed and reopened in between.
+// It lives entirely in the gear panel: the toggle (a real switch, gating the button,
+// kept in this browser), the button, the spinning circle while the engine walks, the
+// forecast rows stacked directly above the control line — the main page shows no
+// estimate popup at all (2026-11-08 UX brief, round 5). Generation token (like
+// searches have): a second click during a slow crawl must not let the FIRST crawl's
+// late reply write rows into a panel closed and reopened in between.
+const estimateOn = () => $("estimate-toggle").checked;
+$("estimate-toggle").onchange = () => {
+  localStorage.setItem("digupEstimateOn", estimateOn() ? "1" : "0");
+  const text = document.querySelector(".estimate-switch-text");
+  if (text) text.textContent = estimateOn() ? "on" : "off";
+  if (!estimateOn()) {                      // switching off stops a run in flight
+    estimateToken++;
+    $("estimate-spin").hidden = true;
+    $("estimate").hidden = true;
+    $("estimate").replaceChildren();
+  }
+};
+(() => {                                     // restore this browser's stored choice
+  const stored = localStorage.getItem("digupEstimateOn");
+  const on = stored === null ? true : stored === "1";
+  $("estimate-toggle").checked = on;
+  const text = document.querySelector(".estimate-switch-text");
+  if (text) text.textContent = on ? "on" : "off";
+})();
 let estimateToken = 0;
 $("estimate-btn").onclick = async () => {
   const panel = $("estimate");
   const spin = $("estimate-spin");
+  if (!estimateOn()) {                      // the toggle gates the control (round 7)
+    panel.hidden = true;
+    panel.replaceChildren();
+    return;
+  }
   if (!spin.hidden || !panel.hidden) {          // click again = cancel + clear
     estimateToken++;
     spin.hidden = true;

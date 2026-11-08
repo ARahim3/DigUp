@@ -247,6 +247,31 @@ app key 200 its own target + 403 media + 403 register, targets list `media 131,9
 test registrations then wiped and the stack force-recreated to a pristine standalone (fresh mint,
 un-keyed search 10/10 strong).
 
+**Round 7 (the settings-layout brief): the panel's grid arithmetic, measured.** The API-key
+row was `9rem minmax(0,1fr) auto auto`: label (144 px) + 3 gaps (24) + two padded buttons
+(Copy ≈ 70, Regenerate ≈ 138) + row padding/border (18) ≈ **394 px minimum inside a control
+column of 271 px** (25 rem panel − label column) → the row sat ~120 px past the panel's right
+edge, worse with the `overflow-y: auto` scrollbar. Every track is now `minmax()`-bounded
+(`minmax(6rem,9rem) | minmax(0,1fr) | min-content min-content` + `min-width: 0`), the panel is
+`min(27rem, 100vw − 2rem)` with `overflow-x: clip` and NO scroller, `#settings .set-sec > *`
+carries `min-width: 0`, the Appearance select fills its control column, the section folds to
+one column under 720 px. The Estimate control is a REAL switch (native checkbox + track/knob,
+2.6rem×1.5rem, rides the 2rem row system) gating the Estimate button, its rows stacked
+directly above the control line (`#estimate-ctl`). The gear ADOPTS the minted key it is shown
+(the panel's own controls are admin-scope: Index now / Estimate / Regenerate work with zero
+typing; a stored key the server no longer recognizes is replaced by the value shown now) and a
+finished crawl re-reads the index list. The engine's own-words line (`#engine-says`) — lost by
+my round-6 line-deletion — is restored (its absence threw at first paint).
+Measured (suite run 19b — **137 passed / 1 deselected / 0 failed / 0 skipped, 189.48 s**;
+module runs 50 green; geometry gate 34 PASS lines; round-7 layout gate 42 PASS at 1280/900/640;
+live :8787 27 PASS): panel right 1196/1280, key row right 1182.2 inside the panel; control
+column aligned in all five sections (878.6 = 562.6 = 25.8 px folding); select fills the column
+(303.6 px wide at 1280, 580.4 at 640); toggle measures 41.6×24 px = 2.6rem×1.5rem; no inner
+scrollers, no page horizontal scroll at any width; toggle flips by click and Space; Estimate
+runs keyless from the gear (adoption) and renders rows in the panel, main page clean; Copy
+puts the full key on the clipboard; Regenerate mints a new key (row + browser updated, old key
+401); wakeboarding un-keyed 10 hits 10 strong; index/estimate un-keyed 401.
+
 **Round 6 (the gear as the ticket — the user's brief of 2026-11-08, "there is no api key
 with a copy button").** `GET /api/v1/tokens` is **key-free in a minted deployment**: the gear
 shows `API key | value | Copy` with **no key in the browser** — the same open shape as the

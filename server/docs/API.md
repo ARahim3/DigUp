@@ -406,6 +406,12 @@ the server's key is one row: **API key | value | Copy | Regenerate**) and via
 UX brief, round 6 — the ticket model): the gear reads the row with no key in the browser,
 exactly as the main page searches with no key. An `app:` key and an env-keyed deployment are
 refused there (`403`, admin scope only — the env-shape's gate keeps 401-ing every call).
+**The gear takes the key it is shown** (`app.js`): in a minted deployment the operator's own
+panel runs the admin-scope controls (`index`, `estimate`, `tokens` rotate) with the displayed
+value, stored in `localStorage` exactly as rotation already stores its new key; a stored key the
+server no longer recognizes is replaced by the value shown now (the panel self-heals after a
+rotate or re-mint). Nothing is typed, pasted, or prompted, and the main page's key-free reads
+are unaffected.
 Minting fires only when targets exist; a standalone, token-less deployment keeps running
 unguarded and unchanged. **The minted shape keeps the main index's READS open** (2026-11-08
 user brief — "the standalone app just uses the directory set in the environment"): a key-less
