@@ -88,10 +88,17 @@ h1 { font-size: 1.3rem; margin: 0; }
   gap: 0.35rem 0.7rem; align-items: center; }
 #settings .set-sec + .set-sec { border-top: 1px solid var(--line); padding-top: 0.65rem; margin-top: 0.1rem; }
 #settings .set-title { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em;
-  color: var(--soft); text-align: right; }
+  color: var(--soft); text-align: right; align-self: start; line-height: 2rem; }
 #settings .set-controls { display: flex; flex-direction: column; align-items: flex-start;
   gap: 0.45rem; min-width: 0; }
 #settings .set-line { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+/* One row height for the whole panel (2026-11-08 styling ask, round 3): every control —
+   the appearance select, Index now, the prune row, Estimate, Regenerate — and every
+   .appkey-line row is exactly 2rem tall, so the sections read as one clean stack. */
+#settings select, #settings button, #settings .set-line, #settings .appkey-line {
+  min-height: 2rem; box-sizing: border-box; }
+#settings .set-line label { display: inline-flex; align-items: center; gap: 0.4rem;
+  min-height: 2rem; }
 #settings #job { display: block; min-height: 1.1em; font-size: 0.82rem; margin: 0; }
 #settings .set-facts { display: flex; gap: 0.35rem; flex-wrap: wrap; }
 #rootsline { border-top: 1px solid var(--line); padding-top: 0.6rem; margin: 0;
@@ -130,6 +137,11 @@ input[type="password"] { background: var(--field); font: inherit; color: var(--t
 /* a 401 with no stored key points at the gear: a soft pulse until the panel opens */
 #gear.attention { animation: gear-pulse 1.6s ease-in-out 3; }
 @keyframes gear-pulse { 50% { box-shadow: 0 0 0 3px var(--accent); } }
+/* Estimate runs in the panel: a spinning wheel beside the button is the progress
+   indicator — the main page shows no estimating popup (2026-11-08 UX ask, round 3) */
+#estimate-spin { display: inline-block; color: var(--soft); font-size: 1.1rem;
+  animation: spin 1.1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 input[type="checkbox"] { accent-color: var(--accent); }
 button, a.button-like, #kinds-all {
   font: inherit; padding: 0.42rem 0.8rem; border: 1px solid var(--edge); border-radius: 8px;

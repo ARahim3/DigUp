@@ -154,6 +154,7 @@ async function regenerateKeys() {
 
 async function loadAccess() {
   const regen = $("keys-regenerate");
+  const sec = $("api-key-sec");
   regen.hidden = true;
   try {
     const t = await api("/api/v1/tokens");
@@ -162,14 +163,24 @@ async function loadAccess() {
     for (const a of t.apps || []) {
       if (a.token) rows.push(keyRow(`API key — ${a.name}`, a.token));
     }
+    if (rows.length === 0 && (t.admin_configured || t.read_configured)) {
+      // Honest row for the environment-keys shape: the server's keys are its own
+      // config — the server never echoes them, and says so in the panel.
+      rows.push(keyRow("Set in the server's environment", null));
+    }
     $("appkeys").replaceChildren(...rows);
     $("appkeys").hidden = rows.length === 0;
     // Rotate is offered only where keys are minted (the server issued them itself);
     // an env-keyed server answers 400 — its keys live in its own config.
     regen.hidden = !t.admin;
     if (!regen.hidden) regen.onclick = regenerateKeys;
+    // A section with nothing in it collapses: the tokenless server mints no keys
+    // (they appear when an application registers) — no title-only fragment (2026-11-08
+    // styling ask, round 3).
+    sec.hidden = rows.length === 0 && regen.hidden;
   } catch {
     $("appkeys").hidden = true;          // read key / no key: the rows are not for this scope
+    sec.hidden = regen.hidden;           // nothing the panel can offer this scope
   }
   try {
     const tg = await api("/api/v1/targets");
@@ -744,14 +755,17 @@ $("suggest").replaceChildren(...SUGGESTIONS.map((phrase) => {   // spread: repla
 let estimateToken = 0;
 $("estimate-btn").onclick = async () => {
   const panel = $("estimate");
+  const spin = $("estimate-spin");
   closeSettings();
-  if (!panel.hidden) { panel.hidden = true; estimateToken++; return; }
+  if (!panel.hidden) { panel.hidden = true; estimateToken++; spin.hidden = true; return; }
   const token = ++estimateToken;
   panel.hidden = false;
-  panel.replaceChildren(el("p", "note", "estimating — the engine is walking the folders…"));
+  panel.replaceChildren();                 // empty while it works: the gear's spinner is
+  spin.hidden = false;                     // the progress indicator (no main-page popup)
   try {
     const {folders} = await api("/api/v1/estimate", {method: "POST", body: JSON.stringify({})});
     if (token !== estimateToken) return;               // a newer click owns the panel now
+    spin.hidden = true;
     panel.replaceChildren(el("p", "note",
       "The engine's own forecast for the folders it indexes. “measured here” = timed on this "
       + "machine by past indexing; “reference times” = the M4 Pro reference, too short for most PCs."));
@@ -779,6 +793,7 @@ $("estimate-btn").onclick = async () => {
       panel.append(row);
     }
   } catch (error) {
+    spin.hidden = true;
     if (token === estimateToken)
       panel.replaceChildren(el("p", "warn", `estimate failed: ${error.message}`));
   }

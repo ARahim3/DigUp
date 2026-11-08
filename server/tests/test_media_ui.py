@@ -68,16 +68,26 @@ def test_root_serves_the_vanilla_ui(media_client):
     # the rows are a uniform grid: label | value | action, one row height, equal
     # padding and borders (the user's "clean and orderly, equal size rows").
     assert 'id="appkeys"' in html and 'id="targets"' in html and 'id="keys-regenerate"' in html
+    assert 'id="api-key-sec"' in html and '$("api-key-sec")' in appjs.text
+    assert "Set in the server's environment" in appjs.text   # env-keyed shape says so
     assert "Regenerate" in appjs.text and "/api/v1/tokens" in appjs.text
     assert "/api/v1/targets" in appjs.text
     css = media_client.get("/style.css").text
     row = css[css.index(".appkey-line"):]
     assert "grid-template-columns" in row and "min-height" in row
+    # One row height for every gear control (round-3 styling ask): the panel's selects,
+    # buttons, lines and key rows share the 2rem row.
+    panel = css[css.index("#settings select, #settings button"):]
+    assert "min-height: 2rem" in panel[:200]
     pos = [html.index(f'<span class="set-title">{t}</span>')
            for t in ("Appearance", "Index", "Estimate", "The index", "API key")]
     assert pos == sorted(pos)
     # The main page keeps no status nag (2026-11-08 UX ask): counts live in the panel.
     assert 'id="statusline"' not in html and "status unavailable" not in appjs.text
+    # Estimate progress is a spinning wheel beside the gear's button (round-3 UX ask):
+    # the main page shows no "estimating…" popup.
+    assert 'id="estimate-spin"' in html and "estimate-spin" in appjs.text
+    assert "estimating — the engine is walking the folders…" not in appjs.text
 
 
 def test_the_space_key_keeps_buttons_and_links_activated(media_client):

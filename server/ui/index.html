@@ -61,7 +61,10 @@
       <section class="set-sec">
         <span class="set-title">Estimate</span>
         <div class="set-controls">
-          <button id="estimate-btn" title="What the folders would cost to index — the engine's own forecast">Estimate</button>
+          <div class="set-line">
+            <button id="estimate-btn" title="What the folders would cost to index — the engine's own forecast">Estimate</button>
+            <span id="estimate-spin" hidden aria-label="estimating" title="estimating — the engine is walking the folders">⟳</span>
+          </div>
         </div>
       </section>
       <section class="set-sec">
@@ -70,7 +73,7 @@
         <span id="statusfull" class="set-facts"></span>
         <p id="rootsline"></p>
       </section>
-      <section class="set-sec">
+      <section class="set-sec" id="api-key-sec">
         <span class="set-title">API key</span>
         <div id="appkeys" class="set-lines"></div>
         <button id="keys-regenerate" type="button" hidden

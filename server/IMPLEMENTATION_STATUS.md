@@ -207,6 +207,27 @@ search after rotate all under the app's roots); bench :8787 relaunched TOKENLESS
 CUDA image: "wakeboarding" un-keyed 10 hits 10 strong 0.72 s, 10/10 queries strong
 0.73–0.92 s, served UI: no paste field, grid rows live, search works with no key.
 
+**Rounds 3–4 (the user's live test of the gear panel): one row height for the whole panel,
+the API-key section collapses when there is nothing to show, and Estimate shows a spinning
+wheel in the gear instead of a main-page popup.** The user's live-test report: the panel
+looked uneven, the API-key section held only a lone Regenerate button, and the estimate's
+main-page progress line was noise. Measured behavior now: every panel control — the
+appearance select, Index now, the prune row, Estimate, Regenerate, every key/index row — is
+exactly 2rem tall (`#settings select, #settings button, … { min-height: 2rem }`), titles
+align to the first row, key rows are `label | value | Copy` in the grid with the key text
+ellipsis-clipped (Copy carries the whole value). The section logic tells the truth per
+shape: minted keys render as rows; an environment-keyed deployment renders the honest row
+"Set in the server's environment" (the server never echoes typed keys — so it says so); a
+tokenless deployment has NO keys (minting fires when an application registers) and the
+whole section collapses — no title-only fragment. Estimate: a ⟳ beside the gear's button
+spins while the engine walks (CSS keyframe spin), the main-page
+"estimating — the engine is walking the folders…" popup is deleted, the forecast fills the
+panel when the answer lands, and the failure line stays honest. Measured: suite runs 15 and
+16 — **135 passed / 1 deselected / 0 failed / 0 skipped** (205.85 s and 164.51 s; module run
+mid-round: 37 passed on targets + media_ui); served UI on both stacks (:8787 tokenless,
+:8792 minted): `api-key-sec` present, `estimate-spin` present, paste field absent, grid-row
+CSS + 2rem rule + spin keyframe live; "wakeboarding" un-keyed 10 hits 10 strong.
+
 ## 2026-11-08 — Pilot: live progress, Access UI, the excludes fix, and the engine picks GPU
 
 **The excludes fix (b81e9e8).** The index job path was the gap: `estimate_argv` and
