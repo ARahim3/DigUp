@@ -15,23 +15,27 @@ const TYPING_PAUSE = 120;              // ms after the last keystroke until mean
 const $ = (id) => document.getElementById(id);
 
 const api = async (path, options = {}, retried = false) => {
-  // Bearer token, when this deployment asks for one (DIGUP_SERVER_TOKEN /
-  // DIGUP_SERVER_ADMIN_TOKEN, docs/API.md "Authentication"): kept in localStorage, sent on
-  // every call. A 401 points at Settings → API key, where the key is pasted and saved —
-  // no load-time prompt (a blocking prompt in the page is hostile UX: it fires on every
-  // new tab, cannot be reopened, and the deployment's real shape is one key pasted once,
-  // then the app works; the key lives in localStorage, never in a URL). A 401 with a
-  // stored key is the server's own words ("the bearer token is not this server's
-  // token"), shown, not re-prompted — a wrong key cannot loop the page.
+  // Bearer token, when this deployment asks for one. The shapes (docs/API.md
+  // "Authentication"): a TOKENLESS server asks for nothing (the main page searches);
+  // a MINTED-KEY server (apps registered) answers the main index's reads openly and
+  // guards index/estimate/keys with the minted admin key — the gear's API key rows are
+  // those keys, and Regenerate hands this browser its new admin key (localStorage, sent
+  // on every call, never in a URL); a server whose keys the OPERATOR set in the
+  // environment guards every call — its keys are the deployment's config, shown by
+  // nothing, so the gear says exactly that. A 401 with a stored key is the server's own
+  // words ("the bearer token is not this server's token"), shown, not re-prompted — a
+  // wrong key cannot loop the page.
   const token = localStorage.getItem("digupBearer");
   const headers = {"content-type": "application/json",
                    ...(token ? {authorization: `Bearer ${token}`} : {}),
                    ...(options.headers || {})};
   const reply = await fetch(path, {...options, headers});
   if (reply.status === 401 && !token) {
-    $("gear").classList.add("attention");   // the gear is where the key goes
+    $("gear").classList.add("attention");   // the gear names the server's shape
     throw Object.assign(new Error(
-      "This server asks for its API key — open Settings → API key and paste it."),
+      "This server guards this call with a key the operator set in its environment — "
+      + "a minted-key server lists its keys under Settings → API key, and a tokenless "
+      + "server asks for nothing."),
       {status: 401});
   }
   const body = await reply.json().catch(() => ({}));
@@ -112,26 +116,14 @@ function applyTheme(choice) {
 $("theme").onchange = (event) => applyTheme(event.target.value);
 applyTheme(localStorage.getItem("digup-theme") || "system");
 
-// ── API key (the gear's last section): the key this browser sends, the server's minted
-// keys with Copy, and Regenerate. A minted-key server issues its own keys (nothing to
-// type at boot); the row shows the value, Copy takes it to the clipboard for pasting into
-// an application's settings, Regenerate mints fresh values (confirm first — the old keys
-// die immediately and every application that has one pasted loses access until the new
-// key is pasted there; this browser's key updates itself). Deployments whose keys come
-// from the environment are never shown and never rotated: the paste field is how their
-// operator gives THIS browser its key, from the deployment's own config. ───────────────
-$("api-key").value = localStorage.getItem("digupBearer") || "";
-$("api-key-save").onclick = () => {
-  const v = $("api-key").value.trim();
-  if (v) localStorage.setItem("digupBearer", v);
-  else localStorage.removeItem("digupBearer");
-  location.reload();      // every call re-reads the stored key on a fresh page
-};
-$("api-key-clear").onclick = () => {
-  localStorage.removeItem("digupBearer");
-  $("api-key").value = "";
-  location.reload();
-};
+// ── API key (the gear's last section): the server's minted keys, each row a Copy button,
+// and Regenerate. A minted-key server issues its own keys at boot (nothing to type): the
+// main page searches WITHOUT a key; these rows are what the APPLICATIONS take — Copy puts
+// a key on the clipboard for pasting into an app's settings (a Nextcloud bridge, a
+// dashboard tile), Regenerate mints fresh values (confirm first — the old keys die
+// immediately and every application that has one pasted loses access until the new key is
+// pasted there; this browser keeps the admin key in localStorage, so it updates itself).
+// Deployments whose keys come from the environment are never shown and never rotated. ──
 
 function keyRow(label, value) {
   const kids = [el("span", "appkey-name", label)];
@@ -153,10 +145,7 @@ async function regenerateKeys() {
   }
   try {
     const t = await api("/api/v1/tokens", {method: "POST"});
-    if (t.admin) {
-      localStorage.setItem("digupBearer", t.admin);
-      $("api-key").value = t.admin;
-    }
+    if (t.admin) localStorage.setItem("digupBearer", t.admin);
     loadAccess();
   } catch (error) {
     window.alert(error.message || String(error));

@@ -18,11 +18,17 @@
 #      mint_tokens; stored 0600 in the config folder, recreation-safe) and the admin key.
 #      Minting turns auth on, so the admin key is bootstrapped from the file on the
 #      operator's own mount: `cat data/config/tokens.json`.
-#   2. Open the UI → gear → Settings → API key: paste the admin key (this browser's key).
-#      The minted keys render as rows (the app's key named by its target) — Copy takes
-#      the app's key to the clipboard; Regenerate (confirm) mints fresh values and the
-#      old ones die immediately: every application that has a key pasted loses access
-#      until the new key is pasted into it.
+#   2. Open the UI → gear → Settings → API key: the minted keys render as rows (the
+#      admin key first, then each app key named by its target) — Copy takes the app's
+#      key to the clipboard; Regenerate (confirm) mints fresh values and the old ones
+#      die immediately: every application that has a key pasted loses access until the
+#      new key is pasted into it (this browser adopts its new admin key itself).
+#      The main page needs NO key: in the minted shape the main index's reads — the
+#      search box, previews, status, the gear's index rows — answer openly; the keys
+#      guard index jobs, estimates, the keys surface, and each app's own index.
+#      (Index now/Estimate in this browser answer 401 until it carries the admin key —
+#      `cat data/config/tokens.json` and set it in localStorage as `digupBearer`, or
+#      Regenerate to adopt a fresh one.)
 #   3. Paste it into the application's DigUp bridge settings (Nextcloud app: server URL +
 #      this key). The bridge's searches, status, and "index now" all answer for the
 #      target's OWN index — the media index is untouched, and a second application gets

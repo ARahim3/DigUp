@@ -357,3 +357,56 @@ def test_an_env_keyed_deployment_rotates_nothing(tmp_path, monkeypatch):
         r = c.post("/api/v1/tokens", headers=A)
         assert r.status_code == 400 and "environment" in r.json()["detail"]
         assert not (tmp_path / "server-config" / "tokens.json").exists()
+
+
+# ── the minted shape answers the MAIN index's reads openly (2026-11-08 user brief) ────
+
+def test_a_minted_key_deployment_answers_main_reads_openly(tmp_path, monkeypatch):
+    """The user's model: the standalone box is searchable with no key; the minted keys
+    are what the APPLICATIONS get. Keys typed in the environment (the guarded shape)
+    keep guarding every call — test_security pins that shape unchanged."""
+    from digup_server.api import create_app
+    monkeypatch.setenv("DIGUP_SERVER_APP_TARGETS", f"nc={tmp_path}/media:{tmp_path}/app-index")
+    monkeypatch.setenv("DIGUP_SERVER_CONFIG", str(tmp_path / "server-config"))
+    with TestClient(create_app(_cfg(tmp_path / "main-index", (tmp_path / "media",)))) as c:
+        keys = json.load(open(tmp_path / "server-config" / "tokens.json", encoding="utf-8"))
+        nc = {"Authorization": f"Bearer {keys['readers']['app:nc']}"}
+        # No key: the main index answers reads (status, search, targets).
+        st = c.get("/api/v1/status").json()
+        assert st["target"] == MAIN_TARGET and st["files"] == 0
+        assert c.post("/api/v1/search", json={"q": "wakeboarding", "limit": 5}
+                      ).status_code == 200
+        names = {t["name"] for t in c.get("/api/v1/targets").json()["targets"]}
+        assert MAIN_TARGET in names                                   # the gear's rows
+        # What the keys are FOR stays guarded: the index operations, the keys surface,
+        # and the application's OWN index (the open door is the main index's reads).
+        assert c.post("/api/v1/index", json={}).status_code == 401
+        assert c.post("/api/v1/estimate", json={}).status_code == 401
+        assert c.get("/api/v1/status", params={"target": "nc"}).status_code == 401
+        assert c.get("/api/v1/tokens").status_code == 403
+        # The app key keeps answering its own target and nothing else.
+        assert c.get("/api/v1/status", headers=nc).json()["target"] == "nc"
+        assert c.get("/api/v1/status", params={"target": "media"},
+                     headers=nc).status_code == 403
+
+
+def test_an_open_principal_never_previews_an_applications_files(tmp_path, monkeypatch, scratch):
+    """The minted shape opens the MAIN index's reads — media handles included, so the
+    media-id path must stay scoped: a key-less request for a handle whose file lives in
+    an application's roots is refused; the application's own key previews it."""
+    from digup_server.api import create_app
+    monkeypatch.setenv("DIGUP_SERVER_APP_TARGETS", f"nc={scratch}:{tmp_path}/app-index")
+    monkeypatch.setenv("DIGUP_SERVER_CONFIG", str(tmp_path / "server-config"))
+    with TestClient(create_app(_cfg(tmp_path / "main-index", (tmp_path / "media",)))) as c:
+        keys = json.load(open(tmp_path / "server-config" / "tokens.json", encoding="utf-8"))
+        nc = {"Authorization": f"Bearer {keys['readers']['app:nc']}"}
+        assert c.post("/api/v1/index", headers=nc).status_code == 202
+        job_id = c.get("/api/v1/jobs", headers=nc).json()["jobs"][-1]["id"]
+        assert wait_final(c, job_id, nc) == "done"
+        hits = c.post("/api/v1/search", json={"q": "campfire stories", "limit": 5},
+                      headers=nc).json()["hits"]
+        media_id = next(h["media_id"] for h in hits if h["kind"] == "image")
+        assert wait_status(c, f"/api/v1/media/{media_id}/preview", nc, 200) == 200
+        assert c.get(f"/api/v1/media/{media_id}/preview").status_code == 403
+        assert c.get(f"/api/v1/media/{media_id}/file").status_code == 403
+        assert c.get(f"/api/v1/media/{media_id}/text").status_code == 403

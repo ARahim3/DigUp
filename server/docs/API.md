@@ -319,10 +319,14 @@ behavior. The deployment turns it on with environment variables
   would mark a live container unhealthy), and the API's own documentation page is documentation,
   not media data.
 * The web UI keeps the key this browser sends in `localStorage` (`digupBearer`) and sends it
-  on every request. The key is typed, saved, and cleared in the gear panel (**Settings →
-  Access**) — there is no load-time prompt; a `401` with no stored key points at the gear,
-  and a `401` with a stored key reports the server's words, so a wrong key cannot loop the
-  page. (The embed widget, which has no settings panel of its own, keeps its prompt.)
+  on every request. There is no paste field: in the **tokenless** shape the main page
+  searches with no key at all; in the **minted-key** shape (applications registered, see
+  "Named indexes") the gear's **API key** section shows the server-generated keys with
+  **Copy** (for pasting into the applications) and **Regenerate** — Regenerate also adopts
+  the new admin key for this browser. In the **environment-keys** shape the keys are the
+  deployment's config, shown by nothing, and the `401` message says exactly that. A `401`
+  with a stored key reports the server's words, so a wrong key cannot loop the page.
+  (The embed widget, which has no settings panel of its own, keeps its prompt.)
 * Tokens are compared with `hmac.compare_digest`. `tests/test_security.py` pins the whole table
   above, including the open health/docs/UI paths.
 
@@ -396,14 +400,19 @@ entries refuse startup with the entry quoted.
 **Minted keys — the server's "API key" rows.** When targets exist and their tokens are not
 configured, the server mints them (`secrets.token_urlsafe(24)`), stores them in
 `<config>/tokens.json` (0600, config folder = recreation-safe: a recreation never silently
-revokes a connected application), and shows them in the UI (gear → Settings → **API key**,
-admin key required — each key is one row: name, value, **Copy**) and via
-`GET /api/v1/tokens` (admin scope only). Minting fires only when targets exist; a
-standalone, token-less deployment keeps running unguarded and unchanged. The first mint
-turns auth on, so the admin key is bootstrapped from the file itself on the operator's own
-config mount (`cat <config>/tokens.json`) — and pasted into the UI once.
-Environment-configured secrets are never copied into the file and never echoed by the API —
-`/api/v1/tokens` shows `configured: true` for them and values only for minted ones.
+revokes a connected application), and shows them in the UI (gear → Settings → **API key** —
+each key is one row: name, value, **Copy**) and via `GET /api/v1/tokens` (admin scope only).
+Minting fires only when targets exist; a standalone, token-less deployment keeps running
+unguarded and unchanged. **The minted shape keeps the main index's READS open** (2026-11-08
+user brief — "the standalone app just uses the directory set in the environment"): a key-less
+browser on the operator's box searches, previews, and reads status on the main index; the
+minted **admin** key guards the index operations (`index`, `estimate`), the keys surface, and
+`Regenerate`; each minted **app** key guards its own index. A deployment that typed its keys
+in the environment is the guarded shape — there, every call needs a key, as before. The admin
+key is read from the file on the operator's own config mount (`cat <config>/tokens.json`) when
+this browser must administer the server (index/estimate/regenerate); ordinary browsing needs
+no key. Environment-configured secrets are never copied into the file and never echoed by
+the API — `/api/v1/tokens` shows `configured: true` for them and values only for minted ones.
 
 `POST /api/v1/tokens` (admin scope) **regenerates** the minted keys — the UI's Regenerate
 button, behind a confirm ("the applications that have these keys pasted lose access"):

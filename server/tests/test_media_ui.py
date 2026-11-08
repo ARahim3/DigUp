@@ -52,19 +52,27 @@ def test_root_serves_the_vanilla_ui(media_client):
     assert "prefix_last" in appjs.text and "embed_ahead" in appjs.text
     assert "localStorage" in appjs.text                      # the theme is kept in the browser
     assert "↑↓" in html and "Space" in html
-    # API key lives in Settings (2026-11-08 UX rework): a compact section — the key rows
-    # with Copy, Regenerate behind a confirm, the paste field. Not a load-time prompt;
-    # no wall of prose. The 401 path points AT the gear; the embed widget (no settings
-    # panel of its own) keeps its prompt (test_integrations covers it).
-    assert 'id="api-key"' in html and "API key" in html
-    assert "Settings → API key" in appjs.text and "digupBearer" in appjs.text
+    # API key lives in Settings (2026-11-08 UX brief, round 2): the section is ONLY the
+    # minted-key rows with Copy and the Regenerate button — no paste field, no Save,
+    # no Clear (the key is server-generated at runtime; the applications paste it into
+    # THEIR settings, this browser takes the admin key itself on Regenerate). The embed
+    # widget (no settings panel of its own) keeps its prompt (test_integrations covers).
+    assert "API key" in html and "Copy" in appjs.text
+    assert 'id="api-key"' not in html and 'id="api-key-save"' not in html \
+        and 'id="api-key-clear"' not in html
+    assert "digupBearer" in appjs.text
     assert "window.prompt" not in appjs.text                 # main UI: no load-time prompt
     # Stage 13 (reworked): the minted keys render with Copy + Regenerate, the indexes
     # render with counts (admin scope only — the JS hides the rows when refused). The
-    # gear's section order is the operator's reading order (2026-11-08 UX brief).
+    # gear's section order is the operator's reading order (2026-11-08 UX brief), and
+    # the rows are a uniform grid: label | value | action, one row height, equal
+    # padding and borders (the user's "clean and orderly, equal size rows").
     assert 'id="appkeys"' in html and 'id="targets"' in html and 'id="keys-regenerate"' in html
     assert "Regenerate" in appjs.text and "/api/v1/tokens" in appjs.text
     assert "/api/v1/targets" in appjs.text
+    css = media_client.get("/style.css").text
+    row = css[css.index(".appkey-line"):]
+    assert "grid-template-columns" in row and "min-height" in row
     pos = [html.index(f'<span class="set-title">{t}</span>')
            for t in ("Appearance", "Index", "Estimate", "The index", "API key")]
     assert pos == sorted(pos)

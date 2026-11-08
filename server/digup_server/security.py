@@ -441,6 +441,20 @@ class BearerAuth:
         self.app = app
         self.auth = auth or Auth()
 
+    def _env_secrets(self) -> bool:
+        """True when the DEPLOYMENT configured any key in its environment. Minted keys
+        (server-generated, `auth.minted`) are not env secrets: the user's brief of
+        2026-11-08 draws the line here — a minted-key deployment guards the index
+        operations and each application's own index, and answers the main index's
+        READS openly (the operator's own box, the plain-LAN trust model); a deployment
+        that typed its own secrets guards every API call, as before."""
+        a = self.auth
+        if a.read:
+            return True
+        if a.admin is not None and "admin" not in a.minted:
+            return True
+        return any(name not in a.minted for name in a.readers)
+
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] != "http" or not self.auth.enabled:
             await self.app(scope, receive, send)
@@ -458,6 +472,15 @@ class BearerAuth:
 
         supplied = _bearer(scope)
         if supplied is None:
+            if not admin and not self._env_secrets() \
+                    and query_target(scope) in (None, MAIN_TARGET):
+                # Minted-key deployment, no key presented: the main index answers its
+                # reads to the operator's own browser — the main page searches with no
+                # key. Index/estimate and application targets keep needing keys.
+                scope["digup.principal"] = "none"
+                scope["digup.target"] = MAIN_TARGET
+                await self.app(scope, receive, send)
+                return
             await _refuse(scope, send, 401, "this server asks for a bearer token")
             return
         names = self.auth.token_names(supplied)

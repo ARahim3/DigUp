@@ -407,6 +407,20 @@ def create_app(config: EngineConfig) -> FastAPI:
     def request_target(request: Request) -> str:
         return request.scope.get("digup.target", MAIN_TARGET)
 
+    def _media_scope_allows(request: Request, path: str) -> str:
+        """Media handles resolve to the target that owns the path. A principal with NO
+        key touches the main index only — the minted-shape opening (2026-11-08 user
+        brief) is for the main index's reads; an application's own index keeps needing
+        its own key (or the admin's). App-keyed requests are already scoped by the
+        bearer gate; this closes the media-id side for the open principal."""
+        name = target_for_path(path)
+        principal = request.scope.get("digup.principal", "")
+        if principal in ("", "none") and name != MAIN_TARGET:
+            raise HTTPException(status_code=403,
+                                detail="that file belongs to an application's own index "
+                                       "— its key answers it")
+        return name
+
     # Counts for the /api/v1/targets list, all from the engine and WITHOUT spawning
     # anything for a GET: a target whose searcher is already running answers with its
     # live status (`files`/`searchable` — the searcher is the target's own engine, the
@@ -656,6 +670,7 @@ def create_app(config: EngineConfig) -> FastAPI:
         entry = hit_cache.get(media_id)
         if entry is None:
             raise HTTPException(status_code=404, detail=f"no media handle {media_id}")
+        _media_scope_allows(request, entry["path"])
         sc = scope_for(target_for_path(entry["path"]))    # the target that owns the path
         reply = sc.service.render(entry["path"], kind=entry["kind"], loc=entry["loc"],
                                   pixels=pixels)
@@ -670,6 +685,7 @@ def create_app(config: EngineConfig) -> FastAPI:
         entry = hit_cache.get(media_id)
         if entry is None:
             raise HTTPException(status_code=404, detail=f"no media handle {media_id}")
+        _media_scope_allows(request, entry["path"])
         sc = scope_for(target_for_path(entry["path"]))
         return _strip(sc.service.text(entry["segment_id"], code=entry["code"]))
 
@@ -688,6 +704,7 @@ def create_app(config: EngineConfig) -> FastAPI:
         if entry is None:
             raise HTTPException(status_code=404, detail=f"no media handle {media_id}")
         path = Path(entry["path"]).resolve()
+        _media_scope_allows(request, entry["path"])
         owner = registry[target_for_path(entry["path"])]   # the target whose roots own it
         roots = [Path(r).resolve() for r in owner.roots]
         if not any(path == r or path.is_relative_to(r) for r in roots):
