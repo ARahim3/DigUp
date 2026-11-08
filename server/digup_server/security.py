@@ -344,6 +344,36 @@ def mint_tokens(env: dict[str, str], config_dir: str,
     return minted_auth
 
 
+def rotate_minted(auth: Auth, config_dir: str) -> "Auth | None":
+    """Regenerate the server-issued keys (UI: Regenerate — the admin scope only).
+
+    Minted entries — the minted admin key, the minted app keys — get fresh values,
+    persisted 0600 in the keys file exactly like first minting. Environment-configured
+    keys are NEVER rotated: they are the deployment's own config, and a rotate must not
+    silently override it (they keep working; the response flags them configured-only).
+
+    The rotation takes effect immediately: the old minted values die with this call, so
+    every application that has one pasted loses access until the operator pastes the new
+    key into it — which is exactly what the UI's confirmation asks before issuing the
+    POST. Returns the new Auth (rotated values live in it), or None when nothing is
+    minted — an env-configured deployment has nothing the server may rotate."""
+    if not auth.minted:
+        return None
+    readers = dict(auth.readers)
+    minted: list[str] = []
+    admin = auth.admin
+    if "admin" in auth.minted:
+        admin = secrets.token_urlsafe(24)
+        minted.append("admin")
+    for name in auth.minted:
+        if name.startswith("app:") and name in readers:
+            readers[name] = secrets.token_urlsafe(24)
+            minted.append(name)
+    rotated = Auth(read=auth.read, admin=admin, readers=readers, minted=tuple(minted))
+    _write_tokens_file(os.path.join(config_dir, TOKENS_FILE), rotated)
+    return rotated
+
+
 def _read_tokens_file(path: str) -> dict:
     try:
         with open(path, encoding="utf-8") as handle:

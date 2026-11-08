@@ -393,16 +393,24 @@ index may not be the main index — separate indexes are the point. A persisted
 `<config>/targets.json` joins the registry the same way; env wins per name. Malformed
 entries refuse startup with the entry quoted.
 
-**Minted application keys.** When targets exist and their tokens are not configured, the
-server mints them (`secrets.token_urlsafe(24)`), stores them in `<config>/tokens.json`
-(0600, config folder = recreation-safe: a recreation never silently revokes a connected
-application), and shows them in the UI (gear → Settings → Access → Application keys, admin
-key required) and via `GET /api/v1/tokens` (admin scope only). Minting fires only when
-targets exist; a standalone, token-less deployment keeps running unguarded and unchanged.
-The first mint turns auth on, so the admin key is bootstrapped from the file itself on the
-operator's own config mount (`cat <config>/tokens.json`) — and pasted into the UI once.
+**Minted keys — the server's "API key" rows.** When targets exist and their tokens are not
+configured, the server mints them (`secrets.token_urlsafe(24)`), stores them in
+`<config>/tokens.json` (0600, config folder = recreation-safe: a recreation never silently
+revokes a connected application), and shows them in the UI (gear → Settings → **API key**,
+admin key required — each key is one row: name, value, **Copy**) and via
+`GET /api/v1/tokens` (admin scope only). Minting fires only when targets exist; a
+standalone, token-less deployment keeps running unguarded and unchanged. The first mint
+turns auth on, so the admin key is bootstrapped from the file itself on the operator's own
+config mount (`cat <config>/tokens.json`) — and pasted into the UI once.
 Environment-configured secrets are never copied into the file and never echoed by the API —
 `/api/v1/tokens` shows `configured: true` for them and values only for minted ones.
+
+`POST /api/v1/tokens` (admin scope) **regenerates** the minted keys — the UI's Regenerate
+button, behind a confirm ("the applications that have these keys pasted lose access"):
+every minted value (admin and app keys) is freshly minted, persisted 0600, and live
+immediately — the old values answer `401` from this call on. Environment-configured keys
+are never rotated (a rotation must not silently override the deployment's own config); a
+deployment with nothing minted answers `400`.
 
 **Endpoint scoping.** Every guarded endpoint addresses a target: `?target=name` names it
 explicitly; the default is `media` — except for an `app:<name>` token, whose default is its own

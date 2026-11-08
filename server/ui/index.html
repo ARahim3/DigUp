@@ -31,7 +31,6 @@
       </button>
     </div>
     <div class="bar-center">
-      <p id="statusline">connecting…</p>
       <span id="activity" class="activity" hidden></span>
     </div>
     <div id="settings" hidden role="dialog" aria-label="Settings">
@@ -46,36 +45,6 @@
           <option value="light">Light</option>
           <option value="dark">Dark</option>
         </select>
-      </section>
-      <section class="set-sec">
-        <span class="set-title">Access</span>
-        <div class="set-line">
-          <input id="api-key" type="password" autocomplete="off" spellcheck="false"
-                 placeholder="access key for this browser" aria-label="Access key">
-          <button id="api-key-save" type="button" title="Store the key in this browser (localStorage) and reload">Save</button>
-          <button id="api-key-clear" type="button" title="Forget the stored key">Clear</button>
-        </div>
-        <p class="set-note">The key this browser sends with every request — kept locally,
-          never in a URL. Other applications (a Nextcloud app, a dashboard) get their OWN
-          tokens issued in the server's environment (DIGUP_SERVER_READ_TOKENS, one per
-          client, each revocable by restarting the server with a new value); the server
-          never sends those values back over the API, so they are typed here once, from
-          the deployment's own config.</p>
-      </section>
-      <section class="set-sec" id="appkeys-sec" hidden>
-        <span class="set-title">Application keys</span>
-        <div id="appkeys" class="set-lines"></div>
-        <p class="set-note">Keys the server minted for the applications it serves — paste one
-          into the application's settings (a Nextcloud bridge, a dashboard tile). Each
-          application key answers for its OWN index and nothing else; minted keys appear
-          here (admin key required), keys set in the server's environment are never shown.</p>
-      </section>
-      <section class="set-sec" id="targets-sec" hidden>
-        <span class="set-title">Indexes</span>
-        <div id="targets" class="set-lines"></div>
-        <p class="set-note">Every index this server supervises: its own media index, and each
-          application's own index (registered with DIGUP_SERVER_APP_TARGETS — roots plus a
-          private index folder, each with its own writer, lock, and job history).</p>
       </section>
       <section class="set-sec">
         <span class="set-title">Index</span>
@@ -97,9 +66,22 @@
       </section>
       <section class="set-sec">
         <span class="set-title">The index</span>
+        <div id="targets" class="set-lines"></div>
         <span id="statusfull" class="set-facts"></span>
+        <p id="rootsline"></p>
       </section>
-      <p id="rootsline"></p>
+      <section class="set-sec">
+        <span class="set-title">API key</span>
+        <div id="appkeys" class="set-lines"></div>
+        <button id="keys-regenerate" type="button" hidden
+                title="New keys now; the old ones stop working and the applications that have them lose access">Regenerate</button>
+        <div class="set-line">
+          <input id="api-key" type="password" autocomplete="new-password" spellcheck="false"
+                 placeholder="API key for this browser" aria-label="API key">
+          <button id="api-key-save" type="button" title="Store the key in this browser (localStorage) and reload">Save</button>
+          <button id="api-key-clear" type="button" title="Forget the stored key">Clear</button>
+        </div>
+      </section>
     </div>
   </header>
 

@@ -52,16 +52,24 @@ def test_root_serves_the_vanilla_ui(media_client):
     assert "prefix_last" in appjs.text and "embed_ahead" in appjs.text
     assert "localStorage" in appjs.text                      # the theme is kept in the browser
     assert "↑↓" in html and "Space" in html
-    # Access key lives in Settings (2026-11-08 UX ask): a labelled field in the gear's
-    # panel, not a load-time prompt. The 401 path points AT the gear; the embed widget
-    # (no settings panel of its own) keeps its prompt (test_integrations covers it).
-    assert 'id="api-key"' in html and "DIGUP_SERVER_READ_TOKENS" in html
-    assert "Settings → Access" in appjs.text and "digupBearer" in appjs.text
+    # API key lives in Settings (2026-11-08 UX rework): a compact section — the key rows
+    # with Copy, Regenerate behind a confirm, the paste field. Not a load-time prompt;
+    # no wall of prose. The 401 path points AT the gear; the embed widget (no settings
+    # panel of its own) keeps its prompt (test_integrations covers it).
+    assert 'id="api-key"' in html and "API key" in html
+    assert "Settings → API key" in appjs.text and "digupBearer" in appjs.text
     assert "window.prompt" not in appjs.text                 # main UI: no load-time prompt
-    # Stage 13: the minted application keys and the named indexes render in the panel
-    # (admin scope only — the JS hides the sections when the endpoints refuse).
-    assert 'id="appkeys-sec"' in html and 'id="targets-sec"' in html
-    assert "/api/v1/tokens" in appjs.text and "/api/v1/targets" in appjs.text
+    # Stage 13 (reworked): the minted keys render with Copy + Regenerate, the indexes
+    # render with counts (admin scope only — the JS hides the rows when refused). The
+    # gear's section order is the operator's reading order (2026-11-08 UX brief).
+    assert 'id="appkeys"' in html and 'id="targets"' in html and 'id="keys-regenerate"' in html
+    assert "Regenerate" in appjs.text and "/api/v1/tokens" in appjs.text
+    assert "/api/v1/targets" in appjs.text
+    pos = [html.index(f'<span class="set-title">{t}</span>')
+           for t in ("Appearance", "Index", "Estimate", "The index", "API key")]
+    assert pos == sorted(pos)
+    # The main page keeps no status nag (2026-11-08 UX ask): counts live in the panel.
+    assert 'id="statusline"' not in html and "status unavailable" not in appjs.text
 
 
 def test_the_space_key_keeps_buttons_and_links_activated(media_client):

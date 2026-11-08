@@ -20,6 +20,7 @@ Configuration comes from the environment (see `.env.example`): index folder, med
 from __future__ import annotations
 
 import contextlib
+import hmac
 import os
 import re
 import stat
@@ -43,8 +44,9 @@ from .engine import EngineConfig, SearchService
 from .engine.cli import CLIError, estimate_lines, status as cli_status
 from .engine.protocol import EngineExited, EngineRefused
 from .jobs import JobBusy, JobRunner
-from .security import (Cors, HostOriginGuard, PrincipalLog, allowed_hosts_from_env,
-                       allowed_origins_from_env, BearerAuth, mint_tokens)
+from .security import (Auth, Cors, HostOriginGuard, PrincipalLog, _bearer,
+                       allowed_hosts_from_env, allowed_origins_from_env, BearerAuth,
+                       mint_tokens, rotate_minted)
 from .targets import MAIN_TARGET, Target, build_registry
 
 # The engine's FileKind rawValues (Sources/DigUpKit FileKind): the API refuses anything
@@ -319,6 +321,11 @@ def create_app(config: EngineConfig) -> FastAPI:
                               main_index=config.index, config_dir=config_dir)
     auth = mint_tokens(os.environ, config_dir,
                        tuple(n for n in registry if n != MAIN_TARGET))
+    # POST /api/v1/tokens (rotate) replaces the keys at runtime: the bearer gate and
+    # the endpoints read the SAME live object through this holder, so one swap lands
+    # everywhere. `Auth` is frozen by design — rotation swaps the reference, never the
+    # fields of a live object.
+    current = {"auth": auth}
     status_ttl = float(os.environ.get("DIGUP_SERVER_STATUS_TTL_S", "15"))
     # One CLI-status cache for every read (the status endpoints, health's identity,
     # the /targets counts): keyed per index folder, so targets never share counts.
@@ -744,27 +751,77 @@ def create_app(config: EngineConfig) -> FastAPI:
                         "main": target.main, **target_counts(target)})
         return {"targets": out}
 
-    # ── GET /api/v1/tokens — the keys the server minted itself, admin scope only ───────
+    # ── /api/v1/tokens — the keys the server minted itself, admin scope only ──────────
     # Minted keys (mint_tokens) exist precisely because the operator never typed them,
     # and this is the only place they are ever shown. Environment-configured secrets are
     # reported as configured, never echoed — same rule the Nextcloud bridge lives by.
+    #
+    # GET shows them; POST REGENERATES them (UI: Regenerate, behind a confirm — "the
+    # applications that have these keys pasted lose access"): every minted value is
+    # freshly minted and persisted 0600, the old values die immediately, and the bearer
+    # gate is repointed at the new ones before this answer is built. Env-configured keys
+    # are never rotated (a rotation must not silently override the deployment's own
+    # config) — a deployment whose keys all come from env answers 400: nothing to rotate.
+
+    def _admin_scope(request: Request) -> None:
+        principal = request.scope.get("digup.principal", "")
+        # The gate records an admin token on a read route as "admin (read scope)" —
+        # this IS the admin scope's surface, so both forms are accepted here. And in an
+        # admin-token-only deployment the gate deliberately leaves reads OPEN (the
+        # documented shape), so the principal is `none` even when the admin key is
+        # presented — compare the bearer itself: admin-scope surfaces answer the
+        # admin key's owner, that is the contract this endpoint exists for.
+        if principal == "admin" or principal == "admin (read scope)":
+            return
+        a = current["auth"]
+        supplied = _bearer(request.scope)
+        if a.admin and supplied and hmac.compare_digest(supplied, a.admin):
+            return
+        raise HTTPException(status_code=403,
+                            detail="the server's keys are shown to the admin token only")
+
+    def _tokens_payload(a: Auth) -> dict:
+        apps = [{"name": name[4:],
+                 "token": a.readers[name] if name in a.minted else None,
+                 "generated": name in a.minted}
+                for name in a.readers if name.startswith("app:")]
+        return {"admin": a.admin if "admin" in a.minted else None,
+                "admin_configured": a.admin is not None,
+                "read_configured": a.read is not None,
+                "apps": apps}
+
+    def _bearer_gate() -> "BearerAuth | None":
+        """The bearer gate instance in this app's middleware stack: rotation points
+        it at the new values. The stack is built on the first HTTP request (so during
+        any endpoint call it exists) as one outermost instance wrapping the next on
+        `.app` — walk the chain: PrincipalLog → Cors → HostOriginGuard → BearerAuth."""
+        mw = getattr(app, "middleware_stack", None)
+        while mw is not None:
+            if isinstance(mw, BearerAuth):
+                return mw
+            mw = getattr(mw, "app", None)
+        return None
 
     @app.get("/api/v1/tokens")
     def tokens(request: Request) -> dict:
-        principal = request.scope.get("digup.principal", "")
-        # The gate records an admin token on a read route as "admin (read scope)" —
-        # this IS the admin scope's surface, so both forms are accepted here.
-        if principal != "admin" and principal != "admin (read scope)":
-            raise HTTPException(status_code=403,
-                                detail="application keys are shown to the admin token only")
-        apps = [{"name": name[4:],
-                 "token": auth.readers[name] if name in auth.minted else None,
-                 "generated": name in auth.minted}
-                for name in auth.readers if name.startswith("app:")]
-        return {"admin": auth.admin if "admin" in auth.minted else None,
-                "admin_configured": auth.admin is not None,
-                "read_configured": auth.read is not None,
-                "apps": apps}
+        _admin_scope(request)
+        return _tokens_payload(current["auth"])
+
+    @app.post("/api/v1/tokens")
+    def rotate_tokens(request: Request) -> dict:
+        _admin_scope(request)
+        rotated = rotate_minted(current["auth"], config_dir)
+        if rotated is None:
+            raise HTTPException(status_code=400,
+                                detail="nothing to rotate — this server's keys are set "
+                                       "in its environment, not minted")
+        current["auth"] = rotated
+        gate = _bearer_gate()
+        if gate is not None:
+            gate.auth = rotated
+        payload = _tokens_payload(rotated)
+        payload["rotated"] = True
+        return payload
 
     # ── The UI, same origin (so CORS is not needed at all — Stage 6) ───────────────────
 

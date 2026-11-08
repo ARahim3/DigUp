@@ -4,8 +4,9 @@
 // 120 ms pause, the query embedded while you type), strong/weaker grouping, kind filters,
 // code mode, selection with the arrow keys, a preview pane, Space for the big look,
 // opening files (video plays from its moment). The page is a centered search box, its
-// kind chips, results bottom-left, preview right; the server's own controls (appearance,
-// Index now, prune, Estimate, the engine's counts) live in the settings panel (the gear).
+// kind chips, results bottom-left, preview right; the server's own controls (Appearance,
+// Index, Estimate, The index, API key — minted keys with Copy and Regenerate) live in
+// the settings panel (the gear), and the main page keeps no status nag.
 // Every number shown is the engine's (counts, seconds, scores, timestamps); the only
 // server-added field is the `media_id` handle. DOM is built with createElement +
 // text nodes, so file names and excerpts are escaped by the DOM, never as HTML.
@@ -16,7 +17,7 @@ const $ = (id) => document.getElementById(id);
 const api = async (path, options = {}, retried = false) => {
   // Bearer token, when this deployment asks for one (DIGUP_SERVER_TOKEN /
   // DIGUP_SERVER_ADMIN_TOKEN, docs/API.md "Authentication"): kept in localStorage, sent on
-  // every call. A 401 points at Settings → Access, where the key is typed and saved —
+  // every call. A 401 points at Settings → API key, where the key is pasted and saved —
   // no load-time prompt (a blocking prompt in the page is hostile UX: it fires on every
   // new tab, cannot be reopened, and the deployment's real shape is one key pasted once,
   // then the app works; the key lives in localStorage, never in a URL). A 401 with a
@@ -30,7 +31,7 @@ const api = async (path, options = {}, retried = false) => {
   if (reply.status === 401 && !token) {
     $("gear").classList.add("attention");   // the gear is where the key goes
     throw Object.assign(new Error(
-      "This server asks for an access key — open Settings → Access and paste it."),
+      "This server asks for its API key — open Settings → API key and paste it."),
       {status: 401});
   }
   const body = await reply.json().catch(() => ({}));
@@ -111,10 +112,14 @@ function applyTheme(choice) {
 $("theme").onchange = (event) => applyTheme(event.target.value);
 applyTheme(localStorage.getItem("digup-theme") || "system");
 
-// ── access: the key this browser sends, typed and saved in Settings (2026-11-08 UX ask —
-// replaces the load-time prompt). Other applications get their own tokens issued in the
-// server's environment; the server never answers with those values, so this field is
-// paste-from-the-deployment's-config, stored locally, sent as a bearer header only. ────
+// ── API key (the gear's last section): the key this browser sends, the server's minted
+// keys with Copy, and Regenerate. A minted-key server issues its own keys (nothing to
+// type at boot); the row shows the value, Copy takes it to the clipboard for pasting into
+// an application's settings, Regenerate mints fresh values (confirm first — the old keys
+// die immediately and every application that has one pasted loses access until the new
+// key is pasted there; this browser's key updates itself). Deployments whose keys come
+// from the environment are never shown and never rotated: the paste field is how their
+// operator gives THIS browser its key, from the deployment's own config. ───────────────
 $("api-key").value = localStorage.getItem("digupBearer") || "";
 $("api-key-save").onclick = () => {
   const v = $("api-key").value.trim();
@@ -128,9 +133,6 @@ $("api-key-clear").onclick = () => {
   location.reload();
 };
 
-// ── application keys + indexes (stage-13): minted keys and the named indexes, shown to
-// the admin key's owner when the gear opens. 401/403 (read key, no key) hides both
-// sections — the endpoints answer only for the scope that may see them. ────────────────
 function keyRow(label, value) {
   const kids = [el("span", "appkey-name", label)];
   if (value) {
@@ -138,37 +140,58 @@ function keyRow(label, value) {
     copy.type = "button";
     copy.onclick = () => navigator.clipboard?.writeText(value);
     kids.push(el("code", "appkey-token", value), copy);
-  } else {
-    kids.push(el("span", "appkey-name", "set in the server's environment (not shown)"));
   }
   return el("div", "appkey-line", ...kids);
 }
 
+async function regenerateKeys() {
+  if (!window.confirm("Regenerate the server's keys? The keys shown here stop working "
+      + "immediately — every application that has one pasted loses access until you "
+      + "paste its new key into that application. This browser keeps working: its key "
+      + "updates itself.")) {
+    return;
+  }
+  try {
+    const t = await api("/api/v1/tokens", {method: "POST"});
+    if (t.admin) {
+      localStorage.setItem("digupBearer", t.admin);
+      $("api-key").value = t.admin;
+    }
+    loadAccess();
+  } catch (error) {
+    window.alert(error.message || String(error));
+  }
+}
+
 async function loadAccess() {
+  const regen = $("keys-regenerate");
+  regen.hidden = true;
   try {
     const t = await api("/api/v1/tokens");
     const rows = [];
-    if (t.admin) {
-      rows.push(keyRow("admin", t.admin));
-    }
+    if (t.admin) rows.push(keyRow("API key", t.admin));
     for (const a of t.apps || []) {
-      rows.push(keyRow(`${a.name} — answers for its own index`, a.token));
+      if (a.token) rows.push(keyRow(`API key — ${a.name}`, a.token));
     }
     $("appkeys").replaceChildren(...rows);
-    $("appkeys-sec").hidden = rows.length === 0;
+    $("appkeys").hidden = rows.length === 0;
+    // Rotate is offered only where keys are minted (the server issued them itself);
+    // an env-keyed server answers 400 — its keys live in its own config.
+    regen.hidden = !t.admin;
+    if (!regen.hidden) regen.onclick = regenerateKeys;
   } catch {
-    $("appkeys-sec").hidden = true;
+    $("appkeys").hidden = true;          // read key / no key: the rows are not for this scope
   }
   try {
     const tg = await api("/api/v1/targets");
     const rows = (tg.targets || []).map((t) => keyRow(
-      `${t.name}${t.main ? " — this server's own media index" : ""} · `
+      `${t.name}${t.main ? " — this server's media index" : ""} · `
       + `${t.files === null ? "not indexed" : `${t.files} files · ${t.searchable} searchable`} · `
       + `${t.roots.join(", ")}`, null));
     $("targets").replaceChildren(...rows);
-    $("targets-sec").hidden = rows.length === 0;
+    $("targets").hidden = rows.length === 0;
   } catch {
-    $("targets-sec").hidden = true;
+    $("targets").hidden = true;
   }
 }
 
@@ -203,19 +226,13 @@ document.addEventListener("click", (event) => {
     closeSettings();
 });
 
-// ── the status: the searchable count by the title; the rest of the engine's numbers
-// live in the settings panel, re-read every 15 s ──────────────────────────────────────
+// ── the status: the engine's numbers live in the settings panel (re-read every 15 s);
+// the main page keeps only the activity dot — a page that nags "paste your key" on
+// every poll is noise: the gear points at the key, and the counts are the panel's ────
 async function refreshStatus() {
-  const line = $("statusline");
   try {
     const s = await api("/api/v1/status");
     state.encoder = s.encoder;
-    line.replaceChildren();
-    const parts = [
-      `${s.searchable}/${s.files} files searchable`,
-      s.pending ? `${s.pending} pending` : null,
-    ].filter(Boolean);
-    for (const text of parts) line.append(el("span", "badge", text), " ");
     $("statusfull").replaceChildren(...[
       `${s.vectors} vectors`,
       `encoder ${s.encoder}`,
@@ -234,8 +251,10 @@ async function refreshStatus() {
       $("activity").title = "The engine is working: results may miss files it has not read yet";
     }
     if (state.phase !== "empty") renderFooter();
-  } catch (error) {
-    line.textContent = `status unavailable: ${error.message}`;
+  } catch {
+    // No counts to show: a no-key browser sees the gear point at the key (api()
+    // raised with the pointer); a mid-reload refusal is a state, the next poll
+    // re-reads. The main page stays clean.
   }
 }
 

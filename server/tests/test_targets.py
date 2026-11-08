@@ -102,6 +102,31 @@ def test_environment_tokens_are_authority_mint_only_fills_the_gaps(tmp_path):
     assert stored["readers"]["app:dc"] == auth.readers["app:dc"]
 
 
+def test_rotating_minted_keys_mints_new_values_and_leaves_env_keys_intact(tmp_path):
+    from digup_server.security import rotate_minted
+    d = str(tmp_path)
+    first = mint_tokens({"DIGUP_SERVER_ADMIN_TOKEN": "adm-env",
+                         "DIGUP_SERVER_READ_TOKENS": "app:dc:tokdc"}, d, ("nc", "dc"))
+    rotated = rotate_minted(first, d)
+    assert rotated is not None
+    assert rotated.admin == "adm-env"                               # env admin: kept, never rotated
+    assert rotated.readers["app:dc"] == "tokdc"                     # env app key: never rotated
+    assert rotated.readers["app:nc"] != first.readers["app:nc"]     # minted: a fresh value
+    assert rotated.minted == ("app:nc",)
+    stored = json.load(open(os.path.join(d, "tokens.json"), encoding="utf-8"))
+    assert stored["readers"]["app:nc"] == rotated.readers["app:nc"]
+    assert "admin" not in stored and stored["readers"].get("app:dc") is None
+    assert rotated.token_names(first.readers["app:nc"]) == ()      # the old key dies at the live auth
+    assert rotated.token_names(rotated.readers["app:nc"]) == ("app:nc",)
+    assert stat.S_IMODE(os.stat(os.path.join(d, "tokens.json")).st_mode) == 0o600
+
+
+def test_rotation_offers_nothing_where_nothing_is_minted(tmp_path):
+    from digup_server.security import rotate_minted
+    assert rotate_minted(mint_tokens({"DIGUP_SERVER_TOKEN": "plain"}, str(tmp_path), ()),
+                         str(tmp_path)) is None
+
+
 def test_read_token_names_may_carry_colons_the_last_one_is_the_separator():
     readers = read_tokens_from_env({"DIGUP_SERVER_READ_TOKENS": "nc-a:tokA,app:nc:tokB"})
     assert readers == {"nc-a": "tokA", "app:nc": "tokB"}
@@ -288,3 +313,47 @@ def wait_status(client, url, headers, want, timeout=120.0) -> int:
         time.sleep(1.0)
     pytest.fail(f"{url} never answered {want} within {timeout:g} s "
                 f"(last {code}: {body})")
+
+
+# ── POST /api/v1/tokens — the UI's Regenerate (admin scope, minted keys only) ─────────
+
+def test_the_admin_can_regenerate_the_minted_keys_and_the_old_values_die(tmp_path,
+                                                                          monkeypatch):
+    from digup_server.api import create_app
+    monkeypatch.setenv("DIGUP_SERVER_APP_TARGETS", f"nc={tmp_path}/media:{tmp_path}/app-index")
+    monkeypatch.setenv("DIGUP_SERVER_CONFIG", str(tmp_path / "server-config"))
+    with TestClient(create_app(_cfg(tmp_path / "main-index", (tmp_path / "media",)))) as c:
+        keys = json.load(open(tmp_path / "server-config" / "tokens.json", encoding="utf-8"))
+        adm, old_nc = keys["admin"], keys["readers"]["app:nc"]
+        A = {"Authorization": f"Bearer {adm}"}
+        assert c.get("/api/v1/tokens", headers=A).json()["admin"] == adm
+        r = c.post("/api/v1/tokens", headers=A)
+        assert r.status_code == 200 and r.json()["rotated"] is True
+        new_admin, new_nc = r.json()["admin"], r.json()["apps"][0]["token"]
+        assert new_admin != adm and new_nc != old_nc
+        # The rotation takes effect immediately — the old values die, the new ones answer:
+        assert c.get("/api/v1/status", headers={"Authorization": f"Bearer {old_nc}"}
+                     ).status_code == 401
+        assert c.get("/api/v1/status", headers=A).status_code == 401
+        st = c.get("/api/v1/status", headers={"Authorization": f"Bearer {new_nc}"})
+        assert st.status_code == 200 and st.json()["target"] == "nc"
+        assert c.post("/api/v1/tokens",
+                      headers={"Authorization": f"Bearer {new_nc}"}).status_code == 403
+        fresh = json.load(open(tmp_path / "server-config" / "tokens.json", encoding="utf-8"))
+        assert fresh["admin"] == new_admin and fresh["readers"]["app:nc"] == new_nc
+        assert stat.S_IMODE(os.stat(tmp_path / "server-config" / "tokens.json").st_mode) == 0o600
+
+
+def test_an_env_keyed_deployment_rotates_nothing(tmp_path, monkeypatch):
+    from digup_server.api import create_app
+    monkeypatch.setenv("DIGUP_SERVER_ADMIN_TOKEN", "adm")
+    monkeypatch.delenv("DIGUP_SERVER_APP_TARGETS", raising=False)
+    monkeypatch.delenv("DIGUP_SERVER_TOKEN", raising=False)
+    monkeypatch.setenv("DIGUP_SERVER_CONFIG", str(tmp_path / "server-config"))
+    with TestClient(create_app(_cfg(tmp_path / "main-index", (tmp_path / "media",)))) as c:
+        A = {"Authorization": "Bearer adm"}
+        t = c.get("/api/v1/tokens", headers=A).json()
+        assert t["admin"] is None and t["admin_configured"] is True    # never echoed
+        r = c.post("/api/v1/tokens", headers=A)
+        assert r.status_code == 400 and "environment" in r.json()["detail"]
+        assert not (tmp_path / "server-config" / "tokens.json").exists()
