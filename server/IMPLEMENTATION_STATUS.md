@@ -119,6 +119,25 @@ stage-13; non-admin user → 403 on both routes. The pilot's full named-index fl
 → its own index) lands with the image rebuild after the running embed job finishes — a GPU
 run is never interrupted for a redeploy.
 
+**Bench + pilot move onto the stage-13 CUDA image (2026-11-08, measured).** CUDA rebuild:
+`server-runtime-cuda`, bases 11.8.0 devel/runtime, `CUDA_ARCHS=61` (the server-pinned
+GTX 1070, sm_61), `SWIFT_TESTS=0` (the local build knob; compose's `DIGUP_SWIFT_TESTS`
+added with default 1, so CI/standard flows keep the engine-test gate unchanged). Bench
+`:8787` recreated on the full chain (chain files + boot env verbatim — media index
+untouched): health 200; status `target media` **131,972 files / 131,758 searchable** (the
+bind-mounted index survived recreation, the jobs log intact); UI 200; unkeyed API 401;
+read-token status 200 / its index POST 403 (the pre-stage-13 token contract, unchanged);
+`targets(admin) → [('media', 131972, 131758)]` live counts; `tokens(admin) → 200` with the
+env admin flagged `configured` and its value never echoed, `apps: []` — **minting is inert
+with no targets registered: no `tokens.json` in the config folder**; search 5 hits, 5
+strong, 0.751 s. Standalone behavior is unchanged, exactly as designed. The pilot's GPU
+embed job hit its 10-hour ceiling (`DIGUP_SERVER_JOB_TIMEOUT_S=36000`) and recorded
+`interrupted` at **118,206** files (searchable 120,693, index 753.9 MB) — the pinned stop
+semantics working: the resume `POST /index` answered 202 with a fresh job continuing from
+the interruption; the 10-query battery across the partial index: 10 hits / 10 strong on
+every query (top z 3.67–7.33), latencies 0.43–1.63 s; the app settings line (status 200)
+showed the same counts live.
+
 ## 2026-11-08 — Pilot: live progress, Access UI, the excludes fix, and the engine picks GPU
 
 **The excludes fix (b81e9e8).** The index job path was the gap: `estimate_argv` and
