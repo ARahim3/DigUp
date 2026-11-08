@@ -36,6 +36,13 @@ services:
       context: ..
       dockerfile: server/docker/Dockerfile
       target: server-runtime
+      args:
+        # The engine's `swift test` gate runs inside the builder stage by default (CI
+        # builds run it too). A box whose builder environment is measured to fail an
+        # engine-side test (docs/implementation notes; the server's own gate is the
+        # contract suite) builds with DIGUP_SWIFT_TESTS=0 — a documented escape hatch,
+        # not a default: unset means the gate runs.
+        SWIFT_TESTS: ${DIGUP_SWIFT_TESTS:-1}
     image: digup-server:local
     # A job mid-embed (a photo takes ~10–40 s of CPU) needs room for the engine's safe
     # point: with the Docker default 10 s the stop lands as SIGKILL and the job recovers
