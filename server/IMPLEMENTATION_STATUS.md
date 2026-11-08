@@ -138,6 +138,42 @@ the interruption; the 10-query battery across the partial index: 10 hits / 10 st
 every query (top z 3.67–7.33), latencies 0.43–1.63 s; the app settings line (status 200)
 showed the same counts live.
 
+**UI rework (2026-11-08, the user's layout brief): the main page nag is gone; the gear is
+Appearance · Index · Estimate · The index · API key.** The front page keeps no status
+indicator (the "status unavailable: … paste your key" line is deleted — counts live in
+`The index`); the gear's old Access/Application-keys/Indexes sections collapse into two:
+`The index` (per-target rows with the engine's counts + roots, then the badges) and
+**`API key`** — the minted keys as plain rows (`API key`, `API key — <target>`) each with
+**Copy**, a **Regenerate** button behind a confirm dialog, and the small paste field for
+deployments whose keys come from the environment (env keys are never shown, and never
+rotated). `POST /api/v1/tokens` (admin scope) is the rotation: minted values (admin +
+app keys) get fresh `secrets.token_urlsafe(24)` strings, persisted 0600, live immediately
+— old values answer 401 from that call on, which is exactly what the confirm warns about
+("the applications that have these keys lose access"); env-configured keys are kept
+untouched (a rotation must not silently override the deployment's own config), and a
+deployment with nothing minted answers 400 honestly. The rotation swaps the bearer gate's
+auth reference through the built middleware chain (the stack is built at the first
+request; `Auth` stays frozen). The admin-scope check also accepts a direct admin-bearer
+match: an admin-token-only deployment deliberately leaves reads open (principal `none`),
+and the keys surface exists to answer the admin key's owner. The Nextcloud bridge follows
+the same shape: its settings section is ONE field, labeled **API key** — paste it (app
+0.4.1, deployed on the pilot: files bind-swapped, `php -l` green, occ `installed_version
+0.4.1`). Suite: three new contracts pin the rotation (minted values rotate + file 0600 +
+old keys die at the live auth; env keys never rotate; endpoint e2e: old key 401 → new key
+200 target `nc`, non-admin POST 403, env deployment 400 with honest words), and the UI
+contract asserts the new panel (sections in reading order, no main-page nag,
+Regenerate + Copy wired). Measured: suite run 13 on this tree — **133 passed / 1 deselected
+/ 0 failed / 0 skipped, 224.61 s**; the demo stack (:8792, rebuilt on this tree) passes the
+full flow gate (minted file 0600, unkeyed 401, app key → target `nextcloud` roots
+`/media/app`, 403 on `?target=media`, 202→409→done, app 36/36, media 0 untouched, targets
+`media 0` + `nextcloud 36`, tokens admin-only) and the rotate gate live: `POST` 200
+`rotated: true` with fresh admin + app values shown, **old app key → 401 and old admin key
+→ 401 on the same call**, new app key → 200 target `nextcloud` (files 36), 403 cross-target,
+403 rotate by app key, tokens file 0600 carrying exactly the new values, media untouched
+(0), app search after rotate 3 hits all under `/media/app`; served UI markup carries the
+new sections (`appkeys`, `targets`, `keys-regenerate` present, main-page `statusline`
+absent).
+
 ## 2026-11-08 — Pilot: live progress, Access UI, the excludes fix, and the engine picks GPU
 
 **The excludes fix (b81e9e8).** The index job path was the gap: `estimate_argv` and
@@ -1027,15 +1063,17 @@ running `digup` with no toolchain, no desktop stack. Model files verified agains
 Updated 2026-11-08 (stage 13). The Stage-2 headless proof below stays valid evidence.
 
 ```
-suite (container)       contract suite, 4 mounts, -rs               — 129 passed / 1 deselected
-                        server/tests/proof.sh index+search+eval     — / 0 skipped (2026-11-08),
-                        (EXIT=0, R@1 0.71 / R@5 0.88)                proof.sh green (Stage 2)
+suite (container)       contract suite, 4 mounts, -rs               — 133 passed / 1 deselected
+                        server/tests/proof.sh index+search+eval     — / 0 failed / 0 skipped
+                        (EXIT=0, R@1 0.71 / R@5 0.88)                (2026-11-08, run 13);
+                                                                     proof.sh green (Stage 2)
 digup-server-cuda:local bench compose stack, healthy, 127.0.0.1:8787 — media index 131,972 files,
-                        (pre-stage-13 image; rebuild owed)            GTX 1070 (GPU 0) pinned
-digup-server-nextcloud-* pilot stack :8791 API / :8090 web,         — GPU embed run in flight
-                        app 0.4.0 deployed (index line + Index now)  (sampler hourly, resumable)
-digup-demo-server-1     stage-13 demo: compose app-targets frag,    — media + `nextcloud` targets,
-                        CPU flavor, 127.0.0.1:8792, public corpus    minted keys, flow gate green
+                        (UI-rework rebuild owed, 2026-11-08)          GTX 1070 (GPU 0) pinned
+digup-server-nextcloud-* pilot stack :8791 API / :8090 web,         — media-resume job in flight
+                        app 0.4.1 deployed (one "API key" field)      (sampler 3 min, resumable)
+digup-demo-server-1     UI-rework demo: compose app-targets frag,   — media + `nextcloud` targets,
+                        CPU flavor, 127.0.0.1:8792, public corpus     minted keys, flow gate +
+                                                                     rotate gate green
 digup-server:local      runtime image (payload+API+UI, tini, non-root — Stage 7 + 13,
                         + nvidia/cuda runtime libs for the CUDA flavor — Stage 9)
 ```
