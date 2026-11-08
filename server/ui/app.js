@@ -16,19 +16,22 @@ const $ = (id) => document.getElementById(id);
 const api = async (path, options = {}, retried = false) => {
   // Bearer token, when this deployment asks for one (DIGUP_SERVER_TOKEN /
   // DIGUP_SERVER_ADMIN_TOKEN, docs/API.md "Authentication"): kept in localStorage, sent on
-  // every call. A 401 asks for it once, stores it, and retries this call once — a second 401
-  // is reported, not re-prompted, so a wrong token cannot loop the page.
+  // every call. A 401 points at Settings → Access, where the key is typed and saved —
+  // no load-time prompt (a blocking prompt in the page is hostile UX: it fires on every
+  // new tab, cannot be reopened, and the deployment's real shape is one key pasted once,
+  // then the app works; the key lives in localStorage, never in a URL). A 401 with a
+  // stored key is the server's own words ("the bearer token is not this server's
+  // token"), shown, not re-prompted — a wrong key cannot loop the page.
   const token = localStorage.getItem("digupBearer");
   const headers = {"content-type": "application/json",
                    ...(token ? {authorization: `Bearer ${token}`} : {}),
                    ...(options.headers || {})};
   const reply = await fetch(path, {...options, headers});
-  if (reply.status === 401 && !retried) {
-    const asked = window.prompt("This DigUp server asks for its access token:");
-    if (asked && asked.trim()) {
-      localStorage.setItem("digupBearer", asked.trim());
-      return api(path, options, true);
-    }
+  if (reply.status === 401 && !token) {
+    $("gear").classList.add("attention");   // the gear is where the key goes
+    throw Object.assign(new Error(
+      "This server asks for an access key — open Settings → Access and paste it."),
+      {status: 401});
   }
   const body = await reply.json().catch(() => ({}));
   if (!reply.ok) {
@@ -108,6 +111,23 @@ function applyTheme(choice) {
 $("theme").onchange = (event) => applyTheme(event.target.value);
 applyTheme(localStorage.getItem("digup-theme") || "system");
 
+// ── access: the key this browser sends, typed and saved in Settings (2026-11-08 UX ask —
+// replaces the load-time prompt). Other applications get their own tokens issued in the
+// server's environment; the server never answers with those values, so this field is
+// paste-from-the-deployment's-config, stored locally, sent as a bearer header only. ────
+$("api-key").value = localStorage.getItem("digupBearer") || "";
+$("api-key-save").onclick = () => {
+  const v = $("api-key").value.trim();
+  if (v) localStorage.setItem("digupBearer", v);
+  else localStorage.removeItem("digupBearer");
+  location.reload();      // every call re-reads the stored key on a fresh page
+};
+$("api-key-clear").onclick = () => {
+  localStorage.removeItem("digupBearer");
+  $("api-key").value = "";
+  location.reload();
+};
+
 // ── settings: the server's own controls (appearance, index, estimate, the counts) live
 // behind the gear, so the page itself stays a search box and its results ──────────────
 
@@ -126,6 +146,7 @@ $("gear").onclick = () => {
   const box = $("settings");
   box.hidden = !box.hidden;
   $("gear").setAttribute("aria-expanded", String(!box.hidden));
+  $("gear").classList.remove("attention");   // pointing done: the panel is open
   if (!box.hidden) box.querySelector("select, button, input")?.focus();   // keyboard users
 };
 $("settings-close").onclick = closeSettings;

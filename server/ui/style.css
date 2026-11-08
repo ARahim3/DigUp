@@ -110,6 +110,13 @@ select { /* own arrow, evenly spaced from the edge — not glued to the button *
   padding: 0.42rem 1.9rem 0.42rem 0.6rem;
 }
 input[type="search"] { background: var(--field); }
+input[type="password"] { background: var(--field); font: inherit; color: var(--text);
+  border: 1px solid var(--edge); border-radius: 8px; padding: 0.42rem 0.6rem; min-width: 16rem; }
+#settings .set-note { color: var(--soft); font-size: 0.78rem; margin: 0.45rem 0 0;
+  overflow-wrap: anywhere; }
+/* a 401 with no stored key points at the gear: a soft pulse until the panel opens */
+#gear.attention { animation: gear-pulse 1.6s ease-in-out 3; }
+@keyframes gear-pulse { 50% { box-shadow: 0 0 0 3px var(--accent); } }
 input[type="checkbox"] { accent-color: var(--accent); }
 button, a.button-like, #kinds-all {
   font: inherit; padding: 0.42rem 0.8rem; border: 1px solid var(--edge); border-radius: 8px;

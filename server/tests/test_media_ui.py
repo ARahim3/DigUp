@@ -52,6 +52,12 @@ def test_root_serves_the_vanilla_ui(media_client):
     assert "prefix_last" in appjs.text and "embed_ahead" in appjs.text
     assert "localStorage" in appjs.text                      # the theme is kept in the browser
     assert "↑↓" in html and "Space" in html
+    # Access key lives in Settings (2026-11-08 UX ask): a labelled field in the gear's
+    # panel, not a load-time prompt. The 401 path points AT the gear; the embed widget
+    # (no settings panel of its own) keeps its prompt (test_integrations covers it).
+    assert 'id="api-key"' in html and "DIGUP_SERVER_READ_TOKENS" in html
+    assert "Settings → Access" in appjs.text and "digupBearer" in appjs.text
+    assert "window.prompt" not in appjs.text                 # main UI: no load-time prompt
 
 
 def test_the_space_key_keeps_buttons_and_links_activated(media_client):

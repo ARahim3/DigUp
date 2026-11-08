@@ -48,6 +48,21 @@
         </select>
       </section>
       <section class="set-sec">
+        <span class="set-title">Access</span>
+        <div class="set-line">
+          <input id="api-key" type="password" autocomplete="off" spellcheck="false"
+                 placeholder="access key for this browser" aria-label="Access key">
+          <button id="api-key-save" type="button" title="Store the key in this browser (localStorage) and reload">Save</button>
+          <button id="api-key-clear" type="button" title="Forget the stored key">Clear</button>
+        </div>
+        <p class="set-note">The key this browser sends with every request — kept locally,
+          never in a URL. Other applications (a Nextcloud app, a dashboard) get their OWN
+          tokens issued in the server's environment (DIGUP_SERVER_READ_TOKENS, one per
+          client, each revocable by restarting the server with a new value); the server
+          never sends those values back over the API, so they are typed here once, from
+          the deployment's own config.</p>
+      </section>
+      <section class="set-sec">
         <span class="set-title">Index</span>
         <div class="set-controls">
           <div class="set-line">
