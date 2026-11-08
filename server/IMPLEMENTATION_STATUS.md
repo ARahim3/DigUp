@@ -2,6 +2,123 @@
 
 One document, kept current (docs/implementation/README.md §10). Newest first.
 
+## 2026-11-08 — Stage 13: named indexes + minted keys — one compose app, standalone AND serving applications
+
+The user's ask, built end to end: the compose server keeps running standalone over its own
+media index, AND acts as a server for other applications — it mints their access tokens,
+and each application's calls build and search a SEPARATE index, never the media one. The
+engine changes nothing: it already answers for any (roots, `--index`) pair.
+
+**Registry (`server/digup_server/targets.py`).** `DIGUP_SERVER_APP_TARGETS=nc=/media/nc:/idx/nc;…`
+(entries `;`-separated, each `name=roots=index`, roots colon-separated) merged with a persisted
+`<config>/targets.json` (env wins per name). Validation refuses at startup with the entry
+quoted: non-slug names, the reserved name `media`, relative roots/index, and a target whose
+index IS the main index (separate indexes are the point).
+
+**Per-target supervision (`api.py`).** Every guarded endpoint addresses a target (`?target=name`;
+default `media`). The main scope is the lifespan's, exactly as before. App targets spawn
+**lazily** — first request addressing them pays the spawn, so registered-but-idle targets cost
+zero engines: each gets its own `search-service` child, its own `JobRunner` (its own jobs log
+`jobs-<name>.jsonl`), and its own writer lock for free (the flock lives beside each index
+folder — "one writer at a time" is per index, so a bridge crawl never queues behind the media
+crawl). Media handles resolve their target from the path's owning roots (longest-root match),
+so `/preview`, `/text`, `/file` work across indexes unchanged. `GET /api/v1/targets` lists the
+registry with counts from the CLI status (no engine spawn for a listing).
+
+**Minted application keys (`security.mint_tokens`).** When targets exist and env left a target
+unbound, the server mints `secrets.token_urlsafe(24)` keys (`app:<name>`), plus an admin key
+when the deployment has none, stored 0600 in `<config>/tokens.json` (config folder =
+recreation-safe; a recreation never silently revokes a connected app; restart-stable and
+displayable from any boot). Minting fires ONLY when targets exist — a target-less standalone
+deployment runs exactly as it has, unguarded. Env secrets are never stored, never echoed.
+`GET /api/v1/tokens` shows minted values to the admin principal only; the UI's gear → Settings
+→ Access gained **Application keys** (copy buttons) and **Indexes** sections (hidden for
+non-admin keys).
+
+**The bearer gate binds tokens to targets.** `admin` answers every target; `read` and plain
+named tokens answer the main index — their pre-stage-13 contract, unchanged. An `app:<name>`
+token answers its target and nothing else, **by default**: plain paths (`/search`, `/index`)
+address its own index (the binding is what the token carries — the bridge's code path needs no
+target parameter), and any explicit target it does not match answers `403`. Mutating routes
+accept an app token only for its own target: the bridge queues its own crawl, never anyone
+else's. Review caught and fixed: a plain-named-token 403 regression, the injected-searcher
+seam the 503 contract pins (the main scope now resolves `app.state.search` at call time), the
+tokens-file write before the config folder existed, the main-index clash for env entries, a
+cross-target counts bleed in the single-slot status cache (now keyed per index folder), and
+the tokens endpoint refusing an admin token presented on the read side
+(`principal="admin (read scope)"`).
+
+**Surfaces:** `server/docs/API.md` "Named indexes" (+ auth bullets), `server/.env.example`
+(`DIGUP_SERVER_APP_TARGETS`), `deploy/docker-compose.app-targets.yml` (opt-in `-f`; the
+target's index rides its OWN bind mount, so indexing survives recreation like the media
+index's), CI validates the fragment with and without the nvidia profile.
+`server/tests/test_targets.py` pins the registry, the mint rules (inert/stable/0600/env-
+authority), the binding table, and the flow end to end on the real engine (minted key → own
+status → own crawl 202, media 403, own search, cross-target media preview, per-target busy
+409, parallel crawls on two targets, tokens visibility).
+
+**Suite (this box, container, `-rs`, zero skips):** run 3 (new suite in): 6 failed / 123
+passed / 1 deselected / 0 skipped → review-pass fixes above; run 4: 2 failed / 127 passed —
+the two were a stale binding-default expectation (superseded by design) and a render
+mid-reload answering the engine's honest 503 (the pinned refusal state — the contract now
+polls, like clients do, and names the last answer's body: the engine's own words are the
+diagnosis); run 5: 1 failed / 128 — the preview poll's own bug (it picked `hits[0]`, a text
+doc: the engine's render refuses text docs permanently, "unreadable: can't decode image" —
+the contract previews the image hit); runs 7 and 8: **129 passed / 1 deselected / 0 failed /
+0 skipped**, twice.
+
+Two more findings from the demo bring-up, both fixed in code:
+
+1. **Registry shape:** the parser demanded `name=roots=index` (two `=`) while the docs,
+   the compose fragment, and `.env.example` all shipped the house shape `name=roots:index`
+   (roots colon-separated, index LAST — the same shape as `DIGUP_SERVER_ROOTS`). The demo
+   container crashed at startup quoting its own entry — the parser moved to the documented
+   shape (entry → `name=`, then colon-split: ≥ 2 parts, last is the index), the tests and
+   docs pin it, and the env path now enforces the main-index clash too.
+2. **`/api/v1/targets` counts:** the CLI status has no `files`/`searchable` keys (those are
+   the searcher's live fields), and a store whose writer has exited can keep its fresh rows
+   in the WAL pinned by the searcher's reads (measured in the suite: main db 4096 B + live
+   `-wal`, searcher 12 rows, a fresh CLI read 0). The listing now takes counts from a
+   running target's live searcher (the authority on a store it has open), from the CLI's
+   own table (`kinds` totals + `vectors`) for unspawned targets, `null` for an empty index
+   folder — no engine is ever spawned for a GET, and no number is ever invented.
+
+`server/docker/Dockerfile` gained `ARG SWIFT_TESTS=1` gating the engine `swift test` inside
+the builder stage: CI never passes the arg (gate unchanged); local suite builds use
+`--build-arg SWIFT_TESTS=0` after the measured box fact — a from-scratch engine build on
+this box dies in the engine's own test `gitListingNeverRunsRepositoryFsmonitor`
+(`CodeTests.swift:203`, the fsmonitor hook never runs in this box's builder), and the
+server's gate is the contract suite (`swift test` belongs to ci.yml/packages.yml on their
+supported environments).
+
+**Live demo gate (this box, compose stack project `digup-demo`, port 8792, CPU flavor,
+public Wikimedia corpus photos only):** tokens file `0600` with minted admin + app key; UI
+200 with both sections; unkeyed API `401`; admin answers `target media` roots `/media/photos`;
+the app key answers `target nextcloud` roots `/media/app` and is `403` on `?target=media`;
+its `POST /index` → `202`, a second one → `409` naming the live job; the job `done`; app
+status **36 files / 36 searchable**; the media index untouched (**0 files**, 0 hits); app
+search 3 hits all under `/media/app`; targets visibility (admin: both, app: only its own);
+`GET /tokens` shows minted values to admin, `403` to the app key. Audit lines carry
+`principal=… target=…`. Final suite run with these fixes: **129 passed / 1 deselected /
+0 failed / 0 skipped in 160.04 s** (2026-11-08, this box, container, four mounts, `-rs` —
+zero SKIPPED lines in the log).
+
+**The Nextcloud bridge (app repo `digup_nextcloud` 0.4.0).** `DigupService::serverStatus()`
+(GET `/api/v1/status`) and `startIndex()` (POST `/api/v1/index`) ride the same
+server-to-server path as the search — the key never reaches the browser, every number is the
+server's verbatim. Admin-only routes `api#status`/`api#indexnow`; the settings form gained the
+index line (target + counts) and an **Index now** button; the token field is now "Access key"
+with the Application-keys page named. Deployed on the pilot (occ `installed_version 0.4.0`,
+files bind-swapped, `php -l` green in the container, `node --check` green on both JS files).
+Gates on this box (measured, pilot stack, session as the admin user): status → 200,
+`target: media`, files **131,973**, searchable **115,098**, roots `['/media/photos']` (the
+live GPU run's counts, mid-embed); index-now with the pilot's read-scope key → the server's
+own words passed through verbatim ("that is this server's read-scope token; indexing and
+estimating need the admin token") — the honest state until the pilot's image carries
+stage-13; non-admin user → 403 on both routes. The pilot's full named-index flow (minted key
+→ its own index) lands with the image rebuild after the running embed job finishes — a GPU
+run is never interrupted for a redeploy.
+
 ## 2026-11-08 — Pilot: live progress, Access UI, the excludes fix, and the engine picks GPU
 
 **The excludes fix (b81e9e8).** The index job path was the gap: `estimate_argv` and
@@ -888,19 +1005,18 @@ running `digup` with no toolchain, no desktop stack. Model files verified agains
 
 ## What runs today, exactly
 
+Updated 2026-11-08 (stage 13). The Stage-2 headless proof below stays valid evidence.
+
 ```
-digup-engine:local      runs `digup` headlessly (arm64, CPU)        — image, 296 MB
-server/tests/proof.sh   index + search + eval, the engine's words   — Stage 2 evidence,
-                        re-run green 2026-11-02 (EXIT=0, R@1 0.71 / R@5 0.88)
-digup-server-test:local adapter + contract + API + job + UI tests    — 57 passed / 236.12 s
-                         (dedicated suite index, prewarm, prune pair,   — Stages 3–8 + 10,
-                          stop-mid-job-resume, rotation, env knobs,       green
-                          /file 200·206·416·404, roots, UI parity surface,
-                          refusal 503 pair, UI no-cache revalidation,
-                          MP4 sniffed by ftyp)
-digup-server:local      runtime image: payload+API+UI, tini, non-root — Stage 7, rebuilt
-digup-server-server-1   compose up (healthy), 127.0.0.1:8787, real    — Stages 7–8 + 10:
-                         data volumes, UI+API, stop_grace_period: 90s,   prewarm, prune,
-                         mid-job stop measured: 143+partial · 8+7=15,    137+replay+resume
-                         corpus2 gallery (61 files) indexed and served
+suite (container)       contract suite, 4 mounts, -rs               — 129 passed / 1 deselected
+                        server/tests/proof.sh index+search+eval     — / 0 skipped (2026-11-08),
+                        (EXIT=0, R@1 0.71 / R@5 0.88)                proof.sh green (Stage 2)
+digup-server-cuda:local bench compose stack, healthy, 127.0.0.1:8787 — media index 131,972 files,
+                        (pre-stage-13 image; rebuild owed)            GTX 1070 (GPU 0) pinned
+digup-server-nextcloud-* pilot stack :8791 API / :8090 web,         — GPU embed run in flight
+                        app 0.4.0 deployed (index line + Index now)  (sampler hourly, resumable)
+digup-demo-server-1     stage-13 demo: compose app-targets frag,    — media + `nextcloud` targets,
+                        CPU flavor, 127.0.0.1:8792, public corpus    minted keys, flow gate green
+digup-server:local      runtime image (payload+API+UI, tini, non-root — Stage 7 + 13,
+                        + nvidia/cuda runtime libs for the CUDA flavor — Stage 9)
 ```
