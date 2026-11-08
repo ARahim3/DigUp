@@ -2,6 +2,61 @@
 
 One document, kept current (docs/implementation/README.md §10). Newest first.
 
+## 2026-11-08 — Pilot: live progress, Access UI, the excludes fix, and the engine picks GPU
+
+**The excludes fix (b81e9e8).** The index job path was the gap: `estimate_argv` and
+`search_argv` carried `--exclude`/`--exclude-ext`, `index_argv` did not. Measured: the
+pilot's job walked **1,643,492 files** (the Nextcloud data dir's preview folders =
+1,470,439 files) against a 131,973-file forecast. Engine proof that the flag works on
+`index-service`: a scratch run reports `left_out: {"folders excluded folder": 1}`.
+Recovery as designed: graceful stop (`Application shutdown complete`, the running job
+recorded *interrupted* at files_done 34,931 / 1,643,492), the contaminated index wiped,
+image rebuilt with the fix, chain re-queued. The job log lives at `<config>/jobs.jsonl`
+(jobs.py §header), so it **survives an index wipe** — boot replay restored the
+interrupted record, and the newest record drives the app's progress line. The suite
+asserts the job path carries the excludes (test_integrations).
+
+**Fresh run (measured):** estimate walk 1,762 s → **131,973 files** (106,346 image,
+19,818 video, 2,868 pdf, 2,817 doc, 85 audio, 39 screenshot); forecast 8.78 h (the
+engine's own `seconds` 31,614, `calibrated: false` → M4 Pro baseline). The walk total
+131,973 = the excludes honored in the job. On the CPU-flavor image the default chain
+measured 1.68 files/s (255→431 in 105 s) → 130,742 ÷ 1.68 ≈ 21.6 h.
+
+**GPU switch (config only, Stage 9 procedure):** the ghcr CUDA image predates the
+excludes fix, so the CUDA image was built on the box from the current tree
+(`--target server-runtime-cuda`, CUDA 11.8.0 devel + runtime bases, `CUDA_ARCHS=61`)
+→ 2.42 GB. A compose fragment swaps the pilot server's image, pins
+`NVIDIA_VISIBLE_DEVICES` to the server card (UUID `GPU-a733…e630`) and reserves the
+device; the full chain validates `config --quiet` with and without the fragment, and
+the recreation passed the full file chain + boot env (never defaults).
+
+**The engine's verdict** (`speed --model --json` on the CUDA image):
+`device: "gpu"`, `agreement: 0.99977` (≥ 0.999 required). Model times GPU vs CPU on
+this card: picture **0.145** vs 0.668 s, frame 0.079 vs 0.364 s, screen 0.313 vs
+1.440 s, text 0.029 vs 0.151 s. The CUDA chain ships inside `/opt/digup`
+(libcublasLt.so.11 → 11.11.3.6, libcudart 11.8.89, libnccl 2.15.5, libnvrtc 11.8) —
+`libcuda.so.1` comes from the host driver through the toolkit, as always. The job
+resumed from checkpoint: searchable 2,279 carried over, no re-embedding of completed
+files. Utilization sampling during a real embedding stretch (0.15 s interval, 300 s,
+pinned card): **1,567 samples, 720 busy, peak 95 %, duty 45.9 %, VRAM peak 1,697 MiB**
+— passes the gate on both thresholds (peak > 20 %; duty ≥ 10 % with the model resident).
+Throughput window 3,151 → 3,383 files in 120 s = **1.93 files/s** vs 1.68 files/s on
+the CPU flavor: the GPU model time is 4.6× faster, the net is +15 % — the per-file CPU
+pipeline (video decode, PDF parsing, HDD streaming) dominates end to end. Finish
+forecast: 128,590 ÷ 1.93 = 66,512 s ≈ **18.5 h**. Index on disk: 1 MB at 3,383 files
+(quantized vectors) → the full run lands ≈ 40 MB; disk is not the constraint.
+
+**UI (suite-asserted):** the access key moved from a load-time `window.prompt` into
+the gear's panel — Settings → Access: a field + Save/Clear kept in localStorage, sent
+as a bearer header only, never in a URL; a 401 with no stored key pulses the gear; the
+embed widget (no settings panel) keeps its prompt. Suite with the new assertions:
+**117 passed, 1 deselected, 0 skipped** (121.57 s, then 125.84 s).
+
+**App (digup_nextcloud 0.2.2):** the progress line rides right of the spinner circle
+(one flex group; bar-wrap can't split them); during a live run the denominator is the
+engine's own `index_files` — the job record's total arrives at sync end (`files: null`
+mid-walk), and the app invents no numbers.
+
 ## 2026-11-07 — WebDAV shape: the dav mount container, zero host sudo, gates green
 
 **Shape (stage-12 §11.7, the user's no-sudo directive):** compose `--profile dav` runs a
