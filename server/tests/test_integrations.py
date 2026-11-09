@@ -10,8 +10,9 @@ the real engine. The rules they pin:
   that lets an allowlisted browser widget POST (the guard's cross-origin exception is
   set ONLY by a CORS-passed preflight, stage-12 §11.4);
 * every guarded request lands in the log with its accepted principal;
-* the embed widget follows the same UI rules as the full UI (no external URLs, no
-  build step, server-issued media handles, the token never in a `<img>`-visible URL).
+* the embed widget follows the same UI rules as the full UI (no external URLs, the
+  built Lit+Vite shape served same-origin, server-issued media handles, the token
+  never in a `<img>`-visible URL).
 """
 
 from __future__ import annotations
@@ -232,27 +233,43 @@ def test_the_embed_page_is_served_and_dependency_free():
     html = page.text
     assert "DigUp" in html and "embed.js" in html and "embed.css" in html
     assert not re.search(r'(src|href)="(https?:)?//', html), "the widget must load no external URLs"
-    assert not re.search(r'type="module"', html)
-    assert 'href="style.css"' in html                       # the shared measured palette
+    # The built shape (2026-11-08 migration): ES-module entry, and the shared measured
+    # palette rides with the widget's own CSS graph (Vite extracts the tokens into a
+    # hashed stylesheet the html links — the widget page stays self-contained).
+    assert re.search(r'type="module"', html)
+    assert re.search(r'href="\./(assets/[^"]+\.css)"', html)
     assert 'name="referrer" content="none"' in html         # no referrer leaves the widget
     for asset in ("/embed.css", "/embed.js"):
         assert client.get(asset).status_code == 200
     # the shared static mount decorates every embed byte the same way (no stale UI)
-    for asset in ("/embed.html", "/embed.css", "/embed.js"):
+    assets = ["/embed.html", "/embed.css", "/embed.js"]
+    assets += ["/" + p for p in re.findall(r'href="\./((?:chunks|assets)/[^"]+)"', html)]
+    for asset in assets:
         reply = client.get(asset)
-        assert reply.headers["cache-control"] == "no-cache"
-        assert "etag" in reply.headers
+        assert reply.status_code == 200, asset
+        assert reply.headers["cache-control"] == "no-cache", asset
+        assert "etag" in reply.headers, asset
 
 
 def test_the_embed_widget_uses_the_published_api_and_hides_the_token():
-    js = embed_client().get("/embed.js").text
+    # The widget's bundle: the embed entry plus the chunks its html links (the api
+    # service is a shared module — the pins below name the rules, and the rules are
+    # tested as behavior in src/embed.test.js / src/services/api.test.js).
+    client = embed_client()
+    html = client.get("/embed.html").text
+    js = client.get("/embed.js").text + "\n" + "\n".join(
+        client.get("/" + p).text for p in re.findall(r'href="\./((?:chunks|assets)/[^"]+\.js)"', html))
     assert "fetch(" in js and "/api/v1/search" in js and "/api/v1/embed_ahead" in js
+    # embed.html DECLARES the widget; the entry wires that element (the double-mount
+    # bug — an unwired twin above the working widget — is pinned out, 2026-11-08).
+    assert html.count("<digup-embed></digup-embed>") == 1
+    assert 'document.querySelector("digup-embed")' in js
     assert "media_id" in js and "/preview" in js and "/file" in js   # server-issued handles
     assert "sessionStorage" in js and "history.replaceState" in js   # the token leaves the URL
     assert "URL.createObjectURL" in js and "IntersectionObserver" in js
     assert "postMessage" in js and "digup-host" in js                # the host drives the theme
     assert "embed_ahead" in js and "meaning" in js                   # keyword-first typing
-    assert 'prompt("This DigUp server asks for its read token' in js  # 401 asks once
+    assert 'This DigUp server asks for its read token' in js          # 401 asks once
 
 
 # ── the token map over the REAL API + engine: what the Nextcloud app's calls do ──────────

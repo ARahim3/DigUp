@@ -54,6 +54,12 @@ is a tested property, not a style guideline); handles issued per hit (unique, 12
 photo preview → real JPEG bytes; **video preview at the hit's moment** (`loc` present →
 frame JPEG); the doc passage quoted verbatim (scratch corpus: `campfire stories…`);
 server-never-issued ids → 404 on both endpoints; `embed_ahead` → `{ok:true}`.
+
+> Amended 2026-11-08 (user brief, README §10.4's dated note): the server UI became a
+> Lit + Vite frontend — `type="module"` is now the REQUIRED shape pin (the "no module"
+> pin inverted with the migration), "no external URLs" and the no-cache decoration are
+> unchanged, and Node exists at Docker build time only. The stage's other pins ride on
+> unchanged; `server/ui/AGENTS.md` is the current manual.
 `conftest.scratch/scratch_index` moved to session scope (one 100 s scratch indexing
 shared by jobs/media/index modules).
 

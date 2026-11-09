@@ -920,10 +920,21 @@ def create_app(config: EngineConfig) -> FastAPI:
         return payload
 
     # ── The UI, same origin (so CORS is not needed at all — Stage 6) ───────────────────
-
-    ui = Path(__file__).resolve().parent.parent / "ui"      # server/ui, vanilla, no build
-    if ui.is_dir():
+    #
+    # The Lit + Vite migration (user brief 2026-11-08, server/ui/AGENTS.md): FastAPI serves
+    # the BUILT frontend — `server/ui/dist` (`app.js`, `style.css`, `embed.js`, `embed.css`,
+    # hashed chunks; the stable names are the pinned contract, vite.config.js maps them).
+    # Node exists at BUILD time only (the Dockerfile's frontend-builder stage); the runtime
+    # image ships the static dist, and the UIFiles no-cache decoration rides every byte.
+    # `DIGUP_SERVER_UI` points the mount elsewhere (a dev checkout with its own build);
+    # an explicit value with no index.html is a loud config error, not a silent 404 page.
+    env_ui = os.environ.get("DIGUP_SERVER_UI", "").strip()
+    ui = Path(env_ui) if env_ui else Path(__file__).resolve().parent.parent / "ui" / "dist"
+    if (ui / "index.html").is_file():
         app.mount("/", UIFiles(directory=ui, html=True), name="ui")
+    elif env_ui:
+        raise FileNotFoundError(
+            f"DIGUP_SERVER_UI={ui} has no index.html — serve the built UI: cd server/ui && npm run build")
 
     return app
 

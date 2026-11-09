@@ -1,0 +1,9 @@
+/* embed.css — the embed page's document frame only (the stable pinned name).
+   The widget's whole interior (search bar, chips, tiles) lives inside <digup-embed>'s
+   shadow, styled by the component with the same measured values the vanilla embed.css
+   had — carried over verbatim into digup-embed.js. What is left here is the frame the
+   page itself needs: the embed body has no content column (the full UI's 72 rem
+   measure is the search page's layout, not the widget's). Tokens ride with
+   embed.js's import (tokens.css merged into this file at build). */
+
+.embed { margin: 0; }

@@ -54,3 +54,9 @@ deploy/data-ghcr/
 
 # stage-13 app-targets demo scratch stack (compose state, index, job logs)
 deploy/data-demo/
+
+# The Lit + Vite frontend (user brief 2026-11-08): npm install and the build output are
+# host artifacts — dist is produced in the Dockerfile's frontend-builder stage and served
+# by FastAPI; the host copy is only for `npm run dev`/local preview.
+server/ui/dist/
+server/ui/node_modules/

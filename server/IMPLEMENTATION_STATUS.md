@@ -2,6 +2,289 @@
 
 One document, kept current (docs/implementation/README.md §10). Newest first.
 
+## 2026-11-08 — The web UI on Lit + Vite (user brief): component architecture, same page, same contract
+
+The user's brief executed: `server/ui/` migrated from vanilla JS to **Lit + JavaScript ES
+modules + Vite** — no TypeScript, no React/Vue/Angular, no router/state library, **no Node
+at runtime**. The page renders the same, talks to the same `/api/v1` with the same bodies
+and auth shapes, keeps every measured style value, and keeps every contract the suite
+pinned. The architecture manual is `server/ui/AGENTS.md` (new, binding inside `server/ui/`);
+`docs/implementation/README.md` §10.4/§10.5 carry the dated amendments recording the route
+("Node at Docker build time only" — the runtime images ship static files).
+
+**What ships.** Thin HTML shells (`index.html`, `embed.html`) + `src/` (21 modules):
+one store + `storeController` (slice selectors, element-wise tuple equality), four
+controllers that keep the sequencing tokens (search generation, `jobPoll`, `estimateToken`
+— keyword-first typing with `prefix_last` + `embed_ahead`, the job-poll loop with its
+409 dedupe and the S1 honest-failure line, the estimate with its cancel, the keys rows),
+ten Lit components (`digup-app` shell · search · suggest · results · preview · big ·
+footer · settings · embed; the Estimate toggle stays inline in `digup-settings` — single
+use site), `services/api.js` as the ONLY `fetch()` (bearer header, the 401 shapes, the
+422 detail-list, `blobOf`), `lib/format.js` + `lib/media.js`, `styles/` (tokens.css,
+global.css, embed.css, `controls.js` shared Lit `css` chunks). The layout's ONE switch
+survives as `body[data-page]` **mirrored onto the shell host** (`:host([data-page=…])`
+— shadow panels are out of a body selector's reach); `firstUpdated` paints the first
+state (the vanilla startup `render();` as a lifecycle).
+
+**Serving, unchanged in kind.** `api.py` mounts the **built** frontend — FastAPI serves
+`server/ui/dist` at `/` with the same `UIFiles` no-cache decoration; `DIGUP_SERVER_UI`
+relocates the mount (an override with no `index.html` is a startup error, never a silent
+404 page). Stable asset names stay the contract: `vite.config.js` maps Rollup output to
+`app.js` / `style.css` / `embed.js` / `embed.css`; shared chunks/assets are content-hashed
+and *linked from the html* — the contract-suite asset walks read the links, so a re-hash
+never needs a pin change. `.dockerignore` keeps host `dist`/`node_modules` out of every
+image; `.gitignore` keeps them out of git.
+
+**Docker.** New `frontend-builder` stage (`node:22-slim`): `npm ci` (committed lockfile)
+→ `npm test` (vitest) → `npm run build`; `server-test` and `server-runtime` COPY the dist.
+A red unit test or a red build is a red image by construction; CI needs no new step (the
+targets build through it; the runtime page grep — "DigUp" + "app.js" — passes on dist).
+
+**Contract pins, moved not dropped.** `test_media_ui.py` + `test_integrations.py` read
+the served **bundle** (entry + hashed chunks; `_bundle`/`_styles` helpers): Lit ships
+`css`` chunks as runtime styles, so component CSS is bundle text verbatim; minification
+strips whitespace between JS tokens, so pins written for the old HTML source are restated
+for minified bytes (e.g. `"screenshot","Screenshots"`, `groups:\s*\[\]`). `type="module"`
+is now a REQUIRED shape pin (the old "no module" pin inverted with the migration, by
+design, in the same commit as the change). The Space guard, the engine's sentences, the
+endpoint literals, the gear section order, the 40/60 grid, the 2 rem row, the
+`prefers-reduced-motion` fade, the `overflow-x: clip` rule — all pinned, all green.
+One fixture transcription fix rode with it: `doc_client` roots now point at the scratch
+corpus folder, not at its index folder (the ghost-row scope trap — rows outside scope
+answer 0 hits; probe-verified: doc search answers z 4.9 with correct roots).
+
+**Measured on ai-ubuntu-computer** (x86_64, kernel 7.0.0-38-generic, Ryzen 9 7950X,
+64 GiB; Node v22.22.1, npm 9.2.0):
+- `npm test` — 52 unit tests, 12 files (api, store, 4 controllers, 6 components, both
+  entry boots), **52 passed, 0 failed**, 1.18 s (jsdom, fake timers, stubbed fetch).
+- `npm run build` — clean, 287 ms: `app.js` 61.0 kB (18.8 kB gzip), `embed.js` 10.1 kB
+  (3.9 kB gzip), `chunks/vendor` 15.1 kB (5.8 kB gzip), `chunks/format` 4.0 kB,
+  `assets/format.css` 2.2 kB, `style.css` 0.25 kB, `embed.css` 0.02 kB.
+- Docker `--target server-test` build: green with the frontend-builder stage running
+  npm ci / vitest / vite build inside the build.
+- Contract suite (all four mounts, `/srv/server/.venv/bin/pytest -rs`): **137 passed,
+  1 deselected (the `-m slow` timing test), 0 skipped** — the baseline count, restored
+  after the fixture fix above. Every SKIPPED is a FAIL here; the run reports zero skips.
+  The FINAL gate re-ran the same command on the shipped tree (legacy deleted, dist from
+  the last sources): **137 passed, 1 deselected, 0 skipped, 194.06 s**.
+- Runtime image (`--target server-runtime`) + CI-parity smoke: boot, `healthcheck.py` 200,
+  page grep ("DigUp" + "app.js"), `docker stop --timeout 15` → exit **143** (not 137)
+  with `Application shutdown complete` in the log.
+- Legacy vanilla files (`app.js`, `style.css`, `embed.js`, `embed.css` at the `server/ui/`
+  root) deleted after the green suite — `dist/` is the served UI.
+
+**Not done here (disclosed):** the human browser pass (Stage-11 release step; no browser
+in this harness); the visual identity was carried over value-for-value, not re-measured.
+Commits: none made (README §9 — no commits/pushes without explicit ask).
+
+**Cutover on this box (measured 2026-11-08, the user's test port):** the standing 8787
+stack was recreated on the new CPU runtime image (`docker compose -f docker-compose.yml
+up -d --build`, the full env chain — the media dir, roots, timeouts, minted keys — never
+defaults, per the recreation rule; the GPU/LAN overlays untouched, restore path = the
+standing bench bring-up script with its full chain). Measured on the live stack:
+`GET /` serves the thin shell with `type="module" src="./app.js"`; `/app.js` `/style.css`
+`/embed.html` `/embed.js` `/embed.css` all 200 with `cache-control: no-cache`;
+`/api/v1/status` = 131 972 files · 131 758 searchable · 403 831 vectors · roots as before
+(the standing index, in scope — no prune needed); `/api/v1/health` 200 `ok:true`,
+encoder ready; three searches 10 hits / 10 strong each, 0.74–0.97 s, top z 5.15–7.11.
+The job log's newest record predates the recreation (no job was running: nothing lost,
+`interrupted` records intact from earlier runs).
+
+**User browser pass, round 1 (2026-11-08): the double-page finding.** On the live page
+two DigUp headers stacked — the declared element and a second, unwired instance. The
+thin shells DECLARE `<digup-app>` / `<digup-embed>`, and the entries also
+`createElement`d one: the unwired twin rendered its bare template above the working app.
+Fixed in the same round: the entries now wire **the declared element** (`querySelector`,
+`createElement`+append only as the fallback), and the components gate on the wiring —
+`render()` paints nothing until `store`+`api` arrive, the boot (focus, the 15 s status
+poll, the widget's health + `?q=` run) fires on the first update where the entry wired
+them (the wiring setters `requestUpdate`). `server/ui/AGENTS.md` records the rule
+(html declares, entry wires). Pins added in the same change, disclosed:
+`test_media_ui` (one declared pair in the html + the entry's `querySelector` line + the
+fallback append), `test_integrations` (same for the widget); the entry boot tests
+`main.test.js` / `embed.test.js` declare the element first and assert exactly ONE wired
+instance. Measured after the fix: unit 52 passed, build 317 ms (app.js 61.28 kB /
+18.90 gzip); served page carries one `<digup-app>` pair; loopback + the box's LAN DNS name
+:8787 200, status 131 972 files · 131 758 searchable · 403 831 vectors, embed page 200,
+untrusted Host 400. Checkpoint gate after the fix (test image rebuilt from the fixed
+tree, full suite): **137 passed, 1 deselected, 0 skipped, 189.55 s**.
+
+**Fast iteration loop (the user's ask, documented in `server/ui/AGENTS.md`):**
+a UI fix is now edit → `npm run build` (0.3 s) → browser refresh. The dev shape binds
+the host `server/ui/dist` over the image's baked dist (a local-only overlay,
+`DIGUP_UI_DIST`-forced) — `StaticFiles` reads per request, every UI byte is
+`no-cache`, so the refresh lands the new bytes with no image build and no restart;
+`npm run dev` (:5173, `/api` proxied to :8787) is the hot-reload variant. The contract
+suite + the runtime image build are checkpoint gates, run per batch of fixes.
+
+**LAN dev server (the user's ask, 2026-11-08):** `vite.config.js` dev bind + host
+allowlist + watcher are env-forced, default loopback: `DIGUP_UI_DEV_HOST` (bind),
+`DIGUP_UI_DEV_ALLOWED_HOSTS` (Vite host guard), `DIGUP_UI_DEV_POLL=1` (polling watcher —
+this box's inotify limit is exhausted: first boot died `ENOSPC`; sudo needs a terminal
+here, so polling is the fix). Measured: 0.0.0.0:5173 listening, LAN DNS name :5173 200
+(0.0034 s), LAN IP 200, loopback 200, untrusted Host 403, `/api` proxy answers the real
+engine counts (`changeOrigin`, so the API keeps its loopback Host). Disclosure: the dev
+server is LAN-visible without auth (the standing home-LAN trust model); it is a dev
+shape — the committed default is loopback, production is the built dist.
+
+**User browser pass, round 2 (2026-11-08): four UI findings, all root-caused.**
+1. *Gear clipped a quarter*: my transcribed SVG path had lost ring segments (497 chars
+   vs vanilla's 622) — the geometry was missing, not the style. Restored the vanilla
+   path verbatim.
+2. *Results list rendered as bare bullets*: `digup-results` shipped only `badgeCss` —
+   the list's layout rules (rows, group titles, thumbnails, the fold) had not moved into
+   the component, so the browser drew default `<li>` discs. Ported the vanilla rules
+   verbatim into the component's shadow styles (+ a row `:focus-visible` outline).
+3. *Open/Download as plain links*: the pane builds `a.button-like` (lib/media.js) but
+   `digup-preview` never imported `controlCss` — imported; real buttons.
+4. *Settings panel rework (the brief)*: the Estimate toggle moved to the RIGHT of the
+   Estimate button and lost its "on/off" caption; THE INDEX reads `Looking in: <roots>`
+   first, then the fact badges, then the index rows; the API key section shows ONE label
+   with the key in a readonly text box (click selects all), `⧉ Copy` and `↻ Regenerate`
+   at its right (minted app keys use the same shape). Measured after the batch: unit
+   **52 passed / 52** (the settings test updated for the new row shape in the same
+   change, disclosed), build 283 ms (`app.js` 65.05 kB / 19.89 gzip), checkpoint suite
+   **137 passed, 1 deselected, 0 skipped, 172.83 s** — the layout pins (2 rem rows, the
+   minmax() key grid, `#keys-regenerate` margin-left, the estimate switch,
+   `overflow-x: clip`, `.set-facts` nowrap) verified present in the bundle.
+   Lesson recorded in `server/ui/AGENTS.md`: a component owns its shadow styles — the
+   migration must move EVERY rule the vanilla page had for that region; a missing import
+   is invisible to unit tests and shows up in the browser as an unstyled region.
+
+**User browser pass, round 3 (2026-11-08):** (1) every panel line is one row height (the
+2rem token) and the one-line target rows are gone — the index's counts ride beside
+`Looking in: <roots>` in parentheses, abbreviated, from `/api/v1/status` verbatim (the
+shell's status slice gained `files`/`searchable`); the named-app-index counts left the
+panel with them (disclosed to the user; `GET /api/v1/targets` unchanged). (2) The API key
+field widened (label column `minmax(4rem, 6rem)`, field `minmax(0, 1fr)`) and the actions
+became icon-only `⧉` / `↻` with `aria-label` + `title`. (3) The estimate knob is centered
+in the oval (`top: 50%` + `translateY(-50%)`). Measured: unit **52/52** (the settings test
+updated for the new shapes in the same change), build 286 ms (`app.js` 66.20 kB /
+20.18 gzip), bundle pins verified (`roots-sum`, `key-icon` ×3, knob centering,
+`minmax(4rem, 6rem)` grid, `id="targets"` → 0 occurrences), checkpoint suite
+**137 passed, 1 deselected, 0 skipped, 172.44 s** (two contract pins restated in the same
+change, disclosed: `appkeys` + `roots-sum`; the key-grid prefix).
+
+**User browser pass, round 4 (2026-11-08) — Settings redesign (the user's ChatGPT
+ layout brief):** the gear panel's internals were reorganized in the SAME component into
+ four stacked sections — **Appearance · Indexing · Index status · API access** — each with
+ a small inline-SVG icon (palette / database / activity / key: 15 px, accent-colored,
+ `aria-hidden`) and a 15.2 px semibold heading, 22 px section rhythm around 1 px dividers
+ (`--space-md` above and below), 12 px radii on every panel box (the key rows + field get
+ it panel-scoped — the shared `keyRowCss` leaves the embed widget's rows as measured),
+ muted descriptions, restrained blue accents, no box-around-every-section. The modal frame
+ is untouched: same width, anchor under the gear, overlay order, the five close paths.
+ INDEXING: Index now + prune missing on one row; Automatic estimates on its own row,
+ switch right-aligned, muted description beneath; the forecast box scrolls inside its own
+ bounds only. INDEX STATUS is the one distinct card: folder icon + `Looking in: <roots>`,
+ **Total files / Searchable files** as two side-by-side stat tiles (the `/api/v1/status`
+ slice verbatim, `—` when no data), the capability badges wrapping naturally with semantic
+ tones from the engine's own strings (`vectors > 0` and `encoder ready` → green,
+ `starting` → amber, `unavailable` → red, `stopped` → muted). API ACCESS keeps the round-3
+ shape (wide field, icon-only `⧉`/`↻`). Preserved verbatim: the store slice, all six
+ events, `focusFirst()`, the empty-section collapse, every control id. Measured: unit
+ **52/52**, build 283 ms (`app.js` 68.83 kB / 20.89 gzip), bundle bytes verified
+ (heading-id order, heading texts, `status-card`/`stats`/`toggle-row`, `border-top: 1px
+ solid var(--line)`, `flex-wrap: wrap`, `overflow-y: auto` → 0); four contract pins in
+ `test_media_ui.py` restated in the same change, disclosed: the section-order pin rides
+ the heading ids + texts (the icons now live inside the title spans), `.set-facts`
+ nowrap → wrap (badges wrap by brief), and the new card/stats/toggle-row/divider pins.
+ Checkpoint suite: image unpack 2.7 s, **137 passed, 1 deselected, 0 skipped, 183.24 s**
+ — the restated pins are in that green run.
+
+**User browser pass, round 5 (2026-11-08):** (1) The `Looking in: <roots>` line left the
+ status card (the roots stay in `GET /status`; the card's two tiles carry the counts).
+ (2) The estimates description line left with the rename: the row is now **Estimate** +
+ right-aligned switch (the description span and its `.set-desc` rule are gone; the toggle
+ keeps its `title`). (3) The copy buttons now work where the panel is served over **http**
+ on the LAN — an insecure context has no `navigator.clipboard` at all: `#copy()` uses the
+ async clipboard when present, falls back to hidden-textarea `execCommand("copy")`, and
+ the button answers `✓`/`—` for a moment. New unit test covers the fallback (jsdom has no
+ clipboard — the exact LAN shape): unit **53/53**. The regenerate chain was proven on the
+ live dev stack (8787, minted shape): keyless `GET /tokens` → ticket, `POST /tokens`
+ (admin) → rotated 200 with a new key, `POST /tokens` with the dead key → **403** ("the
+ keys answer the admin token only"), keyless `GET /tokens` after rotate → the ticket is
+ the new key (the gear adopts it, the panel shows it, copy copies it). Disclosure: the
+ proof rotated the dev stack's minted keys — browsers self-heal on the next gear open.
+ (4) Main-page layout (the user's layout brief): the header bar bleeds to the **screen**
+ edges (`margin-inline: calc(50% - 50vw)` + 1.25 rem padding, `overflow-x: clip` on body
+ absorbing the scrollbar sliver) — DigUp left, gear right, settings panel re-anchored at
+ `right: 1.25rem` so its edge lines up with the gear; the footer strip bleeds the same way
+ — summary left, keyboard instructions **right edge**; the search input is centered on the
+ exact axis of the chips under it (the limit select + code box leave the row's flow above
+ 1000 px, riding the input's right; below it they drop back as a centered row — new 1000 px
+ fold, 720 px fold kept). Measured: unit 53/53, build 307 ms (`app.js` 69.24 kB / 21.18
+ gzip), bundle verified (`roots-sum`/`rootsline` → 0, bleed/`right: 1.25rem`/`grid-column:
+ 1 / -1` present, pinned strings intact); one contract pin restated (`roots-sum` →
+ `Total files`, disclosed); status card/stats/toggle-row pins kept green unchanged.
+ Checkpoint suite: image unpack 2.3 s, **137 passed, 1 deselected, 0 skipped, 172.65 s**
+ — the restated pin and the 53-test frontend gate (frontend-builder stage) are in that
+ green run.
+
+**User browser pass, round 6 (2026-11-08) — the estimate flow compacted:** the estimates
+ toggle and the whole estimate section (forecast box + its rows) are **removed**; the
+ Estimate button rides the row **left of Index now** (with `prune missing`). The INDEXING
+ heading now carries the live state at its right edge: the true-circle spinner while the
+ engine works (index job **or** estimate), ✓ (green) when it finished, `!` (warn) for an
+ interrupted/busy job or a failed estimate (the full engine message rides the `title`),
+ and the brief update beside it — the job's own words verbatim, or for an estimate the
+ engine's seconds summed brief (`estimate ≈ 4 min 10 s · 3 folders`; disclosed: the sum is
+ arithmetic over the engine's `folders[].seconds`, the per-folder rows left the UI, `POST
+ /estimate` unchanged). Disclosed mechanics: the estimate CONTROLLER keeps its gate +
+ click-again-cancel + `digupEstimateOn` browser key, and the shell now forces `on` on
+ every Estimate click — a browser that had the old toggle switched off would otherwise be
+ left with a dead button (measured in the code path). Measured: unit **53/53** (the
+ forecast-rows test became the heading-summary test; the toggle event test is gone),
+ build 284 ms (`app.js` 65.30 kB / 20.27 gzip — the panel shrank 4 kB), bundle verified
+ (`estimate-toggle`/`estimate-switch`/`estimate-ctl`/`toggle-row` → 0, `set-head-row`/
+ `set-state`/`state-done`/`state-err` present, `id="estimate"` count 0); contract pins
+ restated in the same change, disclosed: `id="estimate"` count 1→0, `estimate-toggle`
+ presence → absence, `estimate-ctl` → `not in css`, the `.estimate-switch` checked-selector
+ pin dropped, `toggle-row` → `set-state`. Checkpoint suite: image unpack 2.3 s, **137
+ passed, 1 deselected, 0 skipped, 191.10 s** — all round-6 restatements are in that
+ green run.
+
+**User browser pass, round 7 (2026-11-08) — `all` toggle + Nextcloud app filter &
+ progress:** (1) Standalone: the `all` button in the kind row is a TOGGLE — all six ticked
+ → click clears all → click restores all; `aria-pressed` + an accent border mark the
+ all-on state. Engine semantics verbatim (all ticked = every kind; cleared = the engine's
+ answer over an empty kinds list — 0 hits is the honest filter answer). Unit gate added a
+ toggle test: **54/54**. (2) Nextcloud app **0.4.3**: the same six chips + the same
+ all-toggle under the search bar; the ticked set rides the engine's `kinds` filter
+ verbatim (PHP whitelists the list to the server's Kind literals — `ApiController` gained
+ the `kinds` param, `DigupService` forwards it, routes/shapes unchanged). The activity
+ spinner now stays visible for as long as the server reports a job `running`, with the
+ live `files_done / total (pct %)` counts beside it — the progress poll re-arms itself on
+ every `running` answer (user: "how many indexed out of how many remaining"). Deployed on
+ the pilot (`docker cp` onto the bind-mounted app dir — the install tree is www-data-owned;
+ `php -l` ×3 in-container clean; the registered version needed `occ upgrade` — the pilot
+ instance had `needsDbUpgrade: true`, which blocked `app:update`; upgrade clean, integrity
+ OK, maintenance off). Pilot live gate over the LAN name (session as the user the index
+ covers): `[image]` → 8 hits all image · `[audio]` → 3 hits · all six → mixed ·
+ progress `ok: true` `files_done 10,254 / index_files 131,973` · served `app.js` carries
+ the new code (cache-bust verified). Measured on this box (ai-ubuntu-computer): unit
+ 54/54, build 285 ms (`app.js` 65.67 kB / 20.39 gzip). README history entry 13.
+
+**Cleanup audit after the redesign storm (2026-11-08, the user's "did we clean up?"
+ ask):** audited the whole frontend — every CSS selector in every `css`` chunk and
+ global file against every class/id rendered anywhere, every `lib/format.js` export,
+ every store slice's writers vs readers, every controller export, every shell listener.
+ Result: **zero dead CSS selectors, zero unused helpers, zero unused controller exports**
+ (the estimate controller's gate/cancel/`resetRetried` are all live code paths).
+ Removed the three residues the rounds left: the shell's `roots` store write (its
+ consumer, the panel's roots line, left in round 5 — writer without a reader), the
+ shell's `@digup:estimate-toggle` listener (no dispatcher since the round-6 switch
+ removal), and the rule-less `class="set-lines"` on the keys block. Kept by contract,
+ disclosed: `keys-controller`'s `GET /targets` + its `s.targets` slice (the panel no
+ longer renders the rows, but the endpoint literal and the reload-after-a-job behavior
+ are pinned by the contract suite) and the estimate controller's on/gate state (the
+ shell forces it on click so a browser with the old persisted toggle-off is never left
+ with a dead button). Measured: unit **54/54**, build 287 ms (`app.js` 65.53 kB /
+ 20.36 gzip), bundle strings `digup:estimate-toggle`/`set-lines`/`roots: st.roots` → 0
+ occurrences. Audit recorded in `server/ui/AGENTS.md` §State. Checkpoint suite: image
+ unpack 2.3 s, **137 passed, 1 deselected, 0 skipped, 172.19 s** — the frontend-builder
+ stage ran the unit gate (54/54) on the cleaned tree on its way in.
+
 ## 2026-11-08 — Stage 13: named indexes + minted keys — one compose app, standalone AND serving applications
 
 The user's ask, built end to end: the compose server keeps running standalone over its own

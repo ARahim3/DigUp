@@ -168,8 +168,9 @@ jobs:
       # counts, interrupted recovery from the job log, stop-mid-job resume, log rotation
       # with history, env knobs), the startup prewarm and the ghost-row rules (walked-root
       # ghosts retire on plain sync; out-of-scope ghosts survive it and retire under prune),
-      # and the UI surface (same-origin vanilla app, server-issued media ids →
-      # previews/text, 404s for unissued ids).
+      # and the UI surface (the built Lit + Vite app, served same-origin by FastAPI from
+      # the dist the frontend-builder stage compiles — Node runs in the build, never at
+      # runtime; server-issued media ids → previews/text, 404s for unissued ids).
       # Zero-skip gate: the suite skips its own module when /models, /corpus-root or the
       # clip are missing (conftest) — "57 passed, 20 skipped" would be green-by-construction
       # and a lie. In CI every test must RUN: any skip is red, loudly.

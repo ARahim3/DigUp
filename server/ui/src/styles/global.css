@@ -1,0 +1,23 @@
+/* global.css — the page frame only: body, focus, and the ONE layout switch.
+
+   The vanilla UI laid out its four page states with `body[data-page]` (app.js render()
+   set it: idle | busy | results | none) and style.css read it — the preview pane never
+   reserves space for a state with nothing to show (measured: a 574×192 px empty box at
+   1280 px). The migration keeps the mechanism exactly: digup-app sets
+   `document.body.dataset.page` (pinned string, test_media_ui) AND mirrors it on its own
+   host attribute, because the state panels render inside the component's shadow where
+   body-attribute selectors cannot reach. Both are set at every render, including the
+   first: the first paint is a state too. */
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0 auto; max-width: 72rem; padding: 0.9rem 1.25rem 2.5rem; overflow-x: clip;
+  /* overflow-x: clip — the header bar and the footer strip bleed to the screen edges
+     (margin-inline: calc(50% - 50vw)); vw is measured past a classic scrollbar, and
+     clip absorbs that sliver — the page never gets a horizontal scrollbar. */
+  font: var(--text-ui)/var(--leading-ui) var(--font-ui);
+  color: var(--text); background: var(--bg);
+}
+
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

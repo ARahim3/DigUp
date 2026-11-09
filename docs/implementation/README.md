@@ -228,10 +228,25 @@ page. Build it so a maintainer can adopt it, and so it survives the project's ne
    that same style talking to `/api/v1` with `fetch()`. Adding React + TypeScript + Vite for the
    server alone would leave the project maintaining two UI paradigms: not the route. (Structure
    the server UI so a shared layer with `shell/ui` stays possible later.)
+
+   > **Amended 2026-11-08 by explicit user brief** (server/ui/AGENTS.md is the architecture
+   > manual): the SERVER UI migrated to **Lit + JavaScript ES modules + Vite** — no TypeScript,
+   > no other framework, no router/state library. The rule's intent survives intact and is
+   > now pinned by tests: one shell/ui stays vanilla and untouched; the server UI is the
+   > project's one Lit surface, same-origin to `/api/v1`, loads no external URLs, keeps the
+   > visual identity and the API contracts verbatim, and Node exists at BUILD time only
+   > (the Dockerfile's `frontend-builder` stage; the runtime images ship static files).
+   > "Two UI paradigms" is the accepted trade, scoped by the brief; the shared layer the old
+   > text hoped for (format.js, media templates, tokens) is factored so it stays possible.
 5. **Reviewable from a clean clone, headless.** One command sequence in CI builds the CLI, runs
    `swift test`, verifies `digup --help` inside the runtime image, indexes a committed tiny
    corpus, asserts semantic ranking (`wakeboarding`, `hiking`), and runs the API tests. It needs
    no GUI, no GPU, no Rust, no Node, no Tauri.
+
+   > Amended 2026-11-08 with §10.4: the review path gained **Node at Docker build time**
+   > (the frontend-builder stage runs `npm ci`, vitest, and `vite build` inside the build;
+   > the published image and every runtime stage stay Node-free — measured: the runtime
+   > stage COPYs the static dist and nothing else). CI stays headless.
 6. **Stable public surface.** API versioned at `/api/v1`; engine version, vector source, llama.cpp
    build tag and device backend published in `/health`; `IMPLEMENTATION_STATUS.md` kept current;
    server state confined to `/data` volumes; the engine's own files (`costs.json`, `speed.json`)

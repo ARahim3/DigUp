@@ -1,9 +1,9 @@
 <!doctype html>
 <!-- DigUp embed widget — a compact search page for hosts that embed it (a Nextcloud app
-     page, an Immich workspace panel, a dashboard iframe). Dependency-free vanilla
-     HTML/CSS/JS, no build step, same origin as the API, no external URLs — the same UI
-     rules as index.html (test_media_ui pins this file too): reuses style.css, its own
-     embed.css, its own embed.js.
+     page, an Immich workspace panel, a dashboard iframe). Lit component <digup-embed>,
+     built by Vite to the pinned names `embed.js` / `embed.css`, same origin as the API,
+     no external URLs — the same UI rules as index.html (test_integrations pins this
+     file too). Thin shell: the widget renders in its own shadow.
 
      Query parameters (all optional):
        token   the read-scope bearer token (docs/API.md "Authentication"): it moves from
@@ -22,36 +22,11 @@
   <meta name="referrer" content="none">
   <link rel="icon" href="data:,">
   <title>DigUp — embed</title>
-  <link rel="stylesheet" href="style.css">
-  <link rel="stylesheet" href="embed.css">
+  <!-- Vite injects the embed stylesheet link (embed.css) and rewrites this entry to
+       /embed.js at build. -->
+  <script type="module" src="./src/embed.js"></script>
 </head>
 <body class="embed">
-  <header class="bar embed-bar">
-    <input id="q" type="search" autofocus autocomplete="off" spellcheck="false"
-           placeholder="Search your media…" aria-label="Search" aria-describedby="statusline">
-    <label class="embed-count" title="Results per search — the engine's own cap is 100">
-      <select id="limit" aria-label="Number of results">
-        <option value="20">20</option>
-        <option value="40" selected>40</option>
-        <option value="100">100</option>
-      </select>
-      results
-    </label>
-    <span id="activity" class="activity" hidden></span>
-  </header>
-  <nav class="embed-chips" aria-label="Filters">
-    <button class="chip on" data-kind="">All</button>
-    <button class="chip" data-kind="image,screenshot">Photos</button>
-    <button class="chip" data-kind="video">Videos</button>
-    <button class="chip" data-kind="pdf,doc,audio">Docs</button>
-    <label class="chip chip-check" title="Only hits that clear the engine's 2.0σ strength gate">
-      <input id="strong" type="checkbox"> strong only
-    </label>
-  </nav>
-  <main>
-    <p id="statusline" role="status">connecting…</p>
-    <ul id="results" class="embed-grid"></ul>
-  </main>
-  <script src="embed.js"></script>
+  <digup-embed></digup-embed>
 </body>
 </html>

@@ -1,11 +1,19 @@
 <!doctype html>
-<!-- DigUp server UI — dependency-free vanilla HTML/CSS/JS, no build step, same origin
-     as the API (/api/v1). Same paradigm and same behavior as the desktop shell's
-     `shell/ui` (README §10.4): keyword-first typing (words at once, meaning after the
-     pause), kind filters, code mode, grouped strong/weaker results, a preview pane for
-     the selection, opening files (video at its moment), the keys footer. The server's
-     own controls — appearance, Index now, prune, Estimate, the engine's counts — live
-     in the settings panel behind the gear, kept in this browser. -->
+<!-- DigUp server UI — Lit + Vite (migrated from vanilla by user brief, 2026-11-08;
+     server/ui/AGENTS.md is the architecture manual, README §10.4's amendment records
+     the decision). Served same-origin as the API (/api/v1), no external URLs, Node
+     only at BUILD time: FastAPI serves Vite's dist, the entry names are the pinned
+     contract (`app.js`, `style.css`). Same behavior as the desktop shell's `shell/ui`:
+     keyword-first typing (words at once, meaning after the pause), kind filters, code
+     mode, grouped strong/weaker results, a preview pane for the selection, opening
+     files (video at its moment), the keys footer. The server's own controls —
+     appearance, Index now, prune, Estimate, the engine's counts — live in the settings
+     panel behind the gear, kept in this browser.
+
+     This file is a THIN shell on purpose: the page tree renders inside <digup-app>'s
+     shadow (the components own their markup; test pins moved to the bundle text).
+     `data-theme="system"` rides on <html> (app/theme.js owns it, localStorage);
+     the layout's state switch (body[data-page]) is written by the shell's render. -->
 <html lang="en" data-theme="system">
 <head>
   <meta charset="utf-8">
@@ -15,143 +23,11 @@
        data: is not a URL fetch — the no-external-URLs pin (test_media_ui) stays green. -->
   <link rel="icon" href="data:,">
   <title>DigUp — semantic media search</title>
-  <link rel="stylesheet" href="style.css">
+  <!-- Vite injects the built stylesheet link (style.css) and rewrites this entry to
+       /app.js at build; in dev it serves the ES module graph directly. -->
+  <script type="module" src="./src/main.js"></script>
 </head>
 <body>
-  <header class="bar">
-    <div class="bar-top">
-      <h1>DigUp</h1>
-      <button id="gear" type="button" aria-label="Settings" aria-expanded="false" aria-controls="settings"
-              title="Settings — appearance, index controls, estimate, the engine's counts">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <circle cx="12" cy="12" r="3"></circle>
-          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-        </svg>
-      </button>
-    </div>
-    <div class="bar-center">
-      <span id="activity" class="activity" hidden></span>
-    </div>
-    <div id="settings" hidden role="dialog" aria-label="Settings">
-      <div class="set-head">
-        <span>Settings</span>
-        <button id="settings-close" type="button" aria-label="Close settings">✕</button>
-      </div>
-      <section class="set-sec">
-        <span class="set-title">Appearance</span>
-        <select id="theme" title="Appearance — kept in this browser">
-          <option value="system">System</option>
-          <option value="light">Light</option>
-          <option value="dark">Dark</option>
-        </select>
-      </section>
-      <section class="set-sec">
-        <span class="set-title">Index</span>
-        <div class="set-controls">
-          <div class="set-line">
-            <button id="index-btn" title="Run one index sync now (one writer at a time)">Index now</button>
-            <label id="prune-label" title="Also retire index rows for files no longer in the folders — the procedure after remounting media">
-              <input id="prune" type="checkbox"> prune missing
-            </label>
-          </div>
-          <p id="job"></p>
-        </div>
-      </section>
-      <section class="set-sec">
-        <span class="set-title">Estimate</span>
-        <div class="set-controls" id="estimate-ctl">
-          <div id="estimate" class="set-lines" hidden></div>
-          <div class="set-line">
-            <label class="estimate-switch" title="Estimate on: the Estimate button runs the engine's forecast">
-              <input id="estimate-toggle" type="checkbox" checked aria-label="Estimate on">
-              <span class="estimate-switch-label" aria-hidden="true"></span>
-              <span class="estimate-switch-text">on</span>
-            </label>
-            <button id="estimate-btn" title="What the folders would cost to index — the engine's own forecast">Estimate</button>
-            <span id="estimate-spin" hidden aria-label="estimating" title="estimating — the engine is walking the folders"></span>
-          </div>
-        </div>
-      </section>
-      <section class="set-sec">
-        <span class="set-title">The index</span>
-        <div id="targets" class="set-lines"></div>
-        <span id="statusfull" class="set-facts"></span>
-        <p id="rootsline"></p>
-      </section>
-      <section class="set-sec" id="api-key-sec">
-        <span class="set-title">API key</span>
-        <div id="appkeys" class="set-lines"></div>
-        <!-- Regenerate is built by app.js and rides the key row's right edge
-             (round-6 UX brief) — the row grid is label | key | Copy | Regenerate. -->
-      </section>
-    </div>
-  </header>
-
-  <main>
-    <section id="searchbox">
-      <input id="q" type="search" autocomplete="off" autocorrect="off" spellcheck="false" autofocus
-             maxlength="512"
-             placeholder="Describe it: “wakeboarding at sunset”, “payment error screenshot” — “code: …” searches code">
-      <div id="search-side">
-        <select id="limit" title="How many hits to ask for">
-          <option value="10">10</option>
-          <option value="20">20</option>
-          <option value="40" selected>40</option>
-          <option value="100">100</option>
-        </select>
-        <label id="code-label" title="Search code by what it does (the “code:” prefix does the same)">
-          <input id="code" type="checkbox"> code
-        </label>
-      </div>
-    </section>
-
-    <div id="find" role="group" aria-label="Find by kind">
-      <label class="kind" data-kind="screenshot"><input type="checkbox" data-kind="screenshot"> Screenshots</label>
-      <label class="kind" data-kind="image"><input type="checkbox" data-kind="image"> Images</label>
-      <label class="kind" data-kind="pdf"><input type="checkbox" data-kind="pdf"> PDFs</label>
-      <label class="kind" data-kind="doc"><input type="checkbox" data-kind="doc"> Documents</label>
-      <label class="kind" data-kind="video"><input type="checkbox" data-kind="video"> Video</label>
-      <label class="kind" data-kind="audio"><input type="checkbox" data-kind="audio"> Audio</label>
-      <button id="kinds-all" type="button" title="All kinds">all</button>
-    </div>
-
-    <p id="engine-says"></p>
-
-    <!-- State panels. `body[data-page]` (app.js render() sets it: idle | busy | results |
-         none) is the ONE switch that shows a panel: the preview pane never reserves space for
-         a state with nothing to show, and the idle/busy/no-results messages sit centered on
-         the page's own axis. No `hidden` attributes here: one mechanism, not two. -->
-    <section id="idle">
-      <h2>Describe it. Dig it up.</h2>
-      <p id="idle-note">Say what you'd see, hear, or read in a file — the meaning, not only the
-         words. Results appear as you type.</p>
-      <div id="suggest" role="group" aria-label="Search suggestions"></div>
-    </section>
-
-    <section id="no-results" role="status">
-      <h2>No results found</h2>
-      <p id="no-results-why">Try describing what you'd see or hear in it — a scene, an object,
-         a moment, words you remember from it.</p>
-      <p class="hint">Widening the kind filters, or turning off <code>code</code>, asks the
-         engine to look in more of your files.</p>
-    </section>
-
-    <section id="results">
-      <ul id="hits" role="listbox" aria-label="Results"></ul>
-      <div id="preview" aria-live="polite"></div>
-    </section>
-  </main>
-
-  <footer id="footer">
-    <div class="foot-in">
-      <span id="summary"></span>
-      <span id="keys">↑↓ pick · ↩ open · Space preview · Esc clear · type to search</span>
-    </div>
-  </footer>
-
-  <div id="big" hidden></div>
-
-  <script src="app.js"></script>
+  <digup-app></digup-app>
 </body>
 </html>

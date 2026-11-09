@@ -21,6 +21,19 @@ ARG SWIFT_VERSION=6.4.0
 ARG CUDA_RUNTIME_IMAGE=nvidia/cuda:11.8.0-runtime-ubuntu22.04
 
 # ── Toolchain, vendor libraries, llama.cpp, ffmpeg, the CLI, the tests ───────────────────────
+# ── The frontend build (user brief 2026-11-08, server/ui/AGENTS.md) ─────────────────────
+# Lit + Vite: Node exists HERE, at build time, and never at runtime — the stage compiles
+# the UI (npm ci, vitest, vite build) and the server stages COPY the static dist. A red
+# unit test or a red build is a red image by construction. npm ci reads the committed
+# package-lock.json; the npm cache rides a BuildKit cache mount (the registry is
+# reachable from the builder, measured 2026-11-08).
+FROM node:22-slim AS frontend-builder
+WORKDIR /build
+COPY server/ui/package.json server/ui/package-lock.json ./
+RUN --mount=type=cache,target=/npm-cache npm ci --cache /npm-cache --no-audit --no-fund
+COPY server/ui ./
+RUN npm test && npm run build
+
 FROM ${BASE_IMAGE} AS engine-builder
 
 ARG SWIFT_VERSION
@@ -212,6 +225,9 @@ RUN pip install --no-cache-dir uv
 
 COPY --from=engine-payload /out/ /opt/digup/
 COPY server /srv/server
+# The built UI (the mount serves server/ui/dist; api.py): a dist that exists is what makes
+# the suite's page fetches real bytes, not skips.
+COPY --from=frontend-builder /build/dist /srv/server/ui/dist
 WORKDIR /srv/server
 ENV PATH=/opt/digup:$PATH
 ENV DIGUP_BIN=digup \
@@ -252,6 +268,9 @@ COPY --from=engine-payload /out/ /opt/digup/
 ENV PATH=/opt/digup:$PATH
 COPY server /srv/server
 COPY server/docker/healthcheck.py /opt/digup/healthcheck.py
+# The built UI: FastAPI serves /srv/server/ui/dist at `/` — static files only, no Node
+# in this image (the frontend-builder stage is where the build happened).
+COPY --from=frontend-builder /build/dist /srv/server/ui/dist
 WORKDIR /srv/server
 RUN uv sync --frozen --no-dev
 

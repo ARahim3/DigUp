@@ -45,3 +45,9 @@ deploy/data/
 # (the builder's `COPY . .` must see only what a clean clone contains)
 AGENTS.md
 .agent-journal.md
+
+# The Lit + Vite frontend: node_modules and a host-built dist never reach an image —
+# the frontend-builder stage runs npm ci + build inside the build and the server stages
+# COPY --from it (the host dist may be stale; a host build must never ship silently).
+server/ui/dist/
+server/ui/node_modules/

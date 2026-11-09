@@ -13,9 +13,9 @@ the current results are in [`../docs/implementation/`](../docs/implementation/RE
 | `digup_server/api.py` | the FastAPI app on `/api/v1` (`health`, `status`, `search`, `estimate`, `index`, `jobs`) — on top of the adapter, never around it; localhost by default |
 | `docs/API.md` | **the API reference** — schemas, media identifiers, limits and pagination, errors, curl examples, versioning and security: the compatibility promise clients code against (`tests/test_api_docs.py` fails if an endpoint is not in it) |
 | `digup_server/jobs.py` | the index-job runner: one writer (adapter flock), `queued/running/done/interrupted/busy`, append-only job log **rotated at size** (history replays from all rotations), stop-at-safe-point on shutdown, `reload → prewarm` after a done job |
-| `ui/` | the web app: vanilla HTML/CSS/JS (no build step), served same-origin at `/`, `fetch()` to `/api/v1` only |
+| `ui/` | the web app: a **Lit + Vite** frontend (migrated 2026-11-08, `ui/AGENTS.md` is its manual) built to static files (`dist/`, served by FastAPI same-origin at `/`, `fetch()` to `/api/v1` only; Node exists at Docker build time only — never at runtime) |
 | `.env.example` | every setting as an environment variable (index, roots, models, excludes, bind) — no secrets, no client-chosen paths |
-| `docker/Dockerfile` | multi-stage build: `engine-builder → engine-payload → engine-runtime` (+ `server-test`), one per architecture |
+| `docker/Dockerfile` | multi-stage build: `frontend-builder` (npm ci + vitest + vite build, Node here only) + `engine-builder → engine-payload → engine-runtime` (+ `server-test`), one per architecture |
 | `tests/corpus/` | the pinned, attributed test corpus (Commons photos committed; videos + clip fetched/built by `build.sh`) |
 | `tests/proof.sh` | the Stage-2 headless proof: index + search + eval, the engine's own words |
 | `tests/test_*_contract.py`, `tests/test_api.py` | contract tests against the real CLI in the container — no mocks, ever |
@@ -241,8 +241,12 @@ Nextcloud, by Nextcloud's own permission APIs), and the no-mutation discipline
 
 ## The web app (desktop parity, Stage 10)
 
-`server/ui/` is a browser client of the published API — vanilla HTML/CSS/JS, no build step,
-no external URLs (pinned by test) — with the desktop panel's behavior (`shell/ui/panel.js`
+`server/ui/` is a browser client of the published API — a Lit + Vite frontend (the
+migration of 2026-11-08, `server/ui/AGENTS.md`; §10.4's dated amendment records the
+decision: Lit+JS, no TypeScript, no other framework, no Node at runtime — FastAPI
+serves the built `dist`) — no external URLs (pinned by test), the stable asset names
+`app.js` / `style.css` / `embed.js` / `embed.css` (pinned too), with the desktop
+panel's behavior (`shell/ui/panel.js`
 is the reference, `Sources/DigUpApp/SearchPanel.swift` the Mac one):
 
 | Desktop (shell / Mac app) | Web UI | How |
@@ -325,7 +329,9 @@ This directory is built to be a **clean additive PR** to [ARahim3/DigUp](https:/
   `ModelFiles.swift`'s own `sha256:` constants, so a model bump upstream fails CI
   until the pins match. llama.cpp, PDFium, and ffmpeg pins ride upstream scripts.
 * **State lives outside the image, protocol outside the repo, versions inside both:**
-  `/api/v1` is versioned, the UI is dependency-free, and index/models/config/job-log
+  `/api/v1` is versioned, the UI is built from source in the image (the `frontend-builder`
+  stage: `npm ci` + vitest + `vite build`) and shipped as plain static files — same-origin
+  `fetch()` only, no external URLs, no Node at runtime — and index/models/config/job-log
   are bind-mounted volumes. Upgrades are `docker compose up -d --build` on the new
   commit: recreation never destroys state, and the job log's `interrupted` rule makes
   an upgrade during indexing honest.

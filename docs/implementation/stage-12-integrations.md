@@ -94,7 +94,10 @@ count is excluded, exactly, in the engine's own answer. Numbers land in
   all four combinations (allowlisted/not × POST/GET, plus the Host rule outranking all).
 * `server/ui/embed.html` (+ `embed.css`, `embed.js`) — the compact widget: the same UI
   rules as the full UI (no external URLs, no build step, server-issued media handles, the
-  engine's fields relayed verbatim, keyword-first typing with `embed_ahead`). Its token
+  engine's fields relayed verbatim, keyword-first typing with `embed_ahead`). *(2026-11-08:
+  the widget is now the Lit `<digup-embed>` component built by Vite to the same pinned
+  names — "no build step" applies to `shell/ui` only; the served names and every rule
+  below are unchanged, pinned in `test_integrations.py`.)* Its token
   enters via `?token=`, moves to `sessionStorage`, and the URL line is rewritten
   (`history.replaceState`) so the secret never lands in bookmarks, history, or host logs;
   previews load as **authorized blob fetches**, never as `<img src?token=…>`; the host

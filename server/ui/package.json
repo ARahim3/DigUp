@@ -1,0 +1,21 @@
+{
+  "name": "digup-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "The DigUp server UI: Lit web components, same-origin with /api/v1, built by Vite, served by the FastAPI static mount. No Node at runtime.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "lit": "^3.2.0"
+  },
+  "devDependencies": {
+    "jsdom": "^26.0.0",
+    "vite": "^7.0.0",
+    "vitest": "^3.0.0"
+  }
+}
