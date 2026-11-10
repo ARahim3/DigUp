@@ -9,6 +9,7 @@ build.noindex/
 
 # Python: the reference worker's environment
 worker/.venv/
+server/.venv/
 __pycache__/
 *.pyc
 
@@ -26,3 +27,36 @@ shell/src-tauri/gen/
 # What scripts/package-*.sh gather for the packages
 shell/src-tauri/helper/
 shell/src-tauri/THIRD-PARTY-NOTICES.txt
+server/tests/corpus/media/videos/
+server/tests/corpus/media/clips/
+server/tests/corpus/media/index/
+server/tests/corpus/media/models/
+server/data/
+.pytest_cache/
+
+# Compose bind-mount folders (runtime state, never in git)
+deploy/data/
+server/tests/corpus/proof/
+server/tests/corpus2/media/
+.playwright-mcp/
+
+# CI vendor seeding (server.yml): the host cache copied into the build context. Its
+# .gitkeep is tracked (the Dockerfile's COPY needs the folder); a copied Vendor never is.
+.ci-vendor/*
+!.ci-vendor/.gitkeep
+
+# Local agent working notes (see the file itself): a dev aid, not part of the PR
+AGENTS.md
+.agent-journal.md
+
+# ghcr pull-and-run scratch stack (compose state, index, job logs) — same category as deploy/data
+deploy/data-ghcr/
+
+# stage-13 app-targets demo scratch stack (compose state, index, job logs)
+deploy/data-demo/
+
+# The Lit + Vite frontend (user brief 2026-11-08): npm install and the build output are
+# host artifacts — dist is produced in the Dockerfile's frontend-builder stage and served
+# by FastAPI; the host copy is only for `npm run dev`/local preview.
+server/ui/dist/
+server/ui/node_modules/

@@ -1,0 +1,32 @@
+<!doctype html>
+<!-- DigUp embed widget — a compact search page for hosts that embed it (a Nextcloud app
+     page, an Immich workspace panel, a dashboard iframe). Lit component <digup-embed>,
+     built by Vite to the pinned names `embed.js` / `embed.css`, same origin as the API,
+     no external URLs — the same UI rules as index.html (test_integrations pins this
+     file too). Thin shell: the widget renders in its own shadow.
+
+     Query parameters (all optional):
+       token   the read-scope bearer token (docs/API.md "Authentication"): it moves from
+               the URL into sessionStorage and the URL line is rewritten, so the secret
+               never lands in bookmarks, history, or the host app's logs;
+       limit   results per search (1–100, the engine's own cap);
+       q       runs this search as soon as the page is ready.
+     The host may post {source:"digup-host", theme:"light"|"dark"} to set the theme;
+     the widget posts {source:"digup-embed", event:"ready"} once, and answers
+     {source:"digup-host", event:"theme"} on request.
+     A 401 with a stored token clears it and asks once — the same rule as the full UI. -->
+<html lang="en" data-theme="system">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="none">
+  <link rel="icon" href="data:,">
+  <title>DigUp — embed</title>
+  <!-- Vite injects the embed stylesheet link (embed.css) and rewrites this entry to
+       /embed.js at build. -->
+  <script type="module" src="./src/embed.js"></script>
+</head>
+<body class="embed">
+  <digup-embed></digup-embed>
+</body>
+</html>

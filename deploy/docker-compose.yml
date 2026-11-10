@@ -1,0 +1,101 @@
+# The DigUp server, CPU-only first release (docs/implementation/README.md §3, §5, §7, §11).
+#
+#   docker compose up -d --build          →  http://127.0.0.1:8787/  (UI + /api/v1)
+#
+# One service. The image is built from the repo's multi-stage Dockerfile on this machine's
+# own architecture (never under emulation, §11). Bind mounts keep the index, model, config
+# and job log OUTSIDE the image: container recreation never destroys them (§5). Media is
+# mounted read-only; the server never modifies originals and never takes paths from
+# clients (§7). Indexing never starts by itself: "Index now" in the UI, or POST /index.
+#
+# Paths come from the environment so this file is portable; defaults sit beside it under
+# deploy/data/. On a production box, point the DIGUP_* variables at the real folders and
+# make them owned by uid 990 (the image's `digup` user) so the bind mounts are writable.
+#
+# GPU is an override for the box that has the card, built and measured there (§11):
+# docker-compose.nvidia.yml arrives at Stage 9, not as a promise here.
+#
+# Root scope (engine semantics, pinned in the Stage-7 proof + tests): index rows carry
+# the absolute paths of the roots they were crawled from, and the searcher answers only
+# for files under the roots it was started with. Change where the media mounts live
+# (DIGUP_MEDIA_DIR's path), then run one job with prune — "Index now" + "prune missing",
+# or POST /index {"prune":true} — to re-scope the index and retire the ghost rows of
+# the old paths (rows outside the current roots keep counting in files/vectors and
+# dilute z for live hits). Give each root layout its OWN index folder: sharing one
+# index folder across two root scopes is how ghost rows get made. The engine's design,
+# not a bug: hits are always real files under the configured roots.
+
+# Compose project name, explicit: this stack is `digup-server`, never the folder's
+# default — other stacks living under folders named `deploy` keep their own project.
+
+name: digup-server
+
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: server/docker/Dockerfile
+      target: server-runtime
+      args:
+        # The engine's `swift test` gate runs inside the builder stage by default (CI
+        # builds run it too). A box whose builder environment is measured to fail an
+        # engine-side test (docs/implementation notes; the server's own gate is the
+        # contract suite) builds with DIGUP_SWIFT_TESTS=0 — a documented escape hatch,
+        # not a default: unset means the gate runs.
+        SWIFT_TESTS: ${DIGUP_SWIFT_TESTS:-1}
+    image: digup-server:local
+    # A job mid-embed (a photo takes ~10–40 s of CPU) needs room for the engine's safe
+    # point: with the Docker default 10 s the stop lands as SIGKILL and the job recovers
+    # as *interrupted* at the next boot (honest, and resume works — measured Stage 8).
+    # 90 s covers one file's embed, so `docker stop` ends the job truthfully *inside*
+    # the grace, with its partial counts: 143 + "Application shutdown complete".
+    stop_grace_period: 90s
+    # Survive a daemon restart (a reboot, `docker pull` upgrading, a crash): come back
+    # with Docker, and after a manual `docker stop`, stay down — the honest semantics of
+    # `unless-stopped` for a single-user service.
+    restart: unless-stopped
+    # Media readability on a real Linux host: the bind is :ro (the server never touches
+    # originals), and a tree whose folders are owner/group only (a Nextcloud data dir,
+    # drwxr-x---) is readable by the image's uid 990 only when the container also holds
+    # that tree's group. Default 1000 = the host's first human uid; set DIGUP_MEDIA_GID
+    # to the tree's gid, or clear it with group_add: [].
+    group_add:
+      - "${DIGUP_MEDIA_GID:-1000}"
+    ports:
+      # localhost-only; LAN exposure needs auth first (§7). DIGUP_PUBLISH_PORT moves the
+      # host side when 8787 is taken; the container keeps binding 8787.
+      - "127.0.0.1:${DIGUP_PUBLISH_PORT:-8787}:8787"
+    environment:
+      DIGUP_SERVER_INDEX: /data/index
+      DIGUP_SERVER_ROOTS: ${DIGUP_SERVER_ROOTS:-/media/photos}
+      DIGUP_SERVER_MODELS: /data/models
+      DIGUP_SERVER_CONFIG: /data/config
+      DIGUP_SERVER_EXCLUDE: ${DIGUP_SERVER_EXCLUDE:-}
+      DIGUP_SERVER_EXCLUDE_EXT: ${DIGUP_SERVER_EXCLUDE_EXT:-}
+      DIGUP_SERVER_ENCODER_IDLE: ${DIGUP_SERVER_ENCODER_IDLE:-300}
+      DIGUP_SERVER_PREWARM: ${DIGUP_SERVER_PREWARM:-1}
+      DIGUP_SERVER_BACKFILL: ${DIGUP_SERVER_BACKFILL:-1}
+      DIGUP_SERVER_JOB_LOG_SIZE: ${DIGUP_SERVER_JOB_LOG_SIZE:-1048576}
+      # Estimate's ceiling: 120 s fits corpora; a full crawl of a large media tree on a
+      # spinning disk needs minutes (measured 2026-11-04: 187k files on a 2 TB HDD).
+      DIGUP_SERVER_ESTIMATE_TIMEOUT_S: ${DIGUP_SERVER_ESTIMATE_TIMEOUT_S:-120}
+      # A job's ceiling: 3600 s fits corpora; a real tree's first pass outlives an hour
+      # (measured 2026-11-04: interrupted with partial counters at 19,007/131,972 — the
+      # next job resumes). The engine keeps walking; this is only the runner's patience.
+      DIGUP_SERVER_JOB_TIMEOUT_S: ${DIGUP_SERVER_JOB_TIMEOUT_S:-3600}
+      # Off by default, like the Compose file itself: host validation and bearer tokens guard
+      # a Docker-network / reverse-proxy / LAN deployment (docs/API.md "Authentication"). A
+      # localhost-only box leaves all three unset.
+      DIGUP_SERVER_ALLOWED_HOSTS: ${DIGUP_SERVER_ALLOWED_HOSTS:-}
+      DIGUP_SERVER_TOKEN: ${DIGUP_SERVER_TOKEN:-}
+      DIGUP_SERVER_ADMIN_TOKEN: ${DIGUP_SERVER_ADMIN_TOKEN:-}
+      # The standalone box mints its own API key at boot (gear → API key: Copy the key;
+      # applications bring it to POST /api/v1/targets and get their own private key and
+      # their own index — docs/API.md "Named indexes"). Main-page reads stay key-free;
+      # the minted key guards index/estimate/keys. Unset keeps a plain tokenless server.
+      DIGUP_SERVER_MINT_KEYS: ${DIGUP_SERVER_MINT_KEYS:-}
+    volumes:
+      - ${DIGUP_INDEX_DIR:-./data/index}:/data/index
+      - ${DIGUP_MODELS_DIR:-./data/models}:/data/models
+      - ${DIGUP_CONFIG_DIR:-./data/config}:/data/config
+      - ${DIGUP_MEDIA_DIR:-./data/media/photos}:/media/photos:ro

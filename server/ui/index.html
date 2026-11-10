@@ -1,0 +1,33 @@
+<!doctype html>
+<!-- DigUp server UI — Lit + Vite (migrated from vanilla by user brief, 2026-11-08;
+     server/ui/AGENTS.md is the architecture manual, README §10.4's amendment records
+     the decision). Served same-origin as the API (/api/v1), no external URLs, Node
+     only at BUILD time: FastAPI serves Vite's dist, the entry names are the pinned
+     contract (`app.js`, `style.css`). Same behavior as the desktop shell's `shell/ui`:
+     keyword-first typing (words at once, meaning after the pause), kind filters, code
+     mode, grouped strong/weaker results, a preview pane for the selection, opening
+     files (video at its moment), the keys footer. The server's own controls —
+     appearance, Index now, prune, Estimate, the engine's counts — live in the settings
+     panel behind the gear, kept in this browser.
+
+     This file is a THIN shell on purpose: the page tree renders inside <digup-app>'s
+     shadow (the components own their markup; test pins moved to the bundle text).
+     `data-theme="system"` rides on <html> (app/theme.js owns it, localStorage);
+     the layout's state switch (body[data-page]) is written by the shell's render. -->
+<html lang="en" data-theme="system">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- A data: favicon: the browser asks for /favicon.ico on every page load, and the API's
+       honest 404 lands in the console as a red error on a page that is working fine.
+       data: is not a URL fetch — the no-external-URLs pin (test_media_ui) stays green. -->
+  <link rel="icon" href="data:,">
+  <title>DigUp — semantic media search</title>
+  <!-- Vite injects the built stylesheet link (style.css) and rewrites this entry to
+       /app.js at build; in dev it serves the ES module graph directly. -->
+  <script type="module" src="./src/main.js"></script>
+</head>
+<body>
+  <digup-app></digup-app>
+</body>
+</html>

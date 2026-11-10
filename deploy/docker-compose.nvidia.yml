@@ -1,0 +1,54 @@
+# Stage 9 opt-in NVIDIA override (docs/implementation/gpu-handoff.md §Gate B, item 4).
+# The CPU-only docker-compose.yml stays the default: this file only takes effect with
+#
+#   docker compose -f docker-compose.yml -f docker-compose.nvidia.yml --profile nvidia up -d --build
+#
+# Prerequisite: the NVIDIA Container Toolkit on the host (its test is in gpu-handoff.md).
+# `libcuda.so.1` and the driver's CUDA userland come from the HOST through the toolkit —
+# never baked into an image. The image carries the CUDA backend only when it was built
+# from a matching CUDA base (see the Dockerfile's server-runtime-cuda target):
+#
+#   DOCKER_BUILDKIT=1 docker build --target server-runtime-cuda \
+#     --build-arg BASE_IMAGE=nvidia/cuda:<X>.X.0-devel-ubuntu22.04 \
+#     --build-arg CUDA_RUNTIME_IMAGE=nvidia/cuda:<X>.X.0-runtime-ubuntu22.04 \
+#     -f server/docker/Dockerfile -t digup-server:local ..
+#
+# (X matches the host driver's `nvidia-smi` "CUDA Version"; scripts/build-llama.sh finds
+# nvcc itself; pass `--build-arg CUDA_ARCHS=<plain number>` for the card — the builder's
+# apt cmake 3.22.1 rejects dotted `6.1` and `native` alike (measured 2026-11-04): use
+# `61` for Pascal sm_61, `89` for Ada sm_89. Fat lists (`61,70,75,80,86,89,90`) build a
+# many-card binary; the Dockerfile normalizes the separators to CMake's semicolons.)
+#
+# This file makes the device AVAILABLE. It never claims the device is USED: the engine
+# measures (`digup speed --model` keeps `device` in costs.json, and DIGUP_DEVICE=cpu is
+# the CPU fallback). The proof of use is the utilization gate in gpu-handoff.sh —
+# nvidia-smi sampled DURING a real index job, not a device that is merely visible.
+#
+# Multi-GPU hosts: DIGUP_NVIDIA_GPU pins the card (a UUID from `nvidia-smi -L`, any value
+# NVIDIA_VISIBLE_DEVICES accepts) — the explicit env below outranks the reservation's
+# device selection, so the container sees exactly that card. Default: all (a single-GPU
+# box needs nothing set).
+services:
+  server:
+    profiles: ["nvidia"]
+    # The CUDA shape of the image: same Dockerfile, the server-runtime-cuda target, the
+    # matching devel + runtime bases, the card's CUDA_ARCHS — a plain number for one card
+    # (apt cmake 3.22.1, see the comment above) or a fat list like `61,70,89` for many;
+    # the Dockerfile normalizes the separators. Compose merges this over the base file's
+    # CPU build, so `--profile nvidia … up -d --build` produces the CUDA image on the box
+    # that has it.
+    build:
+      target: server-runtime-cuda
+      args:
+        BASE_IMAGE: ${CUDA_BASE:-nvidia/cuda:12.4.1-devel-ubuntu22.04}
+        CUDA_RUNTIME_IMAGE: ${CUDA_RUNTIME_IMAGE:-nvidia/cuda:12.4.1-runtime-ubuntu22.04}
+        CUDA_ARCHS: ${CUDA_ARCHS:-native}
+    environment:
+      NVIDIA_VISIBLE_DEVICES: ${DIGUP_NVIDIA_GPU:-all}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [cuda]

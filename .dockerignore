@@ -1,0 +1,53 @@
+# Docker build context: only what a clean clone contains.
+# Host build output and vendored libraries are host/macOS artifacts by definition (they are
+# git-ignored), and must never reach an image (see docs/implementation/README.md §3).
+.git
+.gitignore
+.dockerignore
+.build/
+.swiftpm/
+build.noindex/
+Vendor/
+.dev/
+.sign-id
+.DS_Store
+
+# The desktop shell's build output and staging (the server image builds no Tauri shell)
+shell/src-tauri/target/
+shell/src-tauri/gen/
+shell/src-tauri/helper/
+shell/src-tauri/THIRD-PARTY-NOTICES.txt
+
+# Python environments and caches
+worker/.venv/
+**/__pycache__/
+*.pyc
+
+# Server-side runtime state and test media (never part of an image): the corpus script puts
+# pictures, videos, clips and indexes under media/, and they are mounted at run time.
+server/data/
+server/tests/corpus/media/
+server/tests/corpus/media/videos/
+server/tests/corpus/media/clips/
+server/tests/corpus2/media/
+server/tests/corpus/proof/
+**/.pytest_cache/
+**/.env
+.playwright-mcp/
+
+# Large documentation media
+docs/*.gif
+
+# Compose bind-mount folders: runtime media/index/model data is never build context
+deploy/data/
+
+# Local agent working notes: git-ignored, and git-ignored files are not build context
+# (the builder's `COPY . .` must see only what a clean clone contains)
+AGENTS.md
+.agent-journal.md
+
+# The Lit + Vite frontend: node_modules and a host-built dist never reach an image —
+# the frontend-builder stage runs npm ci + build inside the build and the server stages
+# COPY --from it (the host dist may be stale; a host build must never ship silently).
+server/ui/dist/
+server/ui/node_modules/

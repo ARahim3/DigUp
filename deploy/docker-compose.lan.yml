@@ -1,0 +1,23 @@
+# ── Opt-in LAN exposure ──────────────────────────────────────────────────────────────
+# Appends a SECOND host binding for the API: other machines on your network reach
+# http://<host>:8787/ (the base file's 127.0.0.1 binding stays in place, so local use
+# never breaks). The address is REQUIRED, set per run:
+#
+#   DIGUP_LAN_BIND=192.168.1.20 \
+#   docker compose -f docker-compose.yml -f docker-compose.lan.yml up -d
+#
+# READ THIS BEFORE USING IT: the server has NO authentication (server/README §7 —
+# localhost-only by design). With this file every device on your network can read the
+# WHOLE indexed library through the UI and the API — searches, previews, paths. Bind a
+# single LAN address (the host's own, from `ip -4 route get 8.8.8.8`); do NOT put a
+# wildcard there, and do not use this on a network you do not own — on untrusted
+# networks the §7 shape is an authenticating reverse proxy in front of the loopback
+# binding, not this file. Home LAN use is exactly what this file is for.
+#
+# DIGUP_PUBLISH_PORT keeps working (the LAN binding follows the same host port).
+# Compose note: `ports` lists MERGE across files, so the loopback mapping from the
+# base file stays active — this file adds, it never replaces.
+services:
+  server:
+    ports:
+      - "${DIGUP_LAN_BIND:?this file is opt-in by design — set DIGUP_LAN_BIND to the host's own LAN address (e.g. 192.168.1.20); the server has no auth, see the header comment}:${DIGUP_PUBLISH_PORT:-8787}:8787"

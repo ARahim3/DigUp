@@ -1,0 +1,56 @@
+/* tokens.css — the DigUp design tokens, global on :root (they inherit across every
+   shadow boundary; components use var(…) and never hardcode a color).
+
+   The palettes are the vanilla UI's measured values, carried over verbatim (the WCAG
+   pairs: on dark (#202124) text 13.4:1, muted 8.4:1, accent 7.6:1, kinds 6.4:1+; on
+   light text 17.4:1, muted 5.9:1). Borders stay quiet on purpose (hairlines ~1.8:1).
+   Each theme sets its own color-scheme so native controls, selects and scrollbars
+   render IN the theme. Appearance is system / light / dark, kept per browser
+   (html[data-theme] set by app/theme.js — the desktop follows the OS, a server has
+   no OS to follow). New tokens go here; component CSS covers layout only. */
+
+:root, :root[data-theme="system"], :root[data-theme="light"] {
+  --bg: #ffffff; --panel: #f0f1f3; --field: #f5f6f7; --text: #1a1a1a; --soft: #5f6368;
+  --line: #c8c8c8; --edge: #b4b7bb;
+  --accent: #1a73e8; --good: #2a6a35; --warn: #a33327; --amber: #7a5a1a;
+  --kind-image: #3b7a45; --kind-video: #8a4a3b; --kind-audio: #6a4a8a; --kind-doc: #3b5a8a;
+  --chev: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 5.5 8 10.5 12.5 5.5' fill='none' stroke='%231a1a1a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  color-scheme: light;
+}
+:root[data-theme="system"] { color-scheme: light dark; }   /* "system" lets the OS pick the controls */
+
+:root[data-theme="dark"] {
+  --bg: #202124; --panel: #2b2f34; --field: #2b2f34; --text: #e8eaed; --soft: #b7bbc1;
+  --line: #454a50; --edge: #5c636a;
+  --accent: #8ab4f8; --good: #81c995; --warn: #f28b82; --amber: #f9ab00;
+  --kind-image: #81c995; --kind-video: #fcad7d; --kind-audio: #c58af9; --kind-doc: #8ab4f8;
+  --chev: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 5.5 8 10.5 12.5 5.5' fill='none' stroke='%23e8eaed' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="system"] {
+    --bg: #202124; --panel: #2b2f34; --field: #2b2f34; --text: #e8eaed; --soft: #b7bbc1;
+    --line: #454a50; --edge: #5c636a;
+    --accent: #8ab4f8; --good: #81c995; --warn: #f28b82; --amber: #f9ab00;
+    --kind-image: #81c995; --kind-video: #fcad7d; --kind-audio: #c58af9; --kind-doc: #8ab4f8;
+    --chev: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 5.5 8 10.5 12.5 5.5' fill='none' stroke='%23e8eaed' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    color-scheme: dark;
+  }
+}
+
+:root {
+  /* Typography — the system stack the desktop UI uses; mono for paths/code/excerpts. */
+  --font-ui: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --text-ui: 15px;                       /* the body size the measured palettes were picked at */
+  --leading-ui: 1.45;
+  --text-sm: 0.85rem; --text-xs: 0.78rem; --text-badge: 0.74rem;
+
+  /* Spacing ladder, radii, the uniform gear row height, transitions, overlay layers. */
+  --space-xs: 0.35rem; --space-sm: 0.5rem; --space-md: 0.7rem; --space-lg: 1.25rem;
+  --radius-sm: 6px; --radius-md: 8px; --radius-lg: 12px; --radius-pill: 999px;
+  --row-height: 2rem;                    /* every gear-panel row (round-3 styling ask) */
+  --transition-fast: 0.15s;
+  --z-panel: 15;                         /* the settings panel */
+  --z-big: 20;                           /* the big look over everything */
+}

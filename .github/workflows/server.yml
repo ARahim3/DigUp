@@ -1,0 +1,496 @@
+# The server's CI: build the engine from source in the same multi-stage Dockerfile the
+# project ships, run its `swift test` inside the builder, check the CLI runs headless in the
+# runtime image, then run the adapter's contract tests against that exact payload, corpus and
+# model. Needs no GUI, no GPU, no Rust, no Node, no Tauri — a clean clone is the whole input.
+# Also by hand: `gh workflow run server.yml`.
+name: Server
+
+on:
+  pull_request:
+    paths:
+      - "server/**"
+      - "deploy/**"
+      - "docs/implementation/**"
+      - ".github/workflows/server.yml"
+      - ".dockerignore"
+      - ".ci-vendor/**"
+      - "Package.swift"
+      - "Sources/**"
+      - "scripts/**"
+  push:
+    branches: [main, "feat/**"]
+    paths:
+      - "server/**"
+      - "deploy/**"
+      - "docs/implementation/**"
+      - ".github/workflows/server.yml"
+      - ".dockerignore"
+      - ".ci-vendor/**"
+      # The published images embed the engine: a Sources/Package.swift/scripts change that
+      # passes ci.yml must republish them here, or ghcr silently serves a stale engine.
+      - "Package.swift"
+      - "Sources/**"
+      - "scripts/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: server-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# YAML anchor (a parser feature, honored by Actions): the vendor seeding is byte-identical
+# for the two jobs — one recipe, two runners, no copy-paste drift between them.
+X-vendor-step: &vendor
+  name: Vendored libraries, ffmpeg, llama.cpp (in the builder's base image, cached — ci.yml's own scripts)
+  run: |
+    mkdir -p Vendor .ci-vendor
+    docker run --rm -v "$PWD:/src" -v "$PWD/Vendor:/src/Vendor" -w /src ubuntu:22.04 \
+      bash -c 'set -eux; \
+        apt-get update -q; \
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
+          ca-certificates curl git gnupg xz-utils unzip python3 binutils build-essential \
+          cmake ninja-build meson nasm pkg-config file zlib1g-dev libcurl4-openssl-dev \
+          libxml2-dev libedit2 libsqlite3-0 libz3-dev libpython3-dev tzdata yasm; \
+        ./scripts/fetch-vendor.sh; \
+        rm -f Vendor/llama-build/CMakeCache.txt; \
+        tries=0; until ./scripts/build-ffmpeg.sh; do tries=$((tries+1)); [ "$tries" -ge 3 ] && exit 1; \
+          echo "build-ffmpeg: attempt $tries failed; retrying in 30 s"; sleep 30; done; \
+        tries=0; until ./scripts/build-llama.sh; do tries=$((tries+1)); [ "$tries" -ge 3 ] && exit 1; \
+          echo "build-llama: attempt $tries failed; retrying in 30 s"; sleep 30; done'
+    cp -a Vendor/. .ci-vendor/
+
+jobs:
+  server:
+    runs-on: ubuntu-24.04
+    # The builder compiles ffmpeg + llama.cpp + the Swift package from source (the project's
+    # own scripts, as ci.yml runs them). 90 min was measured too tight mid-proof; 180 covers
+    # a cold cache with room, and a hung job dies on its own well before the 6 h ceiling.
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The engine owns the model pins (Sources/DigUpKit/ModelFiles.swift: revision, file
+      # names and both sha256s, verified at runtime by ModelFiles itself). This step keeps
+      # the CI download pinned to the engine's own words — it runs FIRST, before any
+      # compile: when upstream bumps a model, the PR fails in seconds, not after an hour
+      # of build minutes (its comment always promised "fails first"; placement makes it
+      # true). It now catches the revision and the file names too: a revision bump with
+      # unchanged hashes moves the download URL silently, and a renamed file moves it
+      # loudly — both are red here, not in a download failure mid-suite.
+      - name: Model pins follow the engine (drift guard)
+        run: |
+          engine=$(grep -oE 'sha256: "[0-9a-f]{64}"' Sources/DigUpKit/ModelFiles.swift | grep -oE '[0-9a-f]{64}' | sort)
+          ci=$(printf '%s\n%s\n' \
+            2188ac1deca4b77dffefd603c2776a9d76d9d74ec01841392982ebb840b09135 \
+            c4a8a52691ecef40618438928bdf9e68379b854e24166f292592353db0aab64f | sort)
+          if [ "$engine" != "$ci" ]; then
+            echo "::error::ModelFiles.swift pins differ from server.yml — update the download step's pins in the same PR"
+            echo "engine: $engine"; echo "ci:     $ci"; exit 1
+          fi
+          rev=$(sed -nE 's/.*revision = "([0-9a-f]{40})".*/\1/p' Sources/DigUpKit/ModelFiles.swift)
+          if [ "$rev" != "bfcd298762cc34d0357ece5ebdd31791a3a374d8" ]; then
+            echo "::error::ModelFiles.revision moved (engine: $rev) — update this step and the download step together"
+            exit 1
+          fi
+          grep -q '"embeddinggemma-2-Q8_0.gguf"' Sources/DigUpKit/ModelFiles.swift &&
+          grep -q '"mmproj-embeddinggemma-2-Q8_0.gguf"' Sources/DigUpKit/ModelFiles.swift || {
+            echo "::error::ModelFiles.swift file names changed — update the download step in the same PR"; exit 1; }
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: Vendor
+          key: server-vendor-linux-${{ hashFiles('scripts/fetch-vendor.sh', 'scripts/build-ffmpeg.sh', 'scripts/build-llama.sh', 'scripts/package-linux.sh') }}
+      # The engine chain (vendor libraries + ffmpeg + llama.cpp) builds IN THE BUILDER'S OWN
+      # BASE IMAGE, not on the runner host. Measured 2026-11-04 (first fork CI run):
+      # host-built Vendor on the ubuntu-24.04 runner (glibc 2.39) seeded into the ubuntu:22.04
+      # engine-builder (glibc 2.35) lands on its own stamps, skips the rebuild — and swift
+      # test dies in 2 minutes: the host-built libllama/libpdfium cannot load against the
+      # container's older glibc. Building in the base image keeps the cached artifacts
+      # ABI-matched to where they are consumed. The result is cached host-side and passed
+      # into the Docker build context as `.ci-vendor/`; the Dockerfile seeds its cache mounts
+      # from it, the stamped scripts (the same ones ci.yml runs — stamped, idempotent) land
+      # on their stamps and skip the rebuild. Hosted runners start BuildKit cache mounts
+      # cold every job, so without the seed a 15-minute ffmpeg compile lands on every PR.
+      # The runner host needs no toolchain for this (curl/git/python3 ship on it — ffmpeg
+      # does NOT, see the corpus step; the container installs the builder's build packages
+      # itself). Bounded retries around the
+      # build scripts: they survive a network hiccup and cost nothing on healthy networks.
+      - <<: *vendor
+
+      - name: Model files, pinned by Sources/DigUpKit/ModelFiles.swift
+        run: |
+          mkdir -p "$RUNNER_TEMP/models"
+          rev=bfcd298762cc34d0357ece5ebdd31791a3a374d8
+          base=https://huggingface.co/ggml-org/embeddinggemma-2-GGUF/resolve/$rev
+          curl -fsSL -o "$RUNNER_TEMP/models/embeddinggemma-2-Q8_0.gguf" \
+            "$base/embeddinggemma-2-Q8_0.gguf"
+          curl -fsSL -o "$RUNNER_TEMP/models/mmproj-embeddinggemma-2-Q8_0.gguf" \
+            "$base/mmproj-embeddinggemma-2-Q8_0.gguf"
+          echo "2188ac1deca4b77dffefd603c2776a9d76d9d74ec01841392982ebb840b09135  $RUNNER_TEMP/models/embeddinggemma-2-Q8_0.gguf" > "$RUNNER_TEMP/pins.txt"
+          echo "c4a8a52691ecef40618438928bdf9e68379b854e24166f292592353db0aab64f  $RUNNER_TEMP/models/mmproj-embeddinggemma-2-Q8_0.gguf" >> "$RUNNER_TEMP/pins.txt"
+          sha256sum -c "$RUNNER_TEMP/pins.txt"
+
+      # The builder stage is upstream's own build, in the container the packages are built
+      # in: vendor libraries verified against committed pins, llama.cpp b11461, `swift
+      # build -c release`, `swift test` — everything in the image build's log below.
+      - name: Build the engine (and run swift test) in the builder image
+        run: docker build --target engine-builder -f server/docker/Dockerfile -t digup-builder:ci .
+
+      - name: The runtime image runs the CLI headless
+        run: |
+          docker build --target engine-runtime -f server/docker/Dockerfile -t digup-engine:ci .
+          docker run --rm digup-engine:ci digup --help
+          docker run --rm digup-engine:ci digup --help | sed -n 2p
+
+      # The corpus fixture is fully checkout-deterministic (12 photos + 2 videos in git,
+      # manifest-pinned); only the synthetic clip needs ffmpeg. The hosted runner image ships
+      # NO ffmpeg (measured 2026-11-05, run #4: the runner's "Tools" inventory has MediaInfo
+      # and no ffmpeg; the apt list jumps ftp→g++), and build.sh probes candidates by
+      # capability — the engine's Vendor ffmpeg (decode-only, restored into the workspace by
+      # the step-4 cache) is probed out, so the runner needs a real one: apt's ffmpeg has
+      # libx264 + the mp4 muxer and passes the probe.
+      - name: Corpus (pinned photos are in git; the videos, clip, and manifest checks run here)
+        run: |
+          sudo apt-get update -q
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends ffmpeg
+          server/tests/corpus/build.sh
+
+      # The clip is the suite's video fixture; a runner whose ffmpeg lacks libx264 silently
+      # unbuilds it, ~20 tests skip, and the suite greys out green. It must exist, plainly.
+      - name: The corpus clip exists (the video fixtures are not skippable)
+        run: test -f server/tests/corpus/media/clips/scenes.mp4
+
+      - name: Build the test image (engine payload + adapter)
+        run: docker build --target server-test -f server/docker/Dockerfile -t digup-server-test:ci .
+
+      # The contract suite against the real CLI: search/index ops and reply fields verbatim,
+      # the engine's honest "no good matches", idle-exit restart, single-writer lock, reload,
+      # the `/api/v1` surface (health/status/search/estimate/index/jobs/embed_ahead/media
+      # over the real adapter — the lifespan spawns the helpers as children of the test
+      # process, a live parent), the index-job contract (409 while a job runs, the engine's
+      # counts, interrupted recovery from the job log, stop-mid-job resume, log rotation
+      # with history, env knobs), the startup prewarm and the ghost-row rules (walked-root
+      # ghosts retire on plain sync; out-of-scope ghosts survive it and retire under prune),
+      # and the UI surface (the built Lit + Vite app, served same-origin by FastAPI from
+      # the dist the frontend-builder stage compiles — Node runs in the build, never at
+      # runtime; server-issued media ids → previews/text, 404s for unissued ids).
+      # Zero-skip gate: the suite skips its own module when /models, /corpus-root or the
+      # clip are missing (conftest) — "57 passed, 20 skipped" would be green-by-construction
+      # and a lie. In CI every test must RUN: any skip is red, loudly.
+      - name: Contract tests (every test runs — skips are red in CI)
+        run: |
+          mkdir -p "$RUNNER_TEMP/index"
+          # tini is the image's ENTRYPOINT (the ParentWatch rule: the test process must be a
+          # child, not PID 1), so the pytest command is given in full — args alone would
+          # replace the CMD and the container would try to exec `-rs`.
+          docker run --rm \
+            -v "$PWD/server/tests/corpus/media:/corpus:ro" \
+            -v "$PWD/server/tests/corpus:/corpus-root:ro" \
+            -v "$RUNNER_TEMP/models:/models:ro" \
+            -v "$RUNNER_TEMP/index:/index" \
+            digup-server-test:ci /srv/server/.venv/bin/pytest -rs 2>&1 | tee "$RUNNER_TEMP/suite.log"
+          if grep -qE '^(SKIPPED|tests/.*SKIPPED)' "$RUNNER_TEMP/suite.log"; then
+            echo "::error::a test SKIPPED in CI — the suite self-skipping is a green-by-construction lie"
+            grep -E 'SKIPPED' "$RUNNER_TEMP/suite.log" | head -20
+            exit 1
+          fi
+          grep -qE '[0-9]+ passed' "$RUNNER_TEMP/suite.log"
+
+      - name: The headless proof (index + search + eval, the engine's own words)
+        run: |
+          # The engine image runs as its non-root user (USER digup, uid 990); dirs under
+          # $RUNNER_TEMP are runner-owned (mode 775) and dirs docker auto-creates are
+          # root-owned — uid 990 can write NEITHER. Measured on run #5 (2026-11-05): the
+          # proof died in 58 s with every gate red (tee into unwritable /out/proof, index
+          # unwritable), while the suite passed writing the same shapes as root (its test
+          # image has no USER directive). CI scratch dirs get 777 by design: containers
+          # create files there under uids the host does not have. The proof also gets its
+          # OWN index dir — hermetic: the suite's /index holds root-owned rows from test
+          # runs, the engine must start from an empty index, not inherit fixtures.
+          mkdir -p "$RUNNER_TEMP/proof-index" "$RUNNER_TEMP/proof"
+          chmod 777 "$RUNNER_TEMP/proof-index" "$RUNNER_TEMP/proof"
+          docker run --rm \
+            -v "$PWD:/src:ro" \
+            -v "$PWD/server/tests/corpus/media:/corpus:ro" \
+            -v "$RUNNER_TEMP/models:/models:ro" \
+            -v "$RUNNER_TEMP/proof-index:/index" \
+            -v "$RUNNER_TEMP/proof:/out/proof" \
+            -e OUT=/out/proof \
+            digup-engine:ci bash /src/server/tests/proof.sh
+        # proof.sh counts failures (exit != 0) and gates the eval ALL row (R@1 ≥ 0.60,
+        # R@5 ≥ 0.85) — the numbers the docs quote must be green here, not cited there.
+
+      # The shipping image: tini PID 1 → uvicorn → helpers (the ParentWatch chain),
+      # non-root, HEALTHCHECK = the API's own /health, the UI served at /. SIGTERM must
+      # end it *stopped, not killed*: the lifespan must complete (it marks a running job
+      # interrupted and quit()s every helper) inside the stop grace — exit 143 (a completed
+      # SIGTERM stop) is the graceful code here; 137 means SIGKILL, i.e. the shutdown hung.
+      # Every operator-facing compose shape, schema-checked on every run: the CPU default,
+      # the build-GPU override, both pull-and-run (ghcr) merges, the LAN-bind merges, and
+      # the Nextcloud shared-stack shape (standalone + LAN-merged, the remote-app case) —
+      # the `!reset` of the build block, the `ports`-list merge (loopback stays, LAN
+      # binding appends) and the required-env forcing (`:?`) are merge features, so their
+      # shapes belong pinned in CI, not in prose. LAN/Nextcloud shapes use RFC 5737
+      # TEST-NET addresses and synthetic data paths: documentation values, nobody's.
+      - name: The Compose files are valid (every merge shape, schema check)
+        run: |
+          cd deploy
+          docker compose config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.nvidia.yml --profile nvidia config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.ghcr.yml config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.ghcr.yml -f docker-compose.ghcr.nvidia.yml --profile nvidia config --quiet
+          DIGUP_LAN_BIND=192.0.2.1 docker compose -f docker-compose.yml -f docker-compose.lan.yml config --quiet
+          DIGUP_APP_TARGET_NAME=nextcloud DIGUP_APP_TARGET_HOST_DIR=/srv/app-data docker compose -f docker-compose.yml -f docker-compose.app-targets.yml config --quiet
+          DIGUP_APP_TARGET_NAME=nextcloud DIGUP_APP_TARGET_HOST_DIR=/srv/app-data docker compose -f docker-compose.yml -f docker-compose.app-targets.yml -f docker-compose.nvidia.yml --profile nvidia config --quiet
+          DIGUP_LAN_BIND=192.0.2.1 docker compose -f docker-compose.yml -f docker-compose.lan.yml -f docker-compose.nvidia.yml --profile nvidia config --quiet
+          DIGUP_LAN_BIND=192.0.2.1 docker compose -f docker-compose.yml -f docker-compose.ghcr.yml -f docker-compose.lan.yml config --quiet
+          DIGUP_NEXTCLOUD_DATA=/srv/nextcloud/data DIGUP_NEXTCLOUD_ADMIN_USER=ci-admin \
+          DIGUP_NEXTCLOUD_ADMIN_PASSWORD=ci-secret DIGUP_NEXTCLOUD_INSTANCE_ID=octciexampleid \
+          DIGUP_NEXTCLOUD_READ_TOKEN=ci-read-token DIGUP_SERVER_ADMIN_TOKEN=ci-admin-token \
+          DIGUP_NEXTCLOUD_EXTSTORAGE=/srv/nextcloud/extstorage \
+          docker compose -f docker-compose.nextcloud.yml config --quiet
+          DIGUP_NEXTCLOUD_DATA=/srv/nextcloud/data DIGUP_NEXTCLOUD_ADMIN_USER=ci-admin \
+          DIGUP_NEXTCLOUD_ADMIN_PASSWORD=ci-secret DIGUP_NEXTCLOUD_INSTANCE_ID=octciexampleid \
+          DIGUP_NEXTCLOUD_READ_TOKEN=ci-read-token DIGUP_SERVER_ADMIN_TOKEN=ci-admin-token \
+          DIGUP_LAN_BIND=192.0.2.1 docker compose -f docker-compose.nextcloud.yml -f docker-compose.lan.yml config --quiet
+          # …and the LAN overlay of the NEXTCLOUD web port itself (docker-compose.
+          # nextcloud.lan.yml: the app reaches the API inside the compose network, so
+          # only the nextcloud service gains the LAN binding; trusted domains are an
+          # env/operator concern, documented in the overlay header).
+          DIGUP_NEXTCLOUD_DATA=/srv/nextcloud/data DIGUP_NEXTCLOUD_ADMIN_USER=ci-admin \
+          DIGUP_NEXTCLOUD_ADMIN_PASSWORD=ci-secret DIGUP_NEXTCLOUD_INSTANCE_ID=octciexampleid \
+          DIGUP_NEXTCLOUD_READ_TOKEN=ci-read-token DIGUP_SERVER_ADMIN_TOKEN=ci-admin-token \
+          DIGUP_NEXTCLOUD_PUBLISH_PORT=8081 DIGUP_LAN_BIND=192.0.2.1 \
+          docker compose -f docker-compose.nextcloud.yml -f docker-compose.nextcloud.lan.yml config --quiet
+          # The WebDAV shape (§11.7): per-user davfs2 mounts as the media tree, env-only —
+          # the instance id is NOT required (appdata is not in any user's dav view, the
+          # composed exclusion is a no-op), the index layout is its own folder, and the
+          # Nextcloud service keeps its own data volume untouched.
+          DIGUP_NEXTCLOUD_DATA=/srv/nextcloud/data DIGUP_NEXTCLOUD_ADMIN_USER=ci-admin \
+          DIGUP_NEXTCLOUD_ADMIN_PASSWORD=ci-secret \
+          DIGUP_NEXTCLOUD_READ_TOKEN=ci-read-token DIGUP_SERVER_ADMIN_TOKEN=ci-admin-token \
+          DIGUP_SERVER_ROOTS=/media/dav/ci-alice:/media/dav/ci-bob DIGUP_MEDIA_TARGET=/media/dav DIGUP_MEDIA_BIND=/media/dav \
+          DIGUP_NEXTCLOUD_INDEX_DIR=./data/nextcloud/index-dav \
+          docker compose -f docker-compose.nextcloud.yml config --quiet
+          # …and the same shape WITH the dav mount container (the sudo-free shape the
+          # header documents): profile + propagation + mount env, all schema-checked.
+          DIGUP_NEXTCLOUD_DATA=/srv/nextcloud/data DIGUP_NEXTCLOUD_ADMIN_USER=ci-admin \
+          DIGUP_NEXTCLOUD_ADMIN_PASSWORD=ci-secret \
+          DIGUP_NEXTCLOUD_READ_TOKEN=ci-read-token DIGUP_SERVER_ADMIN_TOKEN=ci-admin-token \
+          DIGUP_SERVER_ROOTS=/media/dav/ci-alice:/media/dav/ci-bob DIGUP_MEDIA_TARGET=/media/dav DIGUP_MEDIA_BIND=/media/dav \
+          DIGUP_MEDIA_BIND_OPTS=ro,rslave DAV_HOST_DIR=/media/dav \
+          DIGUP_NEXTCLOUD_INDEX_DIR=./data/nextcloud/index-dav \
+          NEXTCLOUD_URL=http://nextcloud DAV_USERS="ci-alice ci-bob" DAV_APPPW="ci-alice:x ci-bob:y" \
+          docker compose -f docker-compose.nextcloud.yml --profile dav config --quiet
+          # The all-in-one EXAMPLE (docker-compose.all-in-one.yml: Nextcloud + server +
+          # CUDA build + LAN binds + named app target + dav, one file): pinned in CI like
+          # every other shape, with the full env chain the example's header prints.
+          DIGUP_LAN_BIND=192.0.2.1 DIGUP_NEXTCLOUD_DATA=/srv/nextcloud/data DIGUP_NEXTCLOUD_ADMIN_USER=ci-admin \
+          DIGUP_NEXTCLOUD_ADMIN_PASSWORD=ci-secret DIGUP_NEXTCLOUD_INSTANCE_ID=octciexampleid \
+          DIGUP_NEXTCLOUD_READ_TOKEN=ci-read-token DIGUP_SERVER_ADMIN_TOKEN=ci-admin-token \
+          DIGUP_APP_TARGET_NAME=nextcloud DIGUP_APP_TARGET_HOST_DIR=/srv/app-data \
+          DIGUP_SERVER_ROOTS=/media/dav/ci-alice:/media/dav/ci-bob DIGUP_MEDIA_TARGET=/media/dav DIGUP_MEDIA_BIND=/media/dav \
+          DIGUP_MEDIA_BIND_OPTS=ro,rslave DAV_HOST_DIR=/media/dav \
+          NEXTCLOUD_URL=http://nextcloud DAV_USERS="ci-alice ci-bob" DAV_APPPW="ci-alice:x ci-bob:y" \
+          docker compose -f docker-compose.all-in-one.yml --profile nvidia --profile dav config --quiet
+
+      - name: The server runtime image boots, answers, serves the UI, stops cleanly
+        run: |
+          docker build --target server-runtime -f server/docker/Dockerfile -t digup-server:ci .
+          mkdir -p "$RUNNER_TEMP/data/index" "$RUNNER_TEMP/data/config"
+          # 777 as in the proof step: the server image is non-root (uid 990) and must own
+          # its writer lock + job log under /data/index — a runner-owned 775 dir denies it.
+          chmod 777 "$RUNNER_TEMP/data/index" "$RUNNER_TEMP/data/config"
+          docker run -d --name server-ci \
+            -p 127.0.0.1:8787:8787 \
+            -v "$RUNNER_TEMP/data/index:/data/index" \
+            -v "$RUNNER_TEMP/data/config:/data/config" \
+            -v "$RUNNER_TEMP/models:/data/models" \
+            -v "$PWD/server/tests/corpus/media/photos:/media/photos:ro" \
+            digup-server:ci
+          code=0
+          for i in $(seq 1 30); do
+            # The image's OWN healthcheck script — the exact file Docker runs, proven here
+            # against the live API (its exit 0 is the health Docker reports).
+            if docker exec server-ci python /opt/digup/healthcheck.py; then code=200; break; fi
+            sleep 2
+          done
+          test "$code" = "200"
+          docker exec server-ci python -c 'import urllib.request; html = urllib.request.urlopen("http://127.0.0.1:8787/", timeout=3).read().decode(); assert "DigUp" in html and "app.js" in html'
+          docker stop --time 15 server-ci
+          exit_code=$(docker inspect server-ci --format '{{.State.ExitCode}}')
+          test "$exit_code" != "137"        # 137 = SIGKILL: the lifespan shutdown hung
+          docker logs server-ci 2>&1 | grep -q "Application shutdown complete"
+          docker rm server-ci
+
+      - name: Proof logs (the run's own output, for the PR log)
+        if: always()
+        run: |
+          shopt -s nullglob
+          files=("$RUNNER_TEMP"/proof/*.log "$RUNNER_TEMP"/suite.log)
+          if [ ${#files[@]} -eq 0 ]; then echo "no proof/suite logs to show"; exit 0; fi
+          for f in "${files[@]}"; do echo "::group::${f##*/}"; cat "$f"; echo "::endgroup::"; done
+
+      - name: Upload proof and suite logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: server-proof-logs-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}/proof
+            ${{ runner.temp }}/suite.log
+          if-no-files-found: warn
+
+  # Pull-and-run publishes here (server/README.md "Pull the published image"): pushes to
+  # main and to the PR branch push the shipping images to ghcr.io, and
+  # deploy/docker-compose.ghcr*.yml pull them, so an operator needs no toolchain — set
+  # the DIGUP_* env vars, `docker compose up -d`, done. Tags: main → :latest and
+  # :latest-cuda; a feature branch → :<branch> and :<branch>-cuda (lowercased,
+  # slashes → dashes — the PR's own image is :feat-server-cuda on :feat-server).
+  # publish never runs on a pull_request event: that context's token is scoped to the
+  # BASE repo's registry, and this is the head owner's registry. x86_64 only, by rule:
+  # cross-emulation builds are forbidden (README §11) and arm64 hosts build the image
+  # natively under the same rule. The publish runs only after the full `server` job is
+  # green — the image that reaches ghcr passed the contract suite, the headless proof
+  # and the clean-stop gate minutes earlier.
+  publish:
+    needs: server
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    # The CUDA flavor compiles llama.cpp with GGML_CUDA for seven archs on a cold gha
+    # cache; 180 mirrors the server job's measured ceiling and dies on its own before
+    # GitHub's 6 h one.
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The same Vendor cache the server job just filled (same key): the Dockerfile seeds
+      # its cache mounts from .ci-vendor/, the stamped scripts land on their stamps and
+      # skip the rebuild. Built in the builder's own base image for ABI reasons (see the
+      # server job's comment — measured on the fork's first run 2026-11-04). The CUDA
+      # flavor re-pays only the CUDA compile (the llama stamp embeds $FLAVOR, so a
+      # cpu-seeded Vendor forces exactly the GPU recompile, not a reuse), and the gha
+      # build cache below keeps it warm across runs.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: Vendor
+          key: server-vendor-linux-${{ hashFiles('scripts/fetch-vendor.sh', 'scripts/build-ffmpeg.sh', 'scripts/build-llama.sh', 'scripts/package-linux.sh') }}
+      - <<: *vendor
+
+      # ghcr.io forces the whole path lowercase: Ocean572/DigUp publishes as
+      # ghcr.io/ocean572/digup-server. Derived from the repo owner so case never hard-codes.
+      - name: Image name (ghcr paths are lowercase — derive from the repo)
+        run: echo "IMAGE=ghcr.io/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/digup-server" >> "$GITHUB_ENV"
+
+      # main is :latest / :latest-cuda; a feature branch is :<branch> / :<branch>-cuda —
+      # the PR branch's own build, pullable with DIGUP_IMAGE_TAG=<branch>. The branch
+      # name is what a push event carries; PR numbers are not derivable from a push, so
+      # tags are branch-named, honestly.
+      - name: Image tags (main → latest; other refs → the branch name)
+        run: |
+          if [ "$GITHUB_REF" = refs/heads/main ]; then
+            tag=latest
+          else
+            tag=$(echo "$GITHUB_REF_NAME" | tr '[:upper:]' '[:lower:]' | tr / -)
+          fi
+          echo "TAG_CPU=$tag" >> "$GITHUB_ENV"
+          echo "TAG_CUDA=$([ "$tag" = latest ] && echo latest-cuda || echo "$tag-cuda")" >> "$GITHUB_ENV"
+
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # The CPU image — the target server-runtime the stop-gate step above booted,
+      # tagged :latest on main, :<branch> on a feature branch.
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: server/docker/Dockerfile
+          target: server-runtime
+          push: true
+          tags: ${{ env.IMAGE }}:${{ env.TAG_CPU }}
+          platforms: linux/amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The CUDA image — the shape docker-compose.ghcr.nvidia.yml pulls (:latest-cuda
+      # on main, :<branch>-cuda on the PR branch). Fat arch list
+      # (61 Pascal … 90 Hopper; CUDA 12.4.1 compiles 61 as deprecated — CUDA 13 drops it,
+      # re-evaluate the base when the line moves); CMake lists are semicolon-separated and
+      # the Dockerfile's engine-builder normalizes this comma string (run #6, 2026-11-05:
+      # raw commas = ONE invalid arch token, configure died in seconds). Its build gate is the Dockerfile's own:
+      # server-runtime-cuda runs `ldd libggml-cuda.so` and fails the build on any
+      # "not found" (measured 2026-11-04, Gate B), so a broken CUDA image never publishes.
+      # Separate gha cache scope: the CPU and CUDA layer sets must not evict each other.
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: server/docker/Dockerfile
+          target: server-runtime-cuda
+          push: true
+          tags: ${{ env.IMAGE }}:${{ env.TAG_CUDA }}
+          platforms: linux/amd64
+          build-args: |
+            BASE_IMAGE=nvidia/cuda:12.4.1-devel-ubuntu22.04
+            CUDA_RUNTIME_IMAGE=nvidia/cuda:12.4.1-runtime-ubuntu22.04
+            CUDA_ARCHS=61,70,75,80,86,89,90
+          cache-from: type=gha,scope=cuda
+          cache-to: type=gha,mode=max,scope=cuda
+
+      # Version hygiene: every push leaves the previous one untagged, and ghcr's free
+      # tier is metered by stored GB — a CUDA image is ~2 GB, so untagged leftovers get
+      # deleted right here. Keep rule: anything still carrying a tag survives — the
+      # floating tags this job writes (latest, latest-cuda, branch names) are the only
+      # tags it ever creates, so the registry ends up holding exactly the live builds.
+      - name: Delete untagged image versions (registry hygiene)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request, urllib.error
+
+          owner, pkg, tok = os.environ["GITHUB_REPOSITORY"].split("/")[0], "digup-server", os.environ["GITHUB_TOKEN"]
+          api = "https://api.github.com"
+
+          def req(method, url, body=None):
+              data = json.dumps(body).encode() if body is not None else None
+              r = urllib.request.Request(url, data=data, method=method, headers={
+                  "Authorization": "Bearer " + tok,
+                  "Accept": "application/vnd.github+json",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              })
+              with urllib.request.urlopen(r) as resp:
+                  raw = resp.read()
+                  return json.loads(raw) if raw else {}
+
+          # Best-effort hygiene: publish has already succeeded at this point, so cleanup
+          # problems get a loud ::warning and exit 0 — never a red run, never silence.
+          # Two measured fixes (run #7, 2026-11-05): the heredoc body must sit at the SAME
+          # column as the delimiters (a deeper indent = IndentationError, exit 1 in 1 s),
+          # and deleting versions is POST .../versions/delete since GitHub's 2022 verb
+          # migration — the old DELETE answers 404.
+          try:
+              versions, page = [], 1
+              while True:
+                  batch = req("GET", f"{api}/users/{owner}/packages/container/{pkg}/versions?per_page=50&page={page}")
+                  versions.extend(batch)
+                  if len(batch) < 50:
+                      break
+                  page += 1
+              doomed = [{"id": v["id"]} for v in versions if not v.get("tags")]
+              for i in range(0, len(doomed), 20):          # the API deletes in batches of <=20
+                  req("POST", f"{api}/user/packages/container/{pkg}/versions/delete", {"versions": doomed[i:i + 20]})
+              print(f"versions: {len(versions)} total, {len(versions) - len(doomed)} tagged kept, {len(doomed)} untagged deleted")
+          except urllib.error.HTTPError as exc:
+              print(f"::warning::registry hygiene skipped: HTTP {exc.code} {exc.reason} — {exc.read().decode()[:200]}")
+          except Exception as exc:
+              print(f"::warning::registry hygiene skipped: {exc}")
+          PY
