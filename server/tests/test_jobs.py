@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -32,11 +33,17 @@ NEW_SENTENCE = "A lighthouse stands above a stormy sea at dusk, its beam sweepin
 
 def test_an_interrupted_record_always_carries_the_counts_it_saw():
     """The rule the stop-mid-job test and README §5 both promise: an interrupted job reports
-    the counts the engine really emitted. `_counts` never leaves `files_done` absent — a job
-    stopped before any file finished says **0**, not nothing (measured: a stop landing during
-    the model load took the `EngineExited` path and published an interrupted record with no
-    counts at all, which is why the runner drains events as they arrive, not at the end)."""
-    counts = JobRunner._counts([])
+    the counts the engine really emitted. The live job record is seeded at zero the first
+    moment of the walk (`_run_one`) and `_live_counts` publishes missing keys as None — a
+    job stopped before any file finished says **0**, not nothing (measured: a stop landing
+    during the model load took the `EngineExited` path and published an interrupted record
+    with no counts at all, which is why the counters ride the live record from the first
+    moment and every ending reads them from there, never from a thread-local list)."""
+    runner = JobRunner.__new__(JobRunner)            # the counts bookkeeping, no worker
+    runner._jobs = {"j1": {"id": "j1"}}
+    runner._lock = threading.Lock()
+    runner._progress("j1", files_done=0, files_failed=0, errors=0)   # _run_one's seeding
+    counts = runner._live_counts("j1")
     assert counts["files_done"] == 0 and counts["files_failed"] == 0 and counts["errors"] == 0
     assert counts["files"] is None and counts["vectors"] is None    # no `idle` totals yet
 

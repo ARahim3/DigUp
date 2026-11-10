@@ -45,7 +45,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .engine import EngineConfig, SearchService
 from .engine.cli import CLIError, estimate_lines, status as cli_status
 from .engine.protocol import EngineExited, EngineRefused
-from .jobs import JobBusy, JobRunner
+from .jobs import JOB_LOG, JobBusy, JobRunner
 from .security import (Auth, Cors, HostOriginGuard, PrincipalLog, TOKENS_FILE, _bearer,
                        _write_tokens_file, allowed_hosts_from_env, allowed_origins_from_env,
                        BearerAuth, env_secrets, mint_tokens, rotate_minted)
@@ -362,6 +362,23 @@ def create_app(config: EngineConfig) -> FastAPI:
     scopes: dict[str, Scope] = {}
     scope_build = threading.Lock()        # one spawn per target, ever
 
+    def make_runner(cfg: EngineConfig, service: SearchService,
+                    log_name: str | None = None) -> JobRunner:
+        """One source for the job runner's knobs (stage-13: a runner per target; the main
+        index keeps `jobs.jsonl`, an app target gets `jobs-<name>.jsonl`). After a done
+        job the searcher is brought current with the sequence the contract suite proved:
+        reload() → prewarm(). The job's ceiling belongs to the operator:
+        DIGUP_SERVER_JOB_TIMEOUT_S (3600 s fits the corpora the suite walks; a first pass
+        of a real media tree outlives an hour — the job then records *interrupted* with
+        its partial counters and the next job resumes, README §5)."""
+        return JobRunner(
+            cfg, config_dir=config_dir,
+            log_name=log_name or JOB_LOG,
+            after_done=lambda: (service.reload(), service.prewarm()),
+            backfill=os.environ.get("DIGUP_SERVER_BACKFILL", "1") != "0",
+            sync_timeout_s=float(os.environ.get("DIGUP_SERVER_JOB_TIMEOUT_S", "3600")),
+            log_rotate_bytes=int(os.environ.get("DIGUP_SERVER_JOB_LOG_SIZE", 1_048_576)))
+
     def scope_for(name: str) -> Scope:
         """The main scope always exists (the lifespan owns it); app targets spawn on
         first use: search-service child (prewarmed best-effort), job runner, status.
@@ -397,13 +414,7 @@ def create_app(config: EngineConfig) -> FastAPI:
                 service.prewarm()
             except (EngineExited, EngineRefused, TimeoutError):
                 pass                      # first search respawns; a preview call must not die here
-            runner = JobRunner(cfg, config_dir=config_dir,
-                               log_name=f"jobs-{name}.jsonl",
-                               after_done=lambda: (service.reload(), service.prewarm()),
-                               backfill=os.environ.get("DIGUP_SERVER_BACKFILL", "1") != "0",
-                               sync_timeout_s=float(os.environ.get("DIGUP_SERVER_JOB_TIMEOUT_S", "3600")),
-                               log_rotate_bytes=int(os.environ.get("DIGUP_SERVER_JOB_LOG_SIZE",
-                                                                   1_048_576)))
+            runner = make_runner(cfg, service, f"jobs-{name}.jsonl")
             scopes[name] = Scope(cfg=cfg, service=service, jobs=runner, status=status_cache)
             return scopes[name]
 
@@ -483,19 +494,12 @@ def create_app(config: EngineConfig) -> FastAPI:
                 service.prewarm()
             except (EngineExited, EngineRefused, TimeoutError):
                 pass               # the searcher respawns on demand; startup must not die here
-        # One writer, serialized; after a done job the searcher is brought current with
-        # the sequence the contract suite proved: reload() → prewarm().
-        # A job's ceiling: 3600 s fits the corpora the suite walks (15–60 files finish in
-        # ~20 s). A first pass of a real media tree outlives an hour — measured 2026-11-04:
-        # 19,007/131,972 files done when the default expired; the job recorded *interrupted*
-        # with its partial counters and the next job resumes (README §5). The operator owns
-        # the ceiling: DIGUP_SERVER_JOB_TIMEOUT_S (same pattern as the estimate's).
-        runner = JobRunner(config, config_dir=config_dir,
-                           after_done=lambda: (service.reload(), service.prewarm()),
-                           backfill=os.environ.get("DIGUP_SERVER_BACKFILL", "1") != "0",
-                           sync_timeout_s=float(os.environ.get("DIGUP_SERVER_JOB_TIMEOUT_S", "3600")),
-                           log_rotate_bytes=int(os.environ.get("DIGUP_SERVER_JOB_LOG_SIZE",
-                                                               1_048_576)))
+        # One writer, serialized; the runner's knobs (ceiling, log rotation, the
+        # reload→prewarm sequence) all come from make_runner, one source for every
+        # target. Measured 2026-11-04: a first pass of a real media tree outlives the
+        # default hour — the job recorded *interrupted* with its partial counters and
+        # the next job resumed (README §5).
+        runner = make_runner(config, service)
         app.state.jobs = runner
         scopes[MAIN_TARGET] = Scope(cfg=config, service=service, jobs=runner, status=status_cache)
         app.state.scopes = scopes

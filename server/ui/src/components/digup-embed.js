@@ -15,7 +15,7 @@ const KIND_LABEL = { image: "photo", screenshot: "screenshot", video: "video", a
                      pdf: "pdf", doc: "document", code: "code" };
 const PREVIEWABLE = new Set(["image", "screenshot", "video"]);
 
-export class DigupEmbed extends LitElement {
+class DigupEmbed extends LitElement {
   static properties = {
     _limit: { state: true }, _kinds: { state: true }, _strong: { state: true },
     _reply: { state: true }, _activity: { state: true }, _status: { state: true },

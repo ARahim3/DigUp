@@ -9,7 +9,7 @@ import { WEAKER } from "../lib/format.js";
 import { pictureTemplate, factsTemplate } from "../lib/media.js";
 import { controlCss } from "../styles/controls.js";
 
-export class DigupPreview extends LitElement {
+class DigupPreview extends LitElement {
   static properties = { hit: {}, weakerCount: {}, showWeaker: {} };
 
   // controlCss: Open / Download are `a.button-like` (lib/media.js) — the shared button

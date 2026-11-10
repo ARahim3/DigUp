@@ -189,12 +189,10 @@ class JobRunner:
         # exception) then answers with the counts the engine really emitted. Measured: a job
         # stopped by `shutdown()` published *interrupted* with NO counts, because the counts
         # lived only in this thread's local list and `shutdown()` marks from its own thread.
-        events: list[dict] = []
         done = failed = errors = 0
         try:
             service.sync()
             for event in service.events(timeout=self._timeout):
-                events.append(event)
                 kind = event.get("event")
                 if kind == "file":
                     if event.get("state") == "done":
@@ -218,7 +216,7 @@ class JobRunner:
                 self._active = None   # the writer is done; a new job may queue
             self._service = None
             service.finish()
-            self._mark(job_id, STATE_INTERRUPTED, str(exc), **self._counts(events))
+            self._mark(job_id, STATE_INTERRUPTED, str(exc), **self._live_counts(job_id))
             return
         finally:
             service.finish()          # idempotent: releases the writer lock
@@ -227,7 +225,7 @@ class JobRunner:
         # client that reads `done` can always start the next job — never a done-409 window.
         with self._lock:
             self._active = None
-        counts = self._counts(events)
+        counts = self._live_counts(job_id)
         ended = round(time.time(), 3)
         started = job.get("started") or ended
         if self._stopping:
@@ -250,21 +248,18 @@ class JobRunner:
                 self._mark(job_id, STATE_DONE, f"searcher refresh deferred: {exc}",
                            ended=ended, seconds=round(ended - started, 1), **counts)
 
-    # The engine's own totals: the last `idle` event's counts, the file events' `done`s.
-    @staticmethod
-    def _counts(events: list[dict]) -> dict:
-        idle = [e for e in events if e.get("event") == "idle"]
-        files = [e for e in events if e.get("event") == "file"]
-        counts = {"files": None, "searchable": None, "pending": None, "vectors": None,
-                  "files_done": sum(1 for f in files if f.get("state") == "done"),
-                  "files_failed": sum(1 for f in files
-                                      if f.get("state") not in ("done", None)),
-                  "errors": sum(1 for e in events if e.get("event") == "error")}
-        if idle:
-            last = idle[-1]
-            for key in ("files", "searchable", "pending", "vectors"):
-                counts[key] = last.get(key)
-        return counts
+    # The engine's own totals, read from the live job record: `_progress` merged every
+    # counter as it arrived — the per-file `done`/`failed` counts, the `error` count, and
+    # the engine's own `idle` batch totals (last one wins, exactly as the event stream
+    # produced them). Keys the engine never published read as None. One source, and a
+    # 1.8 M-file job carries no second copy of every event in a list.
+    _COUNT_KEYS = ("files", "searchable", "pending", "vectors",
+                   "files_done", "files_failed", "errors")
+
+    def _live_counts(self, job_id: str) -> dict:
+        with self._lock:
+            job = self._jobs.get(job_id) or {}
+        return {key: job.get(key) for key in self._COUNT_KEYS}
 
     # ── the log (append-only JSON-lines, rotated at size; replay reads ALL of it) ──────
 

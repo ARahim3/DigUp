@@ -30,7 +30,7 @@ const CODE_HINT = "Searching your code — say what the code does, or type a nam
 const SUGGESTIONS = ["a dog running on the beach", "people gathered around a campfire",
                      "a cat sitting on a sofa", "wakeboarding on a lake"];
 
-export class DigupApp extends LitElement {
+class DigupApp extends LitElement {
   static properties = { page: { state: true }, bigOpen: { state: true },
                         _gearAttention: { state: true }, _statusTick: { state: true } };
 

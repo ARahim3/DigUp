@@ -4,7 +4,7 @@
 // the indexing counts while a job runs.
 import { LitElement, html, css } from "lit";
 
-export class DigupFooter extends LitElement {
+class DigupFooter extends LitElement {
   static properties = { results: {}, indexing: {}, error: {} };
 
   static styles = css`

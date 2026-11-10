@@ -75,9 +75,6 @@ class IndexService:
     def sync(self) -> None:
         self._command("sync")
 
-    def sync_code(self) -> None:
-        self._command("sync code")
-
     def stop(self) -> None:
         self._command("stop")
 

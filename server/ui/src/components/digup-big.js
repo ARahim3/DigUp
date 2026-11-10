@@ -8,7 +8,7 @@ import { LitElement, html, css } from "lit";
 import { baseName, folderOf } from "../lib/format.js";
 import { pictureTemplate } from "../lib/media.js";
 
-export class DigupBig extends LitElement {
+class DigupBig extends LitElement {
   static properties = { hit: {} };
 
   static styles = css`

@@ -285,6 +285,47 @@ change, disclosed: `appkeys` + `roots-sum`; the key-grid prefix).
  unpack 2.3 s, **137 passed, 1 deselected, 0 skipped, 172.19 s** — the frontend-builder
  stage ran the unit gate (54/54) on the cleaned tree on its way in.
 
+**Refactoring pass (2026-11-09, the user's cleanup+audit brief — full-surface audit,
+then small verifiable changes):** the whole server reviewed — 2,776 Python lines
+(api/security/jobs/targets + engine adapter), 2,447 UI JS, HTML, CSS, the 367-line
+Dockerfile, all 9 compose files, the 507-line CI workflow. **Audit result: the
+implementation was disciplined** — AST scan found zero unused imports/functions/classes
+(every flagged name is decorator- or import-consumed: routes, exception handlers,
+middleware); zero dead CSS selectors and zero unused UI exports; every Dockerfile stage
+referenced (`engine-runtime` is CI-built, `cuda-libs` by the CUDA target); no engine
+duplication (the server is passthrough — status parsing is the published CLI surface,
+jobs count the engine's own events); embed widget intentionally separate (contract
+pins); chronicle docs binding (§-refs in code comments) — kept. **Applied** (each a
+small verifiable change): (1) removed `IndexService.sync_code` (zero refs, product and
+tests) and `SearchService.folders()` + `_folders_fields` respawn replay (the server's
+scope is argv at spawn — the replay existed only for a wrapper nothing called);
+(2) **jobs.py counter consolidation**: the live job record already carries every
+counter as the engine emits it (`_progress`), so the per-event `events` list + the
+`_counts` re-scan were a second source of the same numbers — a 1.8 M-file job no
+longer keeps a full copy of every event in memory; endings now read `_live_counts`
+(keys the engine never published = None, same published shape; the unit pin that
+called `JobRunner._counts([])` was adapted to assert the same guarantee through
+`_progress` seeding + `_live_counts` — same assertions, no weakening);
+(3) **api.py `make_runner`**: the JobRunner construction (config_dir, per-target log
+name, reload→prewarm, ceiling, rotation) existed twice verbatim (lifespan + app
+target spawn) — now one source; (4) **CI vendor-seeding consolidation**: the 18-line
+vendor step was byte-identical in both jobs (server + publish) — now one YAML anchor
+referenced by both (merge key; PyYAML-verified: parsed, one step per job, run scripts
+md5-identical); (5) **UI export hygiene**: 11 internal-only `export` keywords demoted —
+2 helpers in `media.js` + the 9 self-registering component classes (every component
+file ends in its own `customElements.define`; zero importers in the app and in the
+unit tests); (6) docs: `DIGUP_SERVER_STATUS_TTL_S` documented in `.env.example` +
+the deploy README env table (code read it, docs never named it). **Kept by design,
+disclosed**: `estimate_json/estimate_text/speed_model` (test-pinned CLI surface),
+`raw()` (contract-pinned), the tokens-file merge logic, all security guards. **Gates:**
+py_compile all modules + adapted test; UI unit gate 54/54 (host, and again inside the
+`frontend-builder` stage at image build); vite build clean; workflow YAML parsed with
+md5-identical merged vendor steps; **full contract suite twice on the refactored tree —
+first on the Python batch: 137 passed, 1 deselected, 0 skipped, 195.70 s; then on the
+exact final tree (image rebuilt with the UI export demotions): 137 passed, 1 deselected,
+0 skipped, 173.56 s.** Changes left uncommitted per the user's rule (no commits/pushes
+for this task).
+
 **All-in-one compose example + operator README (2026-11-09, the user's asks):**
 `deploy/docker-compose.all-in-one.yml` merges the shipped chain
 (`docker-compose.nextcloud.yml` + `nvidia` + `lan` + `nextcloud.lan` + `app-targets`)

@@ -5,7 +5,7 @@
 // describe scenes, which is what the engine's meaning search answers.
 import { LitElement, html, css } from "lit";
 
-export class DigupSuggest extends LitElement {
+class DigupSuggest extends LitElement {
   static properties = { phrases: {} };
 
   static styles = css`

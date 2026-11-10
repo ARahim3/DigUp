@@ -37,7 +37,7 @@ const KEY_ICON = icon(html`
   <circle cx="8" cy="15.5" r="4"></circle>
   <path d="M11 12.8 20.5 3.3M17.5 6.3l2.4 2.4"></path>`);
 
-export class DigupSettings extends LitElement {
+class DigupSettings extends LitElement {
   static properties = { theme: {} };
 
   static styles = [controlCss, badgeCss, keyRowCss, jobStateCss, spinCss, css`

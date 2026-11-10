@@ -111,7 +111,7 @@ docker compose -f docker-compose.all-in-one.yml --profile nvidia --profile dav u
 | `DIGUP_SERVER_ALLOWED_ORIGINS` | CORS allowlist for browser widgets (see API.md §CORS) |
 | `DIGUP_SERVER_ESTIMATE_TIMEOUT_S` | estimate walk ceiling (default 120 s; huge trees need more, e.g. 900) |
 | `DIGUP_SERVER_JOB_TIMEOUT_S` | index job ceiling; on expiry the job records *interrupted* with its counters and resumes |
-| `DIGUP_SERVER_PREWARM` `DIGUP_SERVER_BACKFILL` `DIGUP_SERVER_ENCODER_IDLE` `DIGUP_SERVER_JOB_LOG_SIZE` `DIGUP_SERVER_EXTRA_EXCLUDE` `DIGUP_SERVER_EXCLUDE_EXT` | tuning, defaults sane — API.md + the Dockerfile document each |
+| `DIGUP_SERVER_PREWARM` `DIGUP_SERVER_BACKFILL` `DIGUP_SERVER_ENCODER_IDLE` `DIGUP_SERVER_STATUS_TTL_S` `DIGUP_SERVER_JOB_LOG_SIZE` `DIGUP_SERVER_EXTRA_EXCLUDE` `DIGUP_SERVER_EXCLUDE_EXT` | tuning, defaults sane — API.md + the Dockerfile document each |
 | `DIGUP_MEDIA_BIND` `DIGUP_MEDIA_TARGET` `DIGUP_MEDIA_BIND_OPTS` `DIGUP_MEDIA_GID` | the media bind: host dir, mount point, `ro` (+`,rslave` on WebDAV), group grant via `group_add` |
 | `DIGUP_NEXTCLOUD_*` `DAV_*` `NEXTCLOUD_URL` | the Nextcloud stack + dav container — each namespaced var is commented where it is used in `docker-compose.nextcloud.yml` |
 

@@ -7,7 +7,7 @@ import { html, LitElement } from "lit";
 import { baseName, folderOf, extension, bytes, clock, date, STREAMABLE_VIDEO,
          STREAMABLE_AUDIO, reasonOf } from "../lib/format.js";
 
-export const mediaUrls = (hit) => ({
+const mediaUrls = (hit) => ({
   fileURL: `/api/v1/media/${hit.media_id}/file`,
   previewURL: (pixels) => `/api/v1/media/${hit.media_id}/preview?pixels=${pixels}`,
 });
@@ -101,7 +101,7 @@ export function factsTemplate(hit) {
 let _api = null;
 export function setPassageApi(apiFn) { _api = apiFn; }
 
-export class DigupPassage extends LitElement {
+class DigupPassage extends LitElement {
   static properties = { hit: {}, excerptFallback: {}, _text: { state: true } };
 
   constructor() {

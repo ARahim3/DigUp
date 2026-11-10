@@ -7,10 +7,10 @@ excerpt`). No re-ranking, no invented similarity numbers, and "no good matches" 
 empty `hits` — the engine refusing to guess is a fact to publish, not to paper over.
 
 The service idles itself out (model after `--encoder-idle`, process after twice that);
-`_call` treats that as a restart, not an error, and replays the last `folders` change so a
-respawn keeps the server's chosen scope. Requests are serialized here: the engine is
-thread-safe per line, but a single in-flight query keeps the reply routing trivial and the
-encoder warm for the typist (`embed_ahead` on each keystroke).
+`_call` treats that as a restart, not an error. The server's scope (roots, exclusions) is
+argv at spawn, so a respawn re-applies it by construction. Requests are serialized here:
+the engine is thread-safe per line, but a single in-flight query keeps the reply routing
+trivial and the encoder warm for the typist (`embed_ahead` on each keystroke).
 """
 
 from __future__ import annotations
@@ -31,7 +31,6 @@ class SearchService:
         self._proc: JsonLinesProcess | None = None
         self._lock = threading.RLock()      # one query in flight; restarts are exclusive
         self._render_slots = threading.Semaphore(2)   # the engine's own render concurrency
-        self._folders_fields: dict | None = None   # last `folders` change, replayed after respawn
 
     # ── lifecycle ────────────────────────────────────────────────────────────────────────
 
@@ -112,18 +111,6 @@ class SearchService:
     def prewarm(self) -> dict:
         return self._call({"op": "prewarm"}, timeout=60.0)
 
-    def folders(self, *, roots: list[str] | None = None, skipped: list[str] | None = None,
-                types: list[str] | None = None, code_roots: list[str] | None = None,
-                code_skipped: list[str] | None = None) -> dict:
-        fields = {"op": "folders"}
-        for key, value in (("roots", roots), ("skipped", skipped), ("types", types),
-                           ("code_roots", code_roots), ("code_skipped", code_skipped)):
-            if value is not None:
-                fields[key] = value
-        reply = self._call(fields)
-        self._folders_fields = {k: v for k, v in fields.items() if k != "op"}
-        return reply
-
     def raw(self, fields: dict) -> dict:
         """An op this wrapper has no method for — passthrough, contract-tested by name,
         refusal replies included: `ok:false` reaches the caller verbatim here (a Stage-3
@@ -171,6 +158,4 @@ class SearchService:
         if self._proc is not None and not self._proc.alive:
             self._proc.close()   # join the reaped straggler before replacing it
         self._proc = proc
-        if self._folders_fields:
-            proc.request({"op": "folders", **self._folders_fields}, timeout=30.0)
         return ready

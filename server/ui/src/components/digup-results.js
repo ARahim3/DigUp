@@ -13,7 +13,7 @@ import { badgeCss } from "../styles/controls.js";
 const KIND_ICON = {screenshot: "▣", image: "▣", pdf: "❐", doc: "≡", video: "▶",
                    audio: "♪", code: "</>"};
 
-export class DigupResults extends LitElement {
+class DigupResults extends LitElement {
   static properties = { results: {}, _broken: { state: true } };
 
   static styles = [badgeCss, css`

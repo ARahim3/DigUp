@@ -40,6 +40,27 @@ concurrency:
   group: server-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# YAML anchor (a parser feature, honored by Actions): the vendor seeding is byte-identical
+# for the two jobs — one recipe, two runners, no copy-paste drift between them.
+X-vendor-step: &vendor
+  name: Vendored libraries, ffmpeg, llama.cpp (in the builder's base image, cached — ci.yml's own scripts)
+  run: |
+    mkdir -p Vendor .ci-vendor
+    docker run --rm -v "$PWD:/src" -v "$PWD/Vendor:/src/Vendor" -w /src ubuntu:22.04 \
+      bash -c 'set -eux; \
+        apt-get update -q; \
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
+          ca-certificates curl git gnupg xz-utils unzip python3 binutils build-essential \
+          cmake ninja-build meson nasm pkg-config file zlib1g-dev libcurl4-openssl-dev \
+          libxml2-dev libedit2 libsqlite3-0 libz3-dev libpython3-dev tzdata yasm; \
+        ./scripts/fetch-vendor.sh; \
+        rm -f Vendor/llama-build/CMakeCache.txt; \
+        tries=0; until ./scripts/build-ffmpeg.sh; do tries=$((tries+1)); [ "$tries" -ge 3 ] && exit 1; \
+          echo "build-ffmpeg: attempt $tries failed; retrying in 30 s"; sleep 30; done; \
+        tries=0; until ./scripts/build-llama.sh; do tries=$((tries+1)); [ "$tries" -ge 3 ] && exit 1; \
+          echo "build-llama: attempt $tries failed; retrying in 30 s"; sleep 30; done'
+    cp -a Vendor/. .ci-vendor/
+
 jobs:
   server:
     runs-on: ubuntu-24.04
@@ -96,23 +117,7 @@ jobs:
       # does NOT, see the corpus step; the container installs the builder's build packages
       # itself). Bounded retries around the
       # build scripts: they survive a network hiccup and cost nothing on healthy networks.
-      - name: Vendored libraries, ffmpeg, llama.cpp (in the builder's base image, cached — ci.yml's own scripts)
-        run: |
-          mkdir -p Vendor .ci-vendor
-          docker run --rm -v "$PWD:/src" -v "$PWD/Vendor:/src/Vendor" -w /src ubuntu:22.04 \
-            bash -c 'set -eux; \
-              apt-get update -q; \
-              DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
-                ca-certificates curl git gnupg xz-utils unzip python3 binutils build-essential \
-                cmake ninja-build meson nasm pkg-config file zlib1g-dev libcurl4-openssl-dev \
-                libxml2-dev libedit2 libsqlite3-0 libz3-dev libpython3-dev tzdata yasm; \
-              ./scripts/fetch-vendor.sh; \
-              rm -f Vendor/llama-build/CMakeCache.txt; \
-              tries=0; until ./scripts/build-ffmpeg.sh; do tries=$((tries+1)); [ "$tries" -ge 3 ] && exit 1; \
-                echo "build-ffmpeg: attempt $tries failed; retrying in 30 s"; sleep 30; done; \
-              tries=0; until ./scripts/build-llama.sh; do tries=$((tries+1)); [ "$tries" -ge 3 ] && exit 1; \
-                echo "build-llama: attempt $tries failed; retrying in 30 s"; sleep 30; done'
-          cp -a Vendor/. .ci-vendor/
+      - <<: *vendor
 
       - name: Model files, pinned by Sources/DigUpKit/ModelFiles.swift
         run: |
@@ -375,23 +380,7 @@ jobs:
         with:
           path: Vendor
           key: server-vendor-linux-${{ hashFiles('scripts/fetch-vendor.sh', 'scripts/build-ffmpeg.sh', 'scripts/build-llama.sh', 'scripts/package-linux.sh') }}
-      - name: Vendored libraries, ffmpeg, llama.cpp (in the builder's base image, cached — ci.yml's own scripts)
-        run: |
-          mkdir -p Vendor .ci-vendor
-          docker run --rm -v "$PWD:/src" -v "$PWD/Vendor:/src/Vendor" -w /src ubuntu:22.04 \
-            bash -c 'set -eux; \
-              apt-get update -q; \
-              DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
-                ca-certificates curl git gnupg xz-utils unzip python3 binutils build-essential \
-                cmake ninja-build meson nasm pkg-config file zlib1g-dev libcurl4-openssl-dev \
-                libxml2-dev libedit2 libsqlite3-0 libz3-dev libpython3-dev tzdata yasm; \
-              ./scripts/fetch-vendor.sh; \
-              rm -f Vendor/llama-build/CMakeCache.txt; \
-              tries=0; until ./scripts/build-ffmpeg.sh; do tries=$((tries+1)); [ "$tries" -ge 3 ] && exit 1; \
-                echo "build-ffmpeg: attempt $tries failed; retrying in 30 s"; sleep 30; done; \
-              tries=0; until ./scripts/build-llama.sh; do tries=$((tries+1)); [ "$tries" -ge 3 ] && exit 1; \
-                echo "build-llama: attempt $tries failed; retrying in 30 s"; sleep 30; done'
-          cp -a Vendor/. .ci-vendor/
+      - <<: *vendor
 
       # ghcr.io forces the whole path lowercase: Ocean572/DigUp publishes as
       # ghcr.io/ocean572/digup-server. Derived from the repo owner so case never hard-codes.

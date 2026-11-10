@@ -12,7 +12,7 @@ import { controlCss } from "../styles/controls.js";
 const KINDS = [["screenshot", "Screenshots"], ["image", "Images"], ["pdf", "PDFs"],
                ["doc", "Documents"], ["video", "Video"], ["audio", "Audio"]];
 
-export class DigupSearch extends LitElement {
+class DigupSearch extends LitElement {
   static properties = {
     isCode: {},
     navigated: {},
