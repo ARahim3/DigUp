@@ -285,6 +285,28 @@ change, disclosed: `appkeys` + `roots-sum`; the key-grid prefix).
  unpack 2.3 s, **137 passed, 1 deselected, 0 skipped, 172.19 s** — the frontend-builder
  stage ran the unit gate (54/54) on the cleaned tree on its way in.
 
+**All-in-one compose example + operator README (2026-11-09, the user's asks):**
+`deploy/docker-compose.all-in-one.yml` merges the shipped chain
+(`docker-compose.nextcloud.yml` + `nvidia` + `lan` + `nextcloud.lan` + `app-targets`)
+into ONE file with the env names unchanged — Nextcloud + server (CUDA build target) +
+LAN binds on both web ports + a named app target + the `--profile dav` mount container.
+The header prints the launch chain and how to peel each layer (CPU-only = five named
+line deletions; loopback = two port lines; data vs WebDAV shape; no app target).
+`deploy/README.md` is the operator page the compose app needed: file map, every env var
+with its effect, the launch chains (example values), the measured operator rules
+(chown 990, ghost-row prune, single uvicorn, 503-warming honesty, 409 one-writer lock,
+143/137 stop semantics, GPU-is-measured honesty), and the API surface table with scopes,
+pointing at `server/docs/API.md` as the canonical contract (test-pinned; this page never
+restates schemas). Measured on this box: host schema checks for the all-in-one —
+full (`--profile nvidia --profile dav`), no-profile, dav-only — all OK; the resolved
+config carries `target: server-runtime-cuda`, the nvidia device reservation,
+`DIGUP_SERVER_APP_TARGETS app=/media/app:/data/index-app`, four port mappings
+(8787 loopback+LAN, 8081 loopback+LAN), the ro media bind + ro app bind + shared dav
+propagation. The exact CI line was run on the host (OK): the compose-schema step now
+validates the merged shape with the full synthetic env chain (15th shape; RFC 5737
+example addresses and `/srv/…` paths only). Privacy grep over the three files: zero
+personal hits; the app-repo URL reference follows the tracked-docs precedent.
+
 ## 2026-11-08 — Stage 13: named indexes + minted keys — one compose app, standalone AND serving applications
 
 The user's ask, built end to end: the compose server keeps running standalone over its own

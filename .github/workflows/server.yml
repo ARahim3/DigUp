@@ -279,6 +279,17 @@ jobs:
           DIGUP_NEXTCLOUD_INDEX_DIR=./data/nextcloud/index-dav \
           NEXTCLOUD_URL=http://nextcloud DAV_USERS="ci-alice ci-bob" DAV_APPPW="ci-alice:x ci-bob:y" \
           docker compose -f docker-compose.nextcloud.yml --profile dav config --quiet
+          # The all-in-one EXAMPLE (docker-compose.all-in-one.yml: Nextcloud + server +
+          # CUDA build + LAN binds + named app target + dav, one file): pinned in CI like
+          # every other shape, with the full env chain the example's header prints.
+          DIGUP_LAN_BIND=192.0.2.1 DIGUP_NEXTCLOUD_DATA=/srv/nextcloud/data DIGUP_NEXTCLOUD_ADMIN_USER=ci-admin \
+          DIGUP_NEXTCLOUD_ADMIN_PASSWORD=ci-secret DIGUP_NEXTCLOUD_INSTANCE_ID=octciexampleid \
+          DIGUP_NEXTCLOUD_READ_TOKEN=ci-read-token DIGUP_SERVER_ADMIN_TOKEN=ci-admin-token \
+          DIGUP_APP_TARGET_NAME=nextcloud DIGUP_APP_TARGET_HOST_DIR=/srv/app-data \
+          DIGUP_SERVER_ROOTS=/media/dav/ci-alice:/media/dav/ci-bob DIGUP_MEDIA_TARGET=/media/dav DIGUP_MEDIA_BIND=/media/dav \
+          DIGUP_MEDIA_BIND_OPTS=ro,rslave DAV_HOST_DIR=/media/dav \
+          NEXTCLOUD_URL=http://nextcloud DAV_USERS="ci-alice ci-bob" DAV_APPPW="ci-alice:x ci-bob:y" \
+          docker compose -f docker-compose.all-in-one.yml --profile nvidia --profile dav config --quiet
 
       - name: The server runtime image boots, answers, serves the UI, stops cleanly
         run: |
