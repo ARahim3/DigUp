@@ -1,0 +1,9 @@
+Incident: DEMO-4821
+Service: Atlas Demo
+Status: Resolved
+
+Atlas Demo requests were retrying too quickly after temporary failures.
+The Cedar team corrected the retry delay. The fix uses a two-second initial
+delay, doubles it after each retry, and caps the delay at 30 seconds.
+
+Cedar verified the fix before release.

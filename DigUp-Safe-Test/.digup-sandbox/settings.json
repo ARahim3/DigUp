@@ -1,0 +1,34 @@
+{
+  "folders": [
+    "C:\\Users\\SaadG\\Desktop\\Projects\\Digup_Data\\DigUp-Safe-Test\\code-sample",
+    "C:\\Users\\SaadG\\Desktop\\Projects\\Digup_Data\\DigUp-Safe-Test\\docs"
+  ],
+  "skipped": [],
+  "skipTypes": [],
+  "hotkey": "",
+  "setUp": true,
+  "centerPanel": false,
+  "indexHoursOn": false,
+  "indexHours": {
+    "start": 60,
+    "end": 420
+  },
+  "codeFolders": [],
+  "codeSkipped": [],
+  "codeEditor": "",
+  "deleteCodeIndex": false,
+  "window": {
+    "width": 1040.0,
+    "height": 700.0,
+    "x": 432,
+    "y": 150,
+    "maximized": false
+  },
+  "trayClick": "panel",
+  "updateChecksOff": false,
+  "processorOnly": true,
+  "updateChecked": 0,
+  "slmModel": "",
+  "loraAdapter": "",
+  "activeCagSlot": ""
+}

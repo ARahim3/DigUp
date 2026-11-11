@@ -42,6 +42,12 @@ pub struct Settings {
     pub processor_only: bool,
     /// When DigUp last checked for updates (seconds since 1970).
     pub update_checked: u64,
+    /// Selected local SLM profile ("default" = Qwen2.5-3B-Instruct Q4_K_M, "turbo" = Qwen2.5-1.5B-Instruct Q4_K_M, or custom path).
+    pub slm_model: String,
+    /// Optional path to a fine-tuned GGUF LoRA adapter (`digup-user-lora.gguf`) hot-loaded at runtime.
+    pub lora_adapter: String,
+    /// Currently active Cache-Augmented Generation (CAG) slot name.
+    pub active_cag_slot: String,
 }
 
 /// The window's size inside its frame (logical pixels), where it was (physical; Wayland doesn't tell), and whether it

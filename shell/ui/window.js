@@ -26,13 +26,14 @@ const COUNTED = { screenshot: ["screenshot", "screenshots"], image: ["image", "i
                   doc: ["document", "documents"], audio: ["audio file", "audio files"], video: ["video", "videos"],
                   code: ["code file", "code files"] };
 const SEARCH_ICON = '<svg viewBox="0 0 24 24"><circle cx="10" cy="10" r="6.5"/><path d="M15 15 L20.5 20.5"/></svg>';
+const AI_ICON = '<svg viewBox="0 0 24 24"><path d="M12 3 L14.2 8.8 L20 11 L14.2 13.2 L12 19 L9.8 13.2 L4 11 L9.8 8.8 Z"/><circle cx="19" cy="5" r="1.5"/></svg>';
 
 const $ = (id) => document.getElementById(id);
 const $query = $("query"), $content = $("content"), $side = $("side"), $kinds = $("kinds"), $menu = $("menu");
 
 const state = {
   query: "",
-  filter: null,         // a FILTERS key, "code", or null for everything
+  filter: null,         // a FILTERS key, "code", "ai", or null for everything
   text: "",             // what was searched (without "code:")
   ranked: [],           // the strong results, best first
   weaker: [],           // below half the best one's score: folded
@@ -51,6 +52,14 @@ const state = {
   info: { folders: [], hotkey: null, hasCode: false },
   app: {},              // indexing and the model, from the shell (status.rs): line, progress, caveat, counts
   indexed: null,        // files indexed of each kind (the home)
+  chatMessages: [],     // { question, answer, context, citations, cagSlot, savedSft, savedDpo }
+  chatBusy: false,
+  chatStreamingText: "",
+  cagActiveSlot: "default",
+  cagPinnedPaths: [],
+  cagSlots: [],
+  jsonlStats: { sftCount: 0, dpoCount: 0 },
+  hardwareProfile: null,
 };
 let debugPending = false;
 
@@ -58,6 +67,10 @@ let debugPending = false;
 
 function isCode() {
   return state.filter === "code" || /^code:/i.test(state.query.trim());
+}
+
+function isAi() {
+  return state.filter === "ai";
 }
 
 /// The query or the filter changed: after a short pause in typing, the search (and the same search of one kind, for a
@@ -68,6 +81,10 @@ function run() {
   clearTimeout(state.timer);
   state.navigated = false;
   state.error = null;
+  if (isAi()) {
+    render();
+    return;
+  }
   const typed = state.query.trim();
   const code = isCode();
   const text = /^code:/i.test(typed) ? typed.slice(5).trim() : typed;
@@ -155,14 +172,16 @@ function render() {
 
 function renderBar() {
   const code = isCode();
-  $("glass").innerHTML = code ? ICONS.code : SEARCH_ICON;
-  $query.placeholder = state.filter === "code" ? "Describe the code: “retry a request with backoff”, a name in it…"
+  const ai = isAi();
+  $("glass").innerHTML = ai ? AI_ICON : code ? ICONS.code : SEARCH_ICON;
+  $query.placeholder = ai ? "Ask your local AI (GraphRAG + CAG): press Enter to ask about your files & code…"
+    : state.filter === "code" ? "Describe the code: “retry a request with backoff”, a name in it…"
     : state.info.hasCode ? "Describe it: “zebra in a video”, “code: retry with backoff”…"
     : "Describe it: “receipt from the hardware store”, “zebra in a video”…";
   $kinds.replaceChildren();
-  $kinds.append(chip("All", null, null, state.filter === null && !code, () => setFilter(null), 1));
+  $kinds.append(chip("All", null, null, state.filter === null && !code && !ai, () => setFilter(null), 1));
   FILTERS.forEach((filter, index) => {
-    const selected = state.filter === filter.key && !code;
+    const selected = state.filter === filter.key && !code && !ai;
     $kinds.append(chip(filter.title, filter.icon, code ? null : state.counts[filter.key], selected,
                        () => setFilter(selected ? null : filter.key), index + 2));
   });
@@ -171,6 +190,17 @@ function renderBar() {
     $kinds.append(chip("Code", "code", code ? state.counts.code : null, code,
                        () => setFilter(state.filter === "code" ? null : "code"), 7));
   }
+  $kinds.append(element("span", "divider"));
+  const aiButton = element("button", "chip ai-chip" + (ai ? " selected" : ""));
+  aiButton.insertAdjacentHTML("beforeend", AI_ICON);
+  aiButton.append("Ask AI");
+  if (state.cagPinnedPaths.length) {
+    aiButton.append(element("span", "number", `${state.cagPinnedPaths.length} CAG`));
+  }
+  aiButton.title = `Ask Local SLM with GraphRAG + CAG (${MOD}8)`;
+  aiButton.setAttribute("aria-pressed", String(ai));
+  aiButton.onclick = () => setFilter(ai ? null : "ai");
+  $kinds.append(aiButton);
 }
 
 /// All · Screenshots 4 · Images 9 · …: what the query found of each kind; a click shows only that kind.
@@ -190,6 +220,7 @@ function renderContent() {
   $content.replaceChildren();
   $content.scrollTop = 0;
   if (!state.info.folders.length) $content.append(chooseFolders());
+  else if (isAi()) $content.append(chatPane());
   else if (!state.query.trim()) $content.append(home());
   else if (state.codePhase) $content.append(codeHintOrOff());
   else if (!state.hasResults) $content.append(centered(element("div", "spinner")));
@@ -856,9 +887,270 @@ function actions(hit) {
   openButton.onclick = () => open(hit);
   const revealButton = element("button", "", `Show in ${FILE_MANAGER}`);
   revealButton.onclick = () => reveal(hit);
-  box.append(openButton, revealButton);
+  const pinButton = element("button", "", state.cagPinnedPaths.includes(hit.path) ? "Pinned in CAG ✓" : "Pin to CAG");
+  pinButton.title = "Pin this file into the Cache-Augmented Generation (CAG) KV slot for instant zero-latency chat";
+  pinButton.onclick = async () => {
+    const next = state.cagPinnedPaths.includes(hit.path)
+      ? state.cagPinnedPaths.filter((p) => p !== hit.path)
+      : [...state.cagPinnedPaths, hit.path];
+    try {
+      const res = await invoke("cag_pin", { slot: state.cagActiveSlot || "default", paths: next });
+      state.cagPinnedPaths = res.pinnedPaths || next;
+      state.cagSlots = res.slots || [];
+      renderBar();
+      renderSide();
+    } catch (err) {
+      failed(err);
+    }
+  };
+  box.append(openButton, revealButton, pinButton);
   return box;
 }
+
+// MARK: Local SLM Chat + GraphRAG + CAG + JSONL Fine-Tuning Pipeline
+
+async function submitAiQuestion(questionText) {
+  const q = (questionText ?? state.query).trim();
+  if (!q || state.chatBusy) return;
+  state.chatBusy = true;
+  state.chatStreamingText = "";
+  const turn = {
+    question: q,
+    answer: "",
+    context: "",
+    citations: [],
+    cagSlot: state.cagActiveSlot,
+    savedSft: false,
+    savedDpo: false,
+    editing: false,
+    editedText: "",
+  };
+  state.chatMessages.push(turn);
+  $query.value = "";
+  state.query = "";
+  $("clear").hidden = true;
+  renderContent();
+
+  try {
+    const history = state.chatMessages.slice(0, -1).slice(-4).flatMap((m) => [
+      { role: "user", content: m.question },
+      { role: "assistant", content: m.editedText || m.answer },
+    ]);
+    const reply = await invoke("chat_ask", {
+      query: q,
+      code: state.info.hasCode,
+      cagSlot: state.cagActiveSlot || null,
+      history,
+    });
+    turn.answer = reply.answer || state.chatStreamingText || "(No response)";
+    turn.citations = reply.citations || [];
+    turn.context = reply.context || "";
+    if (reply.hardware) state.hardwareProfile = reply.hardware;
+  } catch (error) {
+    turn.answer = `Error querying local SLM: ${error}`;
+  } finally {
+    state.chatBusy = false;
+    state.chatStreamingText = "";
+    renderContent();
+  }
+}
+
+function chatPane() {
+  const wrap = element("div", "chat-pane");
+
+  // Header strip: Hardware Profile + Active CAG Slot + JSONL Fine-Tuning Dataset bar
+  const bar = element("div", "chat-header");
+  const hw = state.hardwareProfile;
+  const hwBadge = element(
+    "span",
+    "chat-badge",
+    hw
+      ? `SLM: ${hw.recommendedModel} · KV: ${hw.kvCacheQuant} · ${hw.recommendedSlmThreads}/${hw.logicalCores} CPU Cores`
+      : "SLM: Qwen2.5-3B-Instruct (Q4_K_M) · GraphRAG + CAG Ready"
+  );
+  const cagBadge = element(
+    "span",
+    "chat-badge cag",
+    state.cagPinnedPaths.length
+      ? `CAG Slot "${state.cagActiveSlot}": ${state.cagPinnedPaths.length} pinned file(s)`
+      : `CAG Slot "${state.cagActiveSlot}": Empty (Pin files from search preview)`
+  );
+  const dsInfo = element(
+    "span",
+    "chat-badge jsonl",
+    `Fine-Tune Dataset: ${state.jsonlStats.sftCount || 0} SFT · ${state.jsonlStats.dpoCount || 0} DPO`
+  );
+  const exportBtn = element("button", "chat-small-btn", "Export .jsonl");
+  exportBtn.onclick = () => invoke("export_jsonl_dataset", { dpo: false }).catch(failed);
+
+  bar.append(hwBadge, cagBadge, dsInfo, exportBtn);
+  wrap.append(bar);
+
+  if (state.cagPinnedPaths.length) {
+    const pinnedRow = element("div", "cag-pinned-bar");
+    pinnedRow.append(element("strong", "", "Pinned in CAG KV Cache: "));
+    for (const p of state.cagPinnedPaths) {
+      const chipEl = element("span", "cag-file-chip", nameOf(p));
+      chipEl.title = p;
+      pinnedRow.append(chipEl);
+    }
+    const clearCag = element("button", "chat-small-btn", "Clear CAG");
+    clearCag.onclick = async () => {
+      await invoke("cag_pin", { slot: state.cagActiveSlot || "default", paths: [] }).catch(() => {});
+      state.cagPinnedPaths = [];
+      renderBar();
+      renderContent();
+    };
+    pinnedRow.append(clearCag);
+    wrap.append(pinnedRow);
+  }
+
+  const feed = element("div", "chat-feed");
+  if (!state.chatMessages.length) {
+    const empty = element("div", "chat-empty");
+    empty.append(
+      element("h3", "", "Ask DigUp Local AI (Multi-Hop GraphRAG + CAG)"),
+      element(
+        "p",
+        "",
+        "Type a question in the top bar and press Enter. DigUp searches your multimodal files & code (Hop 0), expands cross-file symbols/IDs via SQLite GraphRAG (Hop 1), injects any CAG-pinned files, and lets you save or edit answers into sft_train.jsonl & dpo_train.jsonl to fine-tune the model on your system."
+      )
+    );
+    const starterRow = element("div", "examples");
+    for (const prompt of [
+      "Summarize the MICRO Lab Research Assistant Onboarding Agreement and Operations Manual",
+      "How does the exponential backoff retry policy work in retry_policy.py?",
+      "What happened in incident.txt and how does it relate to the release notes?",
+    ]) {
+      const btn = element("button", "example", prompt);
+      btn.onclick = () => submitAiQuestion(prompt);
+      starterRow.append(btn);
+    }
+    empty.append(starterRow);
+    feed.append(empty);
+  } else {
+    for (const turn of state.chatMessages) {
+      const card = element("div", "chat-turn");
+      const userRow = element("div", "chat-user", `Q: ${turn.question}`);
+      const aiRow = element("div", "chat-assistant");
+      const textDiv = element("div", "chat-answer-text");
+      textDiv.textContent = turn.editedText || turn.answer || (state.chatBusy ? state.chatStreamingText || "Searching GraphRAG & generating…" : "");
+      aiRow.append(textDiv);
+
+      // Citations (Hop 0 Direct + Hop 1 GraphRAG links)
+      if (turn.citations && turn.citations.length) {
+        const citeBox = element("div", "chat-citations");
+        for (const c of turn.citations) {
+          const btn = element(
+            "button",
+            "cite-chip" + (c.hop === 1 ? " hop1" : ""),
+            `[${c.index}] ${nameOf(c.path || "")}${c.hop === 1 ? " (GraphRAG 1-Hop)" : ""}`
+          );
+          btn.title = c.path || "";
+          btn.onclick = () => open({ path: c.path, kind: c.kind || "doc", loc: c.loc });
+          citeBox.append(btn);
+        }
+        aiRow.append(citeBox);
+      }
+
+      // Inline Edit box for DPO + SFT fine-tuning
+      if (turn.editing) {
+        const editorWrap = element("div", "chat-edit-box");
+        const textarea = element("textarea", "chat-edit-textarea");
+        textarea.rows = 4;
+        textarea.value = turn.editedText || turn.answer;
+        const saveEditBtn = element("button", "chat-small-btn primary", "Save Corrected Answer to SFT + DPO (.jsonl)");
+        saveEditBtn.onclick = async () => {
+          turn.editedText = textarea.value.trim();
+          turn.editing = false;
+          try {
+            const res = await invoke("log_jsonl_interaction", {
+              input: {
+                question: turn.question,
+                context: turn.context || null,
+                answer: turn.answer,
+                editedAnswer: turn.editedText,
+                citations: turn.citations || [],
+                cagSlot: turn.cagSlot || null,
+                includeContextInPrompt: true,
+              },
+            });
+            if (res.stats) state.jsonlStats = res.stats;
+            turn.savedSft = true;
+            turn.savedDpo = turn.editedText !== turn.answer;
+            renderContent();
+          } catch (err) {
+            failed(err);
+          }
+        };
+        const cancelEditBtn = element("button", "chat-small-btn", "Cancel");
+        cancelEditBtn.onclick = () => {
+          turn.editing = false;
+          renderContent();
+        };
+        editorWrap.append(textarea, saveEditBtn, cancelEditBtn);
+        aiRow.append(editorWrap);
+      }
+
+      // Fine-Tuning JSONL Action Bar
+      const tools = element("div", "chat-turn-tools");
+      const saveSftBtn = element(
+        "button",
+        "chat-small-btn" + (turn.savedSft ? " saved" : ""),
+        turn.savedSft
+          ? turn.savedDpo
+            ? "Saved to SFT + DPO (.jsonl) ✓"
+            : "Saved to sft_train.jsonl ✓"
+          : "Approve & Save to .jsonl (SFT)"
+      );
+      saveSftBtn.onclick = async () => {
+        try {
+          const res = await invoke("log_jsonl_interaction", {
+            input: {
+              question: turn.question,
+              context: turn.context || null,
+              answer: turn.answer,
+              editedAnswer: turn.editedText || null,
+              citations: turn.citations || [],
+              cagSlot: turn.cagSlot || null,
+              includeContextInPrompt: true,
+            },
+          });
+          if (res.stats) state.jsonlStats = res.stats;
+          turn.savedSft = true;
+          renderContent();
+        } catch (err) {
+          failed(err);
+        }
+      };
+
+      const editDpoBtn = element("button", "chat-small-btn", "Edit Answer for DPO Fine-Tuning");
+      editDpoBtn.onclick = () => {
+        turn.editing = !turn.editing;
+        renderContent();
+      };
+
+      tools.append(saveSftBtn, editDpoBtn);
+      aiRow.append(tools);
+      card.append(userRow, aiRow);
+      feed.append(card);
+    }
+  }
+  wrap.append(feed);
+  return wrap;
+}
+
+tauri.event.listen("chat-event", ({ payload }) => {
+  if (payload?.event === "token" && payload.text) {
+    state.chatStreamingText += payload.text;
+    const last = state.chatMessages[state.chatMessages.length - 1];
+    if (last && state.chatBusy) {
+      last.answer = state.chatStreamingText;
+      const nodes = $content.querySelectorAll(".chat-answer-text");
+      if (nodes.length) nodes[nodes.length - 1].textContent = state.chatStreamingText;
+    }
+  }
+});
 
 // MARK: The status bar
 
@@ -867,6 +1159,21 @@ function renderStatus() {
   $("status-line").textContent = app.line || "";
   const ring = $("ring");
   ring.hidden = app.progress == null;
+  invoke("cag_list")
+    .then((cag) => {
+      if (cag?.activeSlot) state.cagActiveSlot = cag.activeSlot;
+      state.cagSlots = cag?.slots || [];
+      const active = state.cagSlots.find((s) => s.slot === state.cagActiveSlot);
+      if (active?.pinnedPaths) state.cagPinnedPaths = active.pinnedPaths;
+      renderBar();
+    })
+    .catch(() => {});
+  invoke("jsonl_dataset_info")
+    .then((ds) => {
+      if (ds?.stats) state.jsonlStats = ds.stats;
+      if (ds?.hardware) state.hardwareProfile = ds.hardware;
+    })
+    .catch(() => {});
   if (app.progress != null) {
     const length = 2 * Math.PI * 4.6;
     ring.innerHTML = `<svg viewBox="0 0 12 12"><circle class="track" cx="6" cy="6" r="4.6"/><circle class="done" cx="6" `
@@ -1014,6 +1321,11 @@ document.addEventListener("keydown", (event) => {
       setFilter("code");
       return;
     }
+    if (number === 8) {
+      event.preventDefault();
+      setFilter(state.filter === "ai" ? null : "ai");
+      return;
+    }
     switch (event.key.toLowerCase()) {
       case ",":
         event.preventDefault();
@@ -1055,6 +1367,11 @@ document.addEventListener("keydown", (event) => {
       move(event.key === "ArrowRight" ? 1 : -1);
       return;
     case "Enter": {
+      if (isAi() && plain && state.query.trim()) {
+        event.preventDefault();
+        submitAiQuestion(state.query);
+        return;
+      }
       const hit = state.hasResults && state.query.trim() ? selectedHit() : null;
       if (!hit) return;
       if (modifier && !event.altKey && !event.shiftKey) reveal(hit);
