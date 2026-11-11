@@ -140,11 +140,37 @@
     </section>
 
     <section class="tab" id="storage" role="tabpanel" hidden>
-      <h3>Model</h3>
+      <h3>Embedding Model</h3>
       <div class="card facts">
         <div class="fact"><span>EmbeddingGemma 2</span><span>Google · Apache 2.0 · 865 MB</span></div>
         <div class="fact"><span>Status</span><span id="model-status"></span></div>
         <div class="fact"><span>Location</span><button class="path-button" id="model-path"></button></div>
+      </div>
+      <h3>Local SLM (Chat + CAG + GraphRAG) &amp; JSONL Fine-Tuning</h3>
+      <div class="card facts">
+        <div class="fact">
+          <span>Active SLM Profile</span>
+          <select id="slm-model-select">
+            <option value="default">Qwen2.5-3B-Instruct Q4_K_M (1.93 GB · Recommended for 12GB RAM)</option>
+            <option value="turbo">Qwen2.5-1.5B-Instruct Q4_K_M (1.12 GB · Turbo CPU Mode)</option>
+          </select>
+        </div>
+        <div class="fact">
+          <span>LoRA Adapter (.gguf)</span>
+          <input id="lora-adapter-path" type="text" placeholder="Optional path to digup-user-lora.gguf" spellcheck="false">
+        </div>
+        <div class="fact">
+          <span>Fine-Tuning Datasets</span>
+          <span id="jsonl-dataset-summary">0 SFT · 0 DPO examples</span>
+        </div>
+        <div class="fact">
+          <span>Actions</span>
+          <span>
+            <button class="link inline" id="download-slm-btn">Download SLM</button> ·
+            <button class="link inline" id="export-sft-btn">Export SFT (.jsonl)</button> ·
+            <button class="link inline" id="export-dpo-btn">Export DPO (.jsonl)</button>
+          </span>
+        </div>
       </div>
       <h3>Index</h3>
       <div class="card facts">

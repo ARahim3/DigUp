@@ -175,6 +175,31 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             guard let segment = (request["segment"] as? NSNumber)?.int64Value else { throw CLIError("which segment?") }
             let code = request["code"] as? Bool ?? false
             return ["text": try (code ? codeSearcher : searcher)?.text(ofSegment: segment) ?? NSNull()]
+        case "graph_context":
+            let text = request["q"] as? String ?? ""
+            let code = request["code"] as? Bool ?? false
+            let hops = request["hops"] as? Int ?? 1
+            let maxSeeds = request["max_seeds"] as? Int ?? 5
+            let maxNeighbors = request["max_neighbors"] as? Int ?? 4
+            let activeSearcher = code ? codeSearcher : searcher
+            guard let activeSearcher else { return ["pieces": []] }
+            let vector = text.isEmpty ? nil : self.vector(for: text, code: code)
+            let hits = try activeSearcher.search(text, queryVector: vector, limit: maxSeeds * 2)
+            let pieces = try activeSearcher.retrieveGraphContext(
+                query: text, seeds: hits, hops: hops, maxSeeds: maxSeeds, maxNeighbors: maxNeighbors
+            )
+            return [
+                "pieces": pieces.map { piece in
+                    var item: [String: Any] = [
+                        "path": piece.path, "kind": piece.kind, "segment_id": piece.segmentID,
+                        "hop": piece.hop, "text": piece.text,
+                    ]
+                    if let loc = piece.loc { item["loc"] = loc }
+                    if let locEnd = piece.locEnd { item["loc_end"] = locEnd }
+                    if let via = piece.linkedVia { item["linked_via"] = via }
+                    return item
+                }
+            ]
         case "reload":
             let hadVectors = searcher.vectorsLoaded
             searcher = try Searcher(store: store, loadVectors: hadVectors)

@@ -16,8 +16,15 @@ import Foundation
 func downloadModel(_ args: Arguments) throws -> Int32 {
     let folder = args.values["--to"].map(Arguments.folderURL) ?? ModelFiles.installed
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-    let missing = ModelFiles.missing(in: folder)
-    var done = ModelFiles.totalBytes - missing.reduce(0) { $0 + $1.bytes }
+    let targetFiles: [ModelFiles.File]
+    if args.flags.contains("--chat") {
+        targetFiles = [args.flags.contains("--turbo") ? ModelFiles.chatTurbo : ModelFiles.chatDefault]
+    } else {
+        targetFiles = ModelFiles.all
+    }
+    let totalBytes = targetFiles.reduce(0) { $0 + $1.bytes }
+    let missing = targetFiles.filter { !FileManager.default.fileExists(atPath: folder.appendingPathComponent($0.name).path) }
+    var done = totalBytes - missing.reduce(0) { $0 + $1.bytes }
     for file in missing {
         let final = folder.appendingPathComponent(file.name)
         if let cached = ModelFiles.cachedCopy(of: file), (try? ModelFiles.sha256(of: cached)) == file.sha256 {
@@ -32,7 +39,7 @@ func downloadModel(_ args: Arguments) throws -> Int32 {
         emit(["event": "file", "name": file.name, "bytes": file.bytes, "from": "download"])
         var failures = 0
         while true {
-            switch fetch(file, into: folder, before: done) {
+            switch fetch(file, into: folder, before: done, totalBytes: totalBytes) {
             case .downloaded(let partial):
                 emit(["event": "verifying", "name": file.name])
                 guard try ModelFiles.sha256(of: partial) == file.sha256 else {
@@ -67,12 +74,12 @@ func downloadModel(_ args: Arguments) throws -> Int32 {
 }
 
 /// One try at one file: blocks until `FileFetcher` is through with it.
-private func fetch(_ file: ModelFiles.File, into folder: URL, before done: Int64) -> FileFetcher.Outcome {
+private func fetch(_ file: ModelFiles.File, into folder: URL, before done: Int64, totalBytes: Int64) -> FileFetcher.Outcome {
     let finished = DispatchSemaphore(value: 0)
     let result = OutcomeBox()
     let fetcher = FileFetcher(file: file, folder: folder, progress: { written in
         emit(["event": "progress", "name": file.name, "bytes": written, "total": file.bytes,
-              "all_bytes": done + written, "all_total": ModelFiles.totalBytes])
+              "all_bytes": done + written, "all_total": totalBytes])
     }, waiting: {
         emit(["event": "waiting"])
     }, done: { outcome in

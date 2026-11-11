@@ -696,7 +696,7 @@ do {
         exit(0)
     }
     let args = try Arguments(raw.dropFirst())
-    if ["index-service", "worker", "search-service", "download-model"].contains(command)
+    if ["index-service", "worker", "search-service", "chat-service", "download-model"].contains(command)
         || command == "estimate" && args.flags.contains("--json") {
         ParentWatch.start()   // an app's helper goes when the app does
     }
@@ -729,6 +729,7 @@ do {
         #endif
     case "worker": exit(workerService(args))
     case "search-service": exit(try searchService(args))
+    case "chat-service": exit(try chatService(args))
     case "download-model": exit(try downloadModel(args))
     default:
         print(usage)

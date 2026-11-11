@@ -17,10 +17,22 @@ public enum ModelFiles {
         public let name: String
         public let bytes: Int64
         public let sha256: String
+        public let repository: String
+        public let revision: String
+
+        public init(name: String, bytes: Int64, sha256: String,
+                    repository: String = ModelFiles.repository,
+                    revision: String = ModelFiles.revision) {
+            self.name = name
+            self.bytes = bytes
+            self.sha256 = sha256
+            self.repository = repository
+            self.revision = revision
+        }
 
         /// Hugging Face's address for this file at the pinned revision (it redirects to a CDN that takes HTTP ranges).
         public var url: URL {
-            URL(string: "https://huggingface.co/\(ModelFiles.repository)/resolve/\(ModelFiles.revision)/\(name)")!
+            URL(string: "https://huggingface.co/\(repository)/resolve/\(revision)/\(name)")!
         }
     }
 
@@ -30,8 +42,28 @@ public enum ModelFiles {
     /// The image and audio encoders (555 MB).
     public static let media = File(name: "mmproj-embeddinggemma-2-Q8_0.gguf", bytes: 554_821_024,
                                    sha256: "c4a8a52691ecef40618438928bdf9e68379b854e24166f292592353db0aab64f")
+
+    /// Primary local generative SLM for 8-core / 12GB RAM PC: Qwen2.5-3B-Instruct Q4_K_M (~1.93 GB).
+    public static let chatDefault = File(
+        name: "qwen2.5-3b-instruct-q4_k_m.gguf",
+        bytes: 2_104_932_128,
+        sha256: "6cf6efbb4dc67880f9b8fb2f00ca2bf0209fa0d9ed99ab3a241ff3814820b270",
+        repository: "Qwen/Qwen2.5-3B-Instruct-GGUF",
+        revision: "main"
+    )
+
+    /// Ultra-fast fallback SLM for CPU-constrained multitasking: Qwen2.5-1.5B-Instruct Q4_K_M (~1.12 GB).
+    public static let chatTurbo = File(
+        name: "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+        bytes: 1_117_320_576,
+        sha256: "6ae5c20f9b4d05f46166fa4ca6838d16e54c57eb26ae3b4ca4b208f7da3bc60b",
+        repository: "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+        revision: "main"
+    )
+
     /// In download order.
     public static let all = [text, media]
+    public static let chatModels = [chatDefault, chatTurbo]
     public static let totalBytes = all.reduce(0) { $0 + $1.bytes }
 
     /// Where the app keeps them (`AppPaths`).

@@ -41,4 +41,39 @@ public struct LlamaModels: Sendable {
     public static var complete: Bool {
         (try? locate())?.media != nil
     }
+
+    /// Locates the local generative SLM GGUF model and optional LoRA adapter (.gguf) for `chat-service`.
+    public struct ChatModelPaths: Sendable {
+        public let model: URL
+        public let loraAdapter: URL?
+        public init(model: URL, loraAdapter: URL? = nil) {
+            self.model = model
+            self.loraAdapter = loraAdapter
+        }
+    }
+
+    public static func locateChat(customModel: String? = nil, customLora: String? = nil) throws -> ChatModelPaths {
+        let env = ProcessInfo.processInfo.environment
+        let loraURL: URL? = (customLora ?? env["DIGUP_LORA_ADAPTER"]).flatMap { path in
+            guard !path.isEmpty, FileManager.default.fileExists(atPath: path) else { return nil }
+            return URL(fileURLWithPath: path)
+        }
+        if let chosen = customModel ?? env["DIGUP_CHAT_MODEL"], !chosen.isEmpty {
+            let url = URL(fileURLWithPath: chosen)
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                throw WorkerError.notFound("chat model not found at \(url.path)")
+            }
+            return ChatModelPaths(model: url, loraAdapter: loraURL)
+        }
+        for folder in folders {
+            for candidate in [ModelFiles.chatDefault.name, ModelFiles.chatTurbo.name] {
+                let path = folder.appendingPathComponent(candidate)
+                if FileManager.default.fileExists(atPath: path.path) {
+                    return ChatModelPaths(model: path, loraAdapter: loraURL)
+                }
+            }
+        }
+        throw WorkerError.notFound("no chat GGUF model found in " + folders.map(\.path).joined(separator: ", ")
+            + "; download \(ModelFiles.chatDefault.name) via Settings or `digup download-model --chat`")
+    }
 }

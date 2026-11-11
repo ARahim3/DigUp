@@ -7,6 +7,7 @@
 
 mod clipboard;
 mod code;
+mod dataset;
 mod editors;
 mod helper;
 mod hotkey;
@@ -14,6 +15,7 @@ mod hours;
 mod launch;
 mod moments;
 mod options;
+mod rag_engine;
 mod settings;
 mod status;
 mod tray_icon;
@@ -60,6 +62,7 @@ struct Shell {
     /// The panel's window now: PANEL, or CENTERED_PANEL when it fills the screen.
     panel_label: Mutex<&'static str>,
     search: SearchService,
+    chat: SearchService,
     index: IndexService,
     model: ModelDownload,
     /// The model for the setup window and the tray: {"state": "checking|downloading|waiting|ready|failed", …}.
@@ -98,6 +101,8 @@ struct Shell {
     /// The speed check is running (`measure_then_index`): indexing waits for it, so that the two don't share the
     /// processor.
     measuring: AtomicBool,
+    /// Local SLM inference (`chat-service`) is actively generating tokens: background indexing yields CPU & RAM.
+    chat_generating: AtomicBool,
     /// The model download was run once more after it ended without a final word (model_event).
     model_rerun: AtomicBool,
     /// Folder estimates running (setup's list): the speed check waits for them, for the same reason.
@@ -259,10 +264,281 @@ fn folder_arguments(settings: &Settings, code_folders: &[String]) -> Vec<String>
 #[tauri::command]
 async fn ask(shell: State<'_, Arc<Shell>>, request: Value) -> Result<Value, String> {
     let op = request.get("op").and_then(Value::as_str).unwrap_or_default();
-    if !["search", "embed_ahead", "text", "render", "prewarm", "status", "summaries"].contains(&op) {
+    if !["search", "embed_ahead", "text", "render", "prewarm", "status", "summaries", "graph_context", "lines"].contains(&op) {
         return Err(format!("not a question the panel asks: {op}"));
     }
-    shell.search.ask(request).await
+    if shell.options.helper.is_file() {
+        if let Ok(reply) = shell.search.ask(request.clone()).await {
+            return Ok(reply);
+        }
+    }
+    let (skipped, skip_types) = {
+        let settings = shell.settings.lock().unwrap();
+        (settings.skipped.clone(), settings.skip_types.clone())
+    };
+    Ok(rag_engine::local_search_op(
+        &request,
+        &shell.folders(),
+        &shell.code_folders(),
+        &skipped,
+        &skip_types,
+    ))
+}
+
+fn data_base_dir(shell: &Shell) -> PathBuf {
+    shell.options.index_folder().unwrap_or_else(|| shell.logs.clone())
+}
+
+/// Interactive Local SLM + Multi-Hop GraphRAG + CAG chat command.
+/// Automatically yields background indexing while the SLM generates on the 8-core CPU / 12GB RAM budget.
+#[tauri::command]
+async fn chat_ask(
+    app: AppHandle,
+    shell: State<'_, Arc<Shell>>,
+    query: String,
+    code: bool,
+    cag_slot: Option<String>,
+    history: Vec<Value>,
+) -> Result<Value, String> {
+    let trimmed = query.trim().to_string();
+    if trimmed.is_empty() {
+        return Err("Question cannot be empty".into());
+    }
+
+    // Pause background indexing while SLM inference is active so CPU threads and RAM stay within budget.
+    shell.chat_generating.store(true, Ordering::SeqCst);
+    shell.index.stop();
+
+    let base_dir = data_base_dir(&shell);
+    let active_slot = cag_slot
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            let s = shell.settings.lock().unwrap().active_cag_slot.clone();
+            (!s.is_empty()).then_some(s)
+        });
+    let cag_meta = active_slot.as_deref().and_then(|slot| rag_engine::load_cag_slot(&base_dir, slot));
+
+    // Try native `digup chat-service` first (streams tokens via `chat` event when Qwen2.5 GGUF is downloaded).
+    if shell.options.helper.is_file() {
+        let chat_req = json!({
+            "op": "ask",
+            "q": trimmed,
+            "code": code,
+            "cag_slot": active_slot,
+            "history": history,
+        });
+        if let Ok(reply) = shell.chat.ask(chat_req).await {
+            shell.chat_generating.store(false, Ordering::SeqCst);
+            later(&app, run_index);
+            return Ok(reply);
+        }
+    }
+
+    let (skipped, skip_types) = {
+        let settings = shell.settings.lock().unwrap();
+        (settings.skipped.clone(), settings.skip_types.clone())
+    };
+
+    // Fallback: perform Multi-Hop GraphRAG over `search-service` (or native Rust local search) + CAG slot injection.
+    let hop0_req = json!({"op": "search", "q": trimmed, "code": code, "meaning": true, "limit": 8});
+    let hop0_reply = if shell.options.helper.is_file() {
+        shell.search.ask(hop0_req.clone()).await.unwrap_or_else(|_| {
+            rag_engine::local_search_op(&hop0_req, &shell.folders(), &shell.code_folders(), &skipped, &skip_types)
+        })
+    } else {
+        rag_engine::local_search_op(&hop0_req, &shell.folders(), &shell.code_folders(), &skipped, &skip_types)
+    };
+    let hits = hop0_reply["hits"].as_array().cloned().unwrap_or_default();
+    let hop0_excerpts: Vec<String> = hits
+        .iter()
+        .take(5)
+        .filter_map(|h| h["excerpt"].as_str().map(String::from))
+        .collect();
+
+    let mut hop1_hits = Vec::new();
+    if let Some(expansion_q) = rag_engine::build_hop2_expansion_query(&trimmed, &hop0_excerpts) {
+        let hop1_req = json!({"op": "search", "q": expansion_q, "code": code, "meaning": true, "limit": 4});
+        let hop1_reply = if shell.options.helper.is_file() {
+            shell.search.ask(hop1_req.clone()).await.unwrap_or_else(|_| {
+                rag_engine::local_search_op(&hop1_req, &shell.folders(), &shell.code_folders(), &skipped, &skip_types)
+            })
+        } else {
+            rag_engine::local_search_op(&hop1_req, &shell.folders(), &shell.code_folders(), &skipped, &skip_types)
+        };
+        if let Some(arr) = hop1_reply["hits"].as_array() {
+            hop1_hits = arr.clone();
+        }
+    }
+
+    let (fallback_answer, citations) =
+        rag_engine::synthesize_grounded_fallback(&trimmed, &hits, &hop1_hits, cag_meta.as_ref());
+
+    let mut context_lines = Vec::new();
+    if let Some(ref cag) = cag_meta {
+        if !cag.cached_text.is_empty() {
+            context_lines.push(format!("[CAG Slot: {}]\n{}", cag.slot, cag.cached_text));
+        }
+    }
+    for c in &citations {
+        context_lines.push(format!(
+            "[{}] {} ({}):\n{}",
+            c["index"],
+            c["path"].as_str().unwrap_or_default(),
+            c["kind"].as_str().unwrap_or_default(),
+            c["excerpt"]
+                .as_str()
+                .unwrap_or_default()
+                .replace('«', "")
+                .replace('»', "")
+        ));
+    }
+    let assembled_context = context_lines.join("\n\n");
+
+    // If a local OpenAI-compatible SLM server (`llama-server` on :8080/:8081 or `ollama` on :11434) is running,
+    // generate a true synthesized answer grounded in `assembled_context`.
+    let system_prompt = dataset::SYSTEM_PROMPT;
+    let user_prompt = format!(
+        "### Retrieved Multimodal & GraphRAG Context:\n{}\n\n### User Question:\n{}\n\nProvide a clear, thorough, and well-structured answer grounded strictly in the retrieved context above, citing sources as [1], [2], etc.",
+        assembled_context, trimmed
+    );
+    let history_clone = history.clone();
+    let slm_reply = tauri::async_runtime::spawn_blocking(move || {
+        rag_engine::try_local_http_slm(system_prompt, &user_prompt, &history_clone)
+    })
+    .await
+    .ok()
+    .flatten();
+
+    let mut hw = rag_engine::HardwareProfile::detect();
+    let answer = if let Some((generated, model_label)) = slm_reply {
+        hw.recommended_model = model_label;
+        generated
+    } else {
+        fallback_answer
+    };
+
+    shell.chat_generating.store(false, Ordering::SeqCst);
+    later(&app, run_index);
+
+    Ok(json!({
+        "ok": true,
+        "answer": answer,
+        "citations": citations,
+        "context": assembled_context,
+        "cagSlot": active_slot,
+        "hardware": hw,
+    }))
+}
+
+#[tauri::command]
+fn cag_pin(shell: State<'_, Arc<Shell>>, slot: String, paths: Vec<String>) -> Result<Value, String> {
+    let base_dir = data_base_dir(&shell);
+    let meta = rag_engine::save_cag_slot(&base_dir, &slot, &paths)?;
+    {
+        let mut settings = shell.settings.lock().unwrap();
+        settings.active_cag_slot = meta.slot.clone();
+        let _ = settings.save(&shell.settings_path);
+    }
+    let chat = shell.inner().clone();
+    let slot_clone = meta.slot.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = chat.chat.ask(json!({"op": "cag_pin", "slot": slot_clone, "paths": paths})).await;
+    });
+    Ok(json!({
+        "slot": meta.slot,
+        "pinnedPaths": meta.pinned_paths,
+        "approxTokens": meta.approx_tokens,
+        "slots": rag_engine::list_cag_slots(&base_dir),
+    }))
+}
+
+#[tauri::command]
+fn cag_list(shell: State<'_, Arc<Shell>>) -> Value {
+    let base_dir = data_base_dir(&shell);
+    let active = shell.settings.lock().unwrap().active_cag_slot.clone();
+    json!({
+        "activeSlot": active,
+        "slots": rag_engine::list_cag_slots(&base_dir),
+    })
+}
+
+#[tauri::command]
+fn cag_set_active(shell: State<'_, Arc<Shell>>, slot: String) -> Result<Value, String> {
+    {
+        let mut settings = shell.settings.lock().unwrap();
+        settings.active_cag_slot = slot.trim().to_string();
+        settings.save(&shell.settings_path).map_err(|e| format!("can't save settings: {e}"))?;
+    }
+    Ok(cag_list(shell))
+}
+
+#[tauri::command]
+fn log_jsonl_interaction(shell: State<'_, Arc<Shell>>, input: dataset::SftRecordInput) -> Result<Value, String> {
+    let base_dir = data_base_dir(&shell);
+    let stats = dataset::log_interaction(&base_dir, &input)?;
+    Ok(json!({
+        "stats": stats,
+        "recent": dataset::recent_entries(&base_dir, 5),
+    }))
+}
+
+#[tauri::command]
+fn jsonl_dataset_info(shell: State<'_, Arc<Shell>>) -> Result<Value, String> {
+    let base_dir = data_base_dir(&shell);
+    let stats = dataset::stats(&base_dir)?;
+    let settings = shell.settings.lock().unwrap().clone();
+    Ok(json!({
+        "stats": stats,
+        "recent": dataset::recent_entries(&base_dir, 5),
+        "hardware": rag_engine::HardwareProfile::detect(),
+        "slmModel": if settings.slm_model.is_empty() { "default" } else { &settings.slm_model },
+        "loraAdapter": settings.lora_adapter,
+    }))
+}
+
+#[tauri::command]
+async fn export_jsonl_dataset(app: AppHandle, shell: State<'_, Arc<Shell>>, dpo: bool) -> Result<Option<String>, String> {
+    let base_dir = data_base_dir(&shell);
+    let default_name = if dpo { dataset::DPO_FILE } else { dataset::SFT_FILE };
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("Export Fine-Tuning JSONL Dataset")
+        .set_file_name(default_name)
+        .save_file(move |picked| {
+            let _ = sender.send(picked);
+        });
+    let Some(picked) = receiver.await.ok().flatten() else {
+        return Ok(None);
+    };
+    let dest = picked.into_path().map_err(|e| e.to_string())?;
+    let saved = dataset::export_dataset(&base_dir, &dest, dpo)?;
+    Ok(Some(saved))
+}
+
+#[tauri::command]
+fn set_slm_config(shell: State<'_, Arc<Shell>>, slm_model: String, lora_adapter: String) -> Result<Value, String> {
+    {
+        let mut settings = shell.settings.lock().unwrap();
+        settings.slm_model = slm_model.trim().to_string();
+        settings.lora_adapter = lora_adapter.trim().to_string();
+        settings.save(&shell.settings_path).map_err(|e| format!("can't save settings: {e}"))?;
+    }
+    shell.chat.stop();
+    jsonl_dataset_info(shell)
+}
+
+#[tauri::command]
+fn download_chat_model(shell: State<'_, Arc<Shell>>, turbo: bool) -> Result<(), String> {
+    let mut args = vec!["download-model".to_string(), "--chat".to_string()];
+    if turbo {
+        args.push("--turbo".to_string());
+    }
+    if let Some(models) = &shell.options.models {
+        args.extend(["--to".to_string(), models.display().to_string()]);
+    }
+    let launch = shell.launch(args, "model.log");
+    shell.model.run(&launch)
 }
 
 /// What indexing these folders would take, one answer per folder (`digup estimate --json`): files by kind, the first
@@ -270,6 +546,18 @@ async fn ask(shell: State<'_, Arc<Shell>>, request: Value) -> Result<Value, Stri
 #[tauri::command]
 async fn estimate(shell: State<'_, Arc<Shell>>, folders: Vec<String>, code: Option<bool>) -> Result<Vec<Value>, String> {
     let helper = shell.options.helper.clone();
+    if !helper.is_file() {
+        let (skipped, skip_types) = {
+            let settings = shell.settings.lock().unwrap();
+            (settings.skipped.clone(), settings.skip_types.clone())
+        };
+        return Ok(rag_engine::local_estimate_folders(
+            &folders,
+            &skipped,
+            &skip_types,
+            code == Some(true),
+        ));
+    }
     // Code folders: what the code index would read in them (its time and size, repository by repository).
     let code = if code == Some(true) { vec!["--code".to_string()] } else { Vec::new() };
     // The index's costs.json: what indexing costs on this computer, once it has indexed enough.
@@ -653,7 +941,9 @@ fn main() {
             app_state, open_window, open_settings, choose_folders, index_now, quit_app, close_window, pause_indexing,
             remove_folder, set_skipped, set_skip_types, set_index_hours, code_setup_info, set_code_folders, choose_code_folders,
             remove_code_folder, turn_off_code, set_code_editor, window_resized, copy_file, drag_out, set_hotkey, hold_hotkey,
-            set_tray_click, check_for_updates, offer_update, set_update_checks, open_licenses
+            set_tray_click, check_for_updates, offer_update, set_update_checks, open_licenses,
+            chat_ask, cag_pin, cag_list, cag_set_active, log_jsonl_interaction, jsonl_dataset_info, export_jsonl_dataset,
+            set_slm_config, download_chat_model
         ])
         .build(tauri::generate_context!())
         .expect("DigUp couldn't start");
@@ -693,6 +983,33 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
     } else {
         options.code_roots.iter().map(|root| root.display().to_string()).collect()
     };
+    let mut chat_args = vec!["chat-service".to_string()];
+    chat_args.extend(options.index.iter().flat_map(|index| ["--index".to_string(), index.display().to_string()]));
+    if settings.slm_model == "turbo" {
+        chat_args.push("--turbo".to_string());
+    } else if !settings.slm_model.is_empty() && settings.slm_model != "default" {
+        chat_args.extend(["--model".to_string(), settings.slm_model.clone()]);
+    }
+    if !settings.lora_adapter.is_empty() {
+        chat_args.extend(["--lora".to_string(), settings.lora_adapter.clone()]);
+    }
+    chat_args.extend(folder_arguments(&settings, &code_folders));
+    chat_args.extend(roots.clone());
+    let chat = SearchService::new(
+        Launch {
+            program: options.helper.clone(),
+            args: chat_args,
+            env: options.models.iter().map(|models| ("DIGUP_MODELS".to_string(), models.display().to_string())).collect(),
+            log: Some(logs.join("chat.log")),
+            background: false,
+        },
+        {
+            let app = handle.clone();
+            move |event| {
+                let _ = app.emit("chat-event", event);
+            }
+        },
+    );
     let mut search_args = vec!["search-service".to_string()];
     search_args.extend(options.index.iter().flat_map(|index| ["--index".to_string(), index.display().to_string()]));
     search_args.extend(folder_arguments(&settings, &code_folders));
@@ -733,6 +1050,7 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         wayland: wayland::active(),
         panel_label: Mutex::new(PANEL),
         search,
+        chat,
         index,
         model,
         model_state: Mutex::new(json!({"state": "checking"})),
@@ -754,6 +1072,7 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
         debug_query_sent: AtomicBool::new(false),
         quitting: AtomicBool::new(false),
         measuring: AtomicBool::new(false),
+        chat_generating: AtomicBool::new(false),
         model_rerun: AtomicBool::new(false),
         estimating: AtomicUsize::new(0),
         prune: AtomicBool::new(false),
@@ -794,26 +1113,31 @@ fn setup(app: &mut tauri::App, options: Options) -> Result<(), Box<dyn std::erro
 
     // The search service starts now (the first search is then quick); the model is checked (and fetched if it's
     // missing: on first launch that runs while setup is open, as on the Mac); indexing waits for both.
-    let warm = shell.clone();
-    let counted = handle.clone();
-    tauri::async_runtime::spawn(async move {
-        if let Ok(reply) = warm.search.ask(json!({"op": "status"})).await {
-            // What's indexed already, before any index helper says (none runs while indexing is held or paused).
-            {
-                let mut status = warm.status.lock().unwrap();
-                if status.files == 0 && reply["files"].is_u64() {
-                    status.apply(&json!({"event": "counts", "files": reply["files"], "searchable": reply["searchable"],
-                                         "pending": reply["pending"], "unfinished": reply["unfinished"]}));
-                    if status.activity == status::Activity::Starting && (status.paused || status.held_until.is_some()) {
-                        status.activity = status::Activity::Idle;
+    if shell.options.helper.is_file() {
+        let warm = shell.clone();
+        let counted = handle.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Ok(reply) = warm.search.ask(json!({"op": "status"})).await {
+                // What's indexed already, before any index helper says (none runs while indexing is held or paused).
+                {
+                    let mut status = warm.status.lock().unwrap();
+                    if status.files == 0 && reply["files"].is_u64() {
+                        status.apply(&json!({"event": "counts", "files": reply["files"], "searchable": reply["searchable"],
+                                             "pending": reply["pending"], "unfinished": reply["unfinished"]}));
+                        if status.activity == status::Activity::Starting && (status.paused || status.held_until.is_some()) {
+                            status.activity = status::Activity::Idle;
+                        }
                     }
                 }
+                changed(&counted);
             }
-            changed(&counted);
+        });
+        if let Err(error) = shell.model.run(&shell.download_launch()) {
+            model_event(&handle, json!({"event": "error", "message": error}));
         }
-    });
-    if let Err(error) = shell.model.run(&shell.download_launch()) {
-        model_event(&handle, json!({"event": "error", "message": error}));
+    } else {
+        *shell.model_state.lock().unwrap() = json!({"state": "ready"});
+        refresh_local_index_counts(&handle);
     }
     if !shell.folders().is_empty() || !shell.code_folders().is_empty() {
         watch_folders(&handle);
@@ -855,11 +1179,16 @@ fn apply_folders(app: &AppHandle) {
     for folder in &folders {
         let _ = app.asset_protocol_scope().allow_directory(folder, true);
     }
-    let request = folders_request(&shell);
-    let search = shell.clone();
-    tauri::async_runtime::spawn(async move {
-        let _ = search.search.ask(request).await;
-    });
+    for folder in shell.code_folders() {
+        let _ = app.asset_protocol_scope().allow_directory(&folder, true);
+    }
+    if shell.options.helper.is_file() {
+        let request = folders_request(&shell);
+        let search = shell.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = search.search.ask(request).await;
+        });
+    }
     watch_folders(app);
 }
 
@@ -901,16 +1230,46 @@ fn may_index(shell: &Shell) -> bool {
     // Removing the last folder still needs a helper to prune the index, even without a model.
     (shell.prune.load(Ordering::SeqCst)
         || ((!shell.folders().is_empty() || !shell.code_folders().is_empty()) && shell.model_ready()))
-        && !shell.measuring.load(Ordering::SeqCst) && !shell.quitting.load(Ordering::SeqCst) && {
+        && !shell.measuring.load(Ordering::SeqCst)
+        && !shell.chat_generating.load(Ordering::SeqCst)
+        && !shell.quitting.load(Ordering::SeqCst) && {
             let status = shell.status.lock().unwrap();
             !status.paused && status.held_until.is_none()
         }
+}
+
+fn refresh_local_index_counts(app: &AppHandle) {
+    let shell = app.state::<Arc<Shell>>();
+    let (skipped, skip_types) = {
+        let settings = shell.settings.lock().unwrap();
+        (settings.skipped.clone(), settings.skip_types.clone())
+    };
+    let mut all_roots = shell.folders();
+    for cf in shell.code_folders() {
+        if !all_roots.iter().any(|r| r.eq_ignore_ascii_case(&cf)) {
+            all_roots.push(cf);
+        }
+    }
+    let count = rag_engine::walk_local_folders(&all_roots, &skipped, &skip_types).len() as u64;
+    {
+        let mut status = shell.status.lock().unwrap();
+        status.files = count;
+        status.searchable = count;
+        status.pending = 0;
+        status.unfinished = 0;
+        status.activity = status::Activity::Idle;
+    }
+    changed(app);
 }
 
 /// Has the index helper sync and index.
 fn run_index(app: &AppHandle) {
     let shell = app.state::<Arc<Shell>>();
     if !may_index(&shell) {
+        return;
+    }
+    if !shell.options.helper.is_file() {
+        refresh_local_index_counts(app);
         return;
     }
     if let Err(error) = shell.index.run(&shell.index_launch()) {
@@ -922,6 +1281,10 @@ fn run_index(app: &AppHandle) {
 fn sync_code(app: &AppHandle) {
     let shell = app.state::<Arc<Shell>>();
     if !may_index(&shell) {
+        return;
+    }
+    if !shell.options.helper.is_file() {
+        refresh_local_index_counts(app);
         return;
     }
     if let Err(error) = shell.index.sync_code(&shell.index_launch()) {
@@ -957,6 +1320,7 @@ fn stop_helpers(app: &AppHandle) {
     let shell = app.state::<Arc<Shell>>();
     shell.model.stop();
     shell.index.stop();
+    shell.chat.stop();
     shell.search.stop();
 }
 
