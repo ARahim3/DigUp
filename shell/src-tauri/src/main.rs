@@ -262,7 +262,7 @@ fn folder_arguments(settings: &Settings, code_folders: &[String]) -> Vec<String>
 
 /// The panel's and the window's questions for `search-service`.
 #[tauri::command]
-async fn ask(shell: State<'_, Arc<Shell>>, request: Value) -> Result<Value, String> {
+async fn ask(app: AppHandle, shell: State<'_, Arc<Shell>>, request: Value) -> Result<Value, String> {
     let op = request.get("op").and_then(Value::as_str).unwrap_or_default();
     if !["search", "embed_ahead", "text", "render", "prewarm", "status", "summaries", "graph_context", "lines"].contains(&op) {
         return Err(format!("not a question the panel asks: {op}"));
@@ -272,17 +272,28 @@ async fn ask(shell: State<'_, Arc<Shell>>, request: Value) -> Result<Value, Stri
             return Ok(reply);
         }
     }
+    let folders = shell.folders();
+    let code_folders = shell.code_folders();
     let (skipped, skip_types) = {
         let settings = shell.settings.lock().unwrap();
         (settings.skipped.clone(), settings.skip_types.clone())
     };
-    Ok(rag_engine::local_search_op(
-        &request,
-        &shell.folders(),
-        &shell.code_folders(),
-        &skipped,
-        &skip_types,
-    ))
+    let req_clone = request.clone();
+    let app_clone = app.clone();
+    tokio::task::spawn_blocking(move || {
+        rag_engine::local_search_op_with_progress(
+            &req_clone,
+            &folders,
+            &code_folders,
+            &skipped,
+            &skip_types,
+            |progress_ev| {
+                let _ = app_clone.emit("search-progress", progress_ev);
+            },
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 fn data_base_dir(shell: &Shell) -> PathBuf {

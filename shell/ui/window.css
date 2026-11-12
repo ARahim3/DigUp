@@ -157,6 +157,66 @@ svg { display: block; }
 .chip.selected { background: var(--accent); color: white; }
 .kinds .divider { width: 1px; height: 16px; margin: 0 4px; background: var(--line); }
 
+/* Search progress bar and telemetry pills */
+
+.search-telemetry {
+  margin-top: 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--fill);
+  border: 1px solid var(--line);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.telemetry-progress-track {
+  width: 100%;
+  height: 4px;
+  border-radius: 99px;
+  background: var(--fill-strong);
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+
+.telemetry-progress-fill {
+  height: 100%;
+  border-radius: 99px;
+  background: linear-gradient(90deg, var(--accent), var(--ember));
+  transition: width 100ms ease-out;
+}
+
+.telemetry-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.telemetry-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--secondary);
+  white-space: nowrap;
+}
+
+.telemetry-pill b {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.telemetry-file {
+  color: var(--tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 240px;
+}
+
 /* Results and the preview beside them */
 
 .split { flex: 1; min-height: 0; display: flex; border-top: 1px solid var(--line); }

@@ -14,7 +14,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -1402,11 +1402,27 @@ fn extract_all_pdf_headings(file: &mut File, size: u64) -> Vec<String> {
 
 static BOOK_DIGEST_CACHE: OnceLock<Mutex<HashMap<(String, u64), BookDigest>>> = OnceLock::new();
 
+fn digest_disk_cache_path(path_str: &str, fingerprint: u64) -> PathBuf {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in path_str.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    let dir = std::env::temp_dir().join("digup_book_digest_cache_v2");
+    let _ = fs::create_dir_all(&dir);
+    dir.join(format!("{h:016x}_{fingerprint:016x}.json"))
+}
+
 /// Fast 3-zone bounded-I/O book & PDF skimmer (`< 15 ms` per book regardless of whether the file is 5 MB or 200 MB):
 /// - **Head Zone (first 256 KB):** Captures PDF `/Title`, `/Author`, `/Keywords`, title page, and Table of Contents.
 /// - **Stride Zone (8 evenly-spaced 32 KB seeks):** Captures chapter headings, running headers, and core terminology.
 /// - **Tail Zone (last 128 KB):** Captures the back-of-book subject index, bibliography, and trailer/XMP dictionary.
 pub fn extract_fast_book_digest(path: &Path, file_size: u64) -> Option<BookDigest> {
+    extract_fast_book_digest_with_status(path, file_size).map(|(digest, _)| digest)
+}
+
+/// Extracts or loads a `BookDigest`, returning `(digest, was_cached)` so search telemetry can report cache hits.
+pub fn extract_fast_book_digest_with_status(path: &Path, file_size: u64) -> Option<(BookDigest, bool)> {
     let mut file = File::open(path).ok()?;
     let meta = file.metadata().ok();
     let size = if file_size > 0 {
@@ -1423,11 +1439,29 @@ pub fn extract_fast_book_digest(path: &Path, file_size: u64) -> Option<BookDiges
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_secs())
         .unwrap_or(size);
-    let cache_key = (path.to_string_lossy().to_string(), mtime_secs ^ size);
+    let fingerprint = mtime_secs ^ size;
+    let path_str = path.to_string_lossy().to_string();
+    let cache_key = (path_str.clone(), fingerprint);
     let cache = BOOK_DIGEST_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     if let Ok(guard) = cache.lock() {
         if let Some(cached) = guard.get(&cache_key) {
-            return Some(cached.clone());
+            return Some((cached.clone(), true));
+        }
+    }
+
+    // Check persistent on-disk digest cache (eliminates 50+ MB PDF decompression on cold app restarts)
+    // Only use persistent disk cache for files >= 1 MB or real library PDFs so synthetic temp tests remain isolated.
+    let disk_cache_file = digest_disk_cache_path(&path_str, fingerprint);
+    if size >= 2 * 1024 * 1024 && disk_cache_file.is_file() {
+        if let Ok(raw_json) = fs::read_to_string(&disk_cache_file) {
+            if let Ok(cached_digest) = serde_json::from_str::<BookDigest>(&raw_json) {
+                if !cached_digest.searchable_text.is_empty() {
+                    if let Ok(mut guard) = cache.lock() {
+                        guard.insert(cache_key, cached_digest.clone());
+                    }
+                    return Some((cached_digest, true));
+                }
+            }
         }
     }
 
@@ -1462,7 +1496,7 @@ pub fn extract_fast_book_digest(path: &Path, file_size: u64) -> Option<BookDiges
         .or_else(|| extract_pdf_meta_field(&tail_buf, b"/Author", "dc:creator"))
         .unwrap_or_default();
     let keywords = extract_pdf_meta_field(&head_buf, b"/Keywords", "pdf:Keywords")
-        .or_else(|| extract_pdf_meta_field(&tail_buf, b"/Keywords", "pdf:Keywords"))
+        .or_else(|| extract_pdf_meta_field(&tail_buf, b"/Keywords", "dc:description"))
         .or_else(|| extract_pdf_meta_field(&head_buf, b"/Subject", "dc:description"))
         .unwrap_or_default();
 
@@ -1544,10 +1578,15 @@ pub fn extract_fast_book_digest(path: &Path, file_size: u64) -> Option<BookDiges
         keywords,
         searchable_text: sections_text,
     };
+    if size >= 2 * 1024 * 1024 {
+        if let Ok(serialized) = serde_json::to_string(&digest) {
+            let _ = fs::write(&disk_cache_file, serialized);
+        }
+    }
     if let Ok(mut guard) = cache.lock() {
         guard.insert(cache_key, digest.clone());
     }
-    Some(digest)
+    Some((digest, false))
 }
 
 /// Wraps whole-word or prefix occurrences of `terms` in `text` with `«...»` markers (which `window.js` renders as `<mark>`).
@@ -1676,6 +1715,22 @@ pub fn local_search_op(
     skipped: &[String],
     skip_types: &[String],
 ) -> Value {
+    local_search_op_with_progress(request, folders, code_folders, skipped, skip_types, |_| {})
+}
+
+/// Handles `ask` requests and emits live progress snapshots (`done`, `total`, `progress`, `currentFile`,
+/// `tokensSearched`, `elapsedMs`) during `"search"` so the UI can render a real-time progress bar and telemetry.
+pub fn local_search_op_with_progress<F>(
+    request: &Value,
+    folders: &[String],
+    code_folders: &[String],
+    skipped: &[String],
+    skip_types: &[String],
+    mut on_progress: F,
+) -> Value
+where
+    F: FnMut(Value),
+{
     let op = request["op"].as_str().unwrap_or("");
     let is_code_req = request["code"].as_bool().unwrap_or(false);
 
@@ -1737,12 +1792,16 @@ pub fn local_search_op(
             })
         }
         "search" => {
+            let started = Instant::now();
             let query = request["query"]
                 .as_str()
                 .or_else(|| request["q"].as_str())
                 .unwrap_or("")
                 .trim();
             let filter_kind = request["kind"].as_str();
+            let filter_kinds: Option<Vec<&str>> = request["kinds"]
+                .as_array()
+                .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect());
             let limit = request["limit"].as_u64().unwrap_or(50) as usize;
 
             let mut all_roots: Vec<String> = folders.to_vec();
@@ -1751,35 +1810,86 @@ pub fn local_search_op(
                     all_roots.push(cf.clone());
                 }
             }
-            let files = walk_local_folders(&all_roots, skipped, skip_types);
+            let all_files = walk_local_folders(&all_roots, skipped, skip_types);
+            let eligible_files: Vec<LocalFileEntry> = all_files
+                .into_iter()
+                .filter(|file| {
+                    if is_code_req && file.kind != "code" && file.kind != "doc" {
+                        return false;
+                    }
+                    if let Some(k) = filter_kind {
+                        if file.kind != k {
+                            return false;
+                        }
+                    }
+                    if let Some(ref ks) = filter_kinds {
+                        if !ks.contains(&file.kind) {
+                            return false;
+                        }
+                    }
+                    true
+                })
+                .collect();
+
+            let total_candidates = eligible_files.len();
             let terms = query_terms(query);
+
+            // Emit initial 0% progress event so the UI progress bar appears immediately
+            on_progress(json!({
+                "query": query,
+                "phase": "scanning",
+                "done": 0,
+                "total": total_candidates,
+                "progress": if total_candidates == 0 { 1.0 } else { 0.0 },
+                "currentFile": "",
+                "tokensSearched": 0,
+                "charsSearched": 0,
+                "elapsedMs": started.elapsed().as_secs_f64() * 1000.0,
+            }));
 
             // Compute document frequency (DF) per term across the local corpus so rare, specific terms
             // (`authorization`, `nanopowders`, `hydrofluoric`, `analog-ai`, `tops`) outweigh generic terms (`micro`, `lab`).
-            let mut doc_contents: Vec<(LocalFileEntry, Option<String>, String)> = Vec::with_capacity(files.len());
+            let mut doc_contents: Vec<(LocalFileEntry, Option<String>, String)> =
+                Vec::with_capacity(total_candidates);
             let mut df: HashMap<String, usize> = HashMap::new();
-            for file in files {
-                if is_code_req && file.kind != "code" && file.kind != "doc" {
-                    continue;
+            let mut tokens_searched: usize = 0;
+            let mut chars_searched: usize = 0;
+            let mut bytes_inspected: u64 = 0;
+            let mut pdf_books_scanned: usize = 0;
+            let mut cached_digests_used: usize = 0;
+            let emit_stride = (total_candidates / 20).max(1);
+
+            for (idx, file) in eligible_files.into_iter().enumerate() {
+                let is_pdf_or_large = file.kind == "pdf" || file.size > 1_000_000;
+                if file.kind == "pdf" {
+                    pdf_books_scanned += 1;
                 }
-                if let Some(k) = filter_kind {
-                    if file.kind != k {
-                        continue;
-                    }
-                }
+                bytes_inspected = bytes_inspected.saturating_add(file.size);
+
                 let text_opt = if matches!(file.kind, "doc" | "code") && file.size <= 2_000_000 {
                     fs::read_to_string(&file.path).ok().or_else(|| {
-                        extract_fast_book_digest(Path::new(&file.path), file.size)
-                            .map(|d| d.searchable_text)
+                        extract_fast_book_digest_with_status(Path::new(&file.path), file.size)
+                            .map(|(d, cached)| {
+                                if cached {
+                                    cached_digests_used += 1;
+                                }
+                                d.searchable_text
+                            })
                             .filter(|s| !s.trim().is_empty())
                     })
                 } else if matches!(file.kind, "pdf" | "doc") {
-                    extract_fast_book_digest(Path::new(&file.path), file.size)
-                        .map(|d| d.searchable_text)
+                    extract_fast_book_digest_with_status(Path::new(&file.path), file.size)
+                        .map(|(d, cached)| {
+                            if cached {
+                                cached_digests_used += 1;
+                            }
+                            d.searchable_text
+                        })
                         .filter(|s| !s.trim().is_empty())
                 } else {
                     None
                 };
+
                 // Normalize relative path from root + split CamelCase segments so parent directory themes
                 // (`Machine_Learning_Robotics/Simon_JD_Prince/understanding_deep_learning.pdf` or `SimonJDPrince`) match cleanly.
                 let rel_path_raw = file
@@ -1795,16 +1905,44 @@ pub fn local_search_op(
                     .to_ascii_lowercase();
                 let path_search_text = format!("{} {}", rel_path_raw.to_ascii_lowercase(), camel_expanded);
 
-                let combined_lower = format!(
-                    "{} {}",
-                    path_search_text,
-                    text_opt.as_deref().unwrap_or("").to_ascii_lowercase()
-                );
+                let body_ref = text_opt.as_deref().unwrap_or("");
+                chars_searched += rel_path_raw.len() + body_ref.len();
+                let doc_tokens = rel_path_raw
+                    .split(|c: char| !c.is_alphanumeric())
+                    .filter(|s| !s.is_empty())
+                    .count()
+                    + body_ref.split_whitespace().count();
+                tokens_searched += doc_tokens;
+
+                let combined_lower = format!("{} {}", path_search_text, body_ref.to_ascii_lowercase());
                 for term in &terms {
                     if matches_term_in_text(&combined_lower, term) {
                         *df.entry(term.clone()).or_insert(0) += 1;
                     }
                 }
+
+                let done = idx + 1;
+                if is_pdf_or_large || done % emit_stride == 0 || done == total_candidates {
+                    let short_name = Path::new(&file.path)
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or(&file.path)
+                        .to_string();
+                    on_progress(json!({
+                        "query": query,
+                        "phase": if done == total_candidates { "ranking" } else { "scanning" },
+                        "done": done,
+                        "total": total_candidates,
+                        "progress": (done as f64) / (total_candidates.max(1) as f64),
+                        "currentFile": short_name,
+                        "tokensSearched": tokens_searched,
+                        "charsSearched": chars_searched,
+                        "pdfBooksScanned": pdf_books_scanned,
+                        "cachedDigestsUsed": cached_digests_used,
+                        "elapsedMs": (started.elapsed().as_secs_f64() * 1000.0 * 10.0).round() / 10.0,
+                    }));
+                }
+
                 doc_contents.push((file, text_opt, path_search_text));
             }
 
@@ -2117,10 +2255,26 @@ pub fn local_search_op(
                 strong_count = 1;
             }
 
+            let elapsed_ms = (started.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0;
+            let weaker_count = hits.len().saturating_sub(strong_count);
+            let metrics = json!({
+                "elapsedMs": elapsed_ms,
+                "docsSearched": total_candidates,
+                "tokensSearched": tokens_searched,
+                "charsSearched": chars_searched,
+                "bytesInspected": bytes_inspected,
+                "queryTerms": terms.len(),
+                "pdfBooksScanned": pdf_books_scanned,
+                "cachedDigestsUsed": cached_digests_used,
+                "strongHits": strong_count,
+                "weakerHits": weaker_count,
+            });
+
             json!({
                 "hits": hits,
                 "strong": strong_count,
                 "meaning": true,
+                "metrics": metrics,
             })
         }
         _ => json!({ "ok": true }),
@@ -2532,5 +2686,82 @@ mod tests {
             match_term_quality(&real_pdf.display().to_string().to_lowercase(), "simo") >= 0.80,
             "'simo' should prefix-match Simon_JD_Prince.pdf"
         );
+    }
+
+    #[test]
+    fn search_emits_live_progress_and_returns_detailed_metrics_and_disk_cached_digests() {
+        let tmp = std::env::temp_dir().join("digup_search_metrics_progress_test");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        fs::write(
+            tmp.join("deep_learning_notes.md"),
+            "# Deep Neural Networks\nComposing piecewise linear networks into deep architectures with residual connections.",
+        )
+        .unwrap();
+        fs::write(
+            tmp.join("optimizer_schedule.py"),
+            "def cosine_warmup_lr(step: int) -> float:\n    return 0.001 * step\n",
+        )
+        .unwrap();
+
+        let mut pdf_bytes = b"%PDF-1.7\n1 0 obj\n<</Title (Optimization Algorithms) /Author (Simon Prince)>>\nstream\n(Stochastic gradient descent and Adam momentum updates) Tj\nendstream\nendobj\n%%EOF".to_vec();
+        pdf_bytes.resize(512 * 1024, b' ');
+        let pdf_path = tmp.join("optimization_book.pdf");
+        fs::write(&pdf_path, &pdf_bytes).unwrap();
+
+        let roots = vec![tmp.display().to_string()];
+        let mut progress_events: Vec<Value> = Vec::new();
+
+        let res = local_search_op_with_progress(
+            &json!({"op": "search", "query": "composing networks gradient", "limit": 10}),
+            &roots,
+            &[],
+            &[],
+            &[],
+            |ev| progress_events.push(ev),
+        );
+
+        // 1. Verify live progress callbacks were emitted with increasing progress up to 1.0
+        assert!(
+            !progress_events.is_empty(),
+            "Search should emit live progress events for the progress bar"
+        );
+        let last_ev = progress_events.last().unwrap();
+        assert_eq!(last_ev["done"].as_u64(), last_ev["total"].as_u64());
+        assert!(
+            (last_ev["progress"].as_f64().unwrap_or(0.0) - 1.0).abs() < 1e-6,
+            "Final progress event must reach 1.0 (100%)"
+        );
+
+        // 2. Verify rich telemetry metrics object is returned in the search response
+        let metrics = &res["metrics"];
+        assert!(metrics.is_object(), "Search response must include a 'metrics' object");
+        assert!(metrics["elapsedMs"].as_f64().unwrap_or(-1.0) >= 0.0);
+        assert_eq!(metrics["docsSearched"].as_u64().unwrap_or(0), 3);
+        assert!(
+            metrics["tokensSearched"].as_u64().unwrap_or(0) >= 15,
+            "Expected tokensSearched >= 15 across the 3 documents, got {:?}",
+            metrics["tokensSearched"]
+        );
+        assert!(metrics["charsSearched"].as_u64().unwrap_or(0) >= 80);
+        assert_eq!(metrics["queryTerms"].as_u64().unwrap_or(0), 3);
+        assert_eq!(metrics["pdfBooksScanned"].as_u64().unwrap_or(0), 1);
+
+        // 3. Verify second search hits the BookDigest cache (cachedDigestsUsed >= 1)
+        let res2 = local_search_op(
+            &json!({"op": "search", "query": "Simon Prince gradient", "limit": 10}),
+            &roots,
+            &[],
+            &[],
+            &[],
+        );
+        assert!(
+            res2["metrics"]["cachedDigestsUsed"].as_u64().unwrap_or(0) >= 1,
+            "Second search should reuse cached BookDigest, got {:?}",
+            res2["metrics"]
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
     }
 }
