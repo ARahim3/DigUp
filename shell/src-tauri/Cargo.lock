@@ -803,6 +803,7 @@ name = "digup-shell"
 version = "0.1.0"
 dependencies = [
  "drag",
+ "flate2",
  "gio",
  "gtk",
  "libc",
