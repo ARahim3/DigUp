@@ -404,8 +404,9 @@ pub fn classify_file_kind(path: &Path) -> Option<&'static str> {
 }
 
 fn should_skip_dir(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
     matches!(
-        name,
+        lower.as_str(),
         ".git"
             | "node_modules"
             | "target"
@@ -415,6 +416,20 @@ fn should_skip_dir(name: &str) -> bool {
             | "venv"
             | ".next"
             | "dist"
+            | "windows"
+            | "program files"
+            | "program files (x86)"
+            | "programdata"
+            | "appdata"
+            | "$recycle.bin"
+            | "system volume information"
+            | "recovery"
+            | "perflogs"
+            | "msocache"
+            | ".cargo"
+            | ".rustup"
+            | ".gradle"
+            | ".cache"
     )
 }
 
@@ -489,8 +504,42 @@ pub fn walk_local_folders(
     entries
 }
 
+/// Splits a single alphanumeric token on `camelCase` / `PascalCase` transitions (e.g.,
+/// `SimonJDPrince` -> `["Simon", "JD", "Prince"]`, `UnderstandingDeepLearning` -> `["Understanding", "Deep", "Learning"]`).
+fn split_camel_case(token: &str) -> Vec<String> {
+    let chars: Vec<char> = token.chars().collect();
+    if chars.is_empty() {
+        return Vec::new();
+    }
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    for i in 0..chars.len() {
+        let c = chars[i];
+        if i > 0 {
+            let prev = chars[i - 1];
+            let next_is_lower = chars.get(i + 1).map(|n| n.is_ascii_lowercase()).unwrap_or(false);
+            // Split on `aB` (lower -> upper) or `JDP` -> `JD` + `Prince` (upper -> upper followed by lower)
+            if (prev.is_ascii_lowercase() && c.is_ascii_uppercase())
+                || (prev.is_ascii_uppercase() && c.is_ascii_uppercase() && next_is_lower && current.len() >= 2)
+                || (prev.is_ascii_alphabetic() != c.is_ascii_alphabetic())
+            {
+                if !current.is_empty() {
+                    parts.push(std::mem::take(&mut current));
+                }
+            }
+        }
+        current.push(c);
+    }
+    if !current.is_empty() {
+        parts.push(current);
+    }
+    parts
+}
+
 /// Tokenizes a search query into lowercase search terms (filtering out conversational stop words so natural
 /// language questions like "Summarize the MICRO Lab onboarding manual" match `MICRO`, `Lab`, `onboarding`, `manual`).
+/// Also splits `_`, `-`, `.`, and `CamelCase` boundaries (`Simon_JD_Prince`, `understanding_deep_learning`,
+/// `SimonJDPrince`) while preserving compound technical IDs containing digits (`INV-2026-041`, `ERR_502`).
 pub fn query_terms(query: &str) -> Vec<String> {
     let stop_words: HashSet<&'static str> = [
         "a", "an", "the", "is", "are", "was", "were", "be", "to", "of", "and", "in", "on", "for",
@@ -503,16 +552,45 @@ pub fn query_terms(query: &str) -> Vec<String> {
     .collect();
 
     let mut terms = Vec::new();
-    for raw in query.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-') {
-        let lower = raw.trim_matches(|c: char| c == '-' || c == '_').to_ascii_lowercase();
-        let is_digit = lower.chars().all(|c| c.is_ascii_digit());
-        if (lower.len() >= 2 || is_digit && !lower.is_empty())
-            && !stop_words.contains(lower.as_str())
-            && !terms.contains(&lower)
+    let mut push_term = |candidate: String| {
+        let is_digit = !candidate.is_empty() && candidate.chars().all(|c| c.is_ascii_digit());
+        if (candidate.len() >= 2 || is_digit)
+            && !stop_words.contains(candidate.as_str())
+            && !terms.contains(&candidate)
         {
-            terms.push(lower);
+            terms.push(candidate);
+        }
+    };
+
+    for compound in query.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-') {
+        let trimmed = compound.trim_matches(|c: char| c == '-' || c == '_');
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Preserve exact technical IDs with digits + delimiters (e.g., INV-2026-041, ERR_502)
+        let has_delim = trimmed.contains('-') || trimmed.contains('_');
+        let has_digit = trimmed.chars().any(|c| c.is_ascii_digit());
+        let has_alpha = trimmed.chars().any(|c| c.is_ascii_alphabetic());
+        if has_delim && has_digit && has_alpha {
+            push_term(trimmed.to_ascii_lowercase());
+        }
+
+        // Split on `_` and `-`, then split any CamelCase sub-parts
+        for part in trimmed.split(|c: char| c == '_' || c == '-') {
+            if part.is_empty() {
+                continue;
+            }
+            let camel_parts = split_camel_case(part);
+            if camel_parts.len() > 1 {
+                for cp in camel_parts {
+                    push_term(cp.to_ascii_lowercase());
+                }
+            } else {
+                push_term(part.to_ascii_lowercase());
+            }
         }
     }
+
     if terms.is_empty() {
         let fallback = query.trim().to_ascii_lowercase();
         if !fallback.is_empty() {
@@ -522,8 +600,9 @@ pub fn query_terms(query: &str) -> Vec<String> {
     terms
 }
 
-/// Checks if `term` appears in `haystack_lower` as a whole word (or prefix of a word for terms >= 4 chars),
-/// preventing short acronyms like `tops` from false-matching inside `stops`.
+/// Checks if `term` appears in `haystack_lower` as a whole word (treating `_`, `-`, `.`, `/`, and `\` as word
+/// separators, or prefix of a plural/past-tense word for terms >= 4 chars), preventing short acronyms like `tops`
+/// from false-matching inside `stops` while matching `simon_jd_prince-understanding_deep_learning.pdf`.
 fn matches_term_in_text(haystack_lower: &str, term: &str) -> bool {
     if term.is_empty() {
         return false;
@@ -534,10 +613,7 @@ fn matches_term_in_text(haystack_lower: &str, term: &str) -> bool {
     while let Some(rel) = haystack_lower[start..].find(term) {
         let idx = start + rel;
         let end = idx + t_len;
-        let left_ok = idx == 0 || {
-            let b = bytes[idx - 1];
-            !b.is_ascii_alphanumeric() && b != b'_'
-        };
+        let left_ok = idx == 0 || !bytes[idx - 1].is_ascii_alphanumeric();
         let right_ok = end >= bytes.len() || {
             let b = bytes[end];
             !b.is_ascii_alphanumeric() || (t_len >= 4 && (b == b's' || b == b'd'))
@@ -809,7 +885,7 @@ pub fn local_search_op(
 
             // Compute document frequency (DF) per term across the local corpus so rare, specific terms
             // (`authorization`, `nanopowders`, `hydrofluoric`, `analog-ai`, `tops`) outweigh generic terms (`micro`, `lab`).
-            let mut doc_contents: Vec<(LocalFileEntry, Option<String>)> = Vec::with_capacity(files.len());
+            let mut doc_contents: Vec<(LocalFileEntry, Option<String>, String)> = Vec::with_capacity(files.len());
             let mut df: HashMap<String, usize> = HashMap::new();
             for file in files {
                 if is_code_req && file.kind != "code" && file.kind != "doc" {
@@ -825,9 +901,24 @@ pub fn local_search_op(
                 } else {
                     None
                 };
+                // Normalize relative path from root + split CamelCase segments so parent directory themes
+                // (`Machine_Learning_Robotics/Simon_JD_Prince/understanding_deep_learning.pdf` or `SimonJDPrince`) match cleanly.
+                let rel_path_raw = file
+                    .path
+                    .strip_prefix(&file.root)
+                    .unwrap_or(&file.path)
+                    .trim_start_matches(['\\', '/']);
+                let camel_expanded: String = rel_path_raw
+                    .split(|c: char| !c.is_alphanumeric())
+                    .flat_map(split_camel_case)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .to_ascii_lowercase();
+                let path_search_text = format!("{} {}", rel_path_raw.to_ascii_lowercase(), camel_expanded);
+
                 let combined_lower = format!(
                     "{} {}",
-                    file.path.to_ascii_lowercase(),
+                    path_search_text,
                     text_opt.as_deref().unwrap_or("").to_ascii_lowercase()
                 );
                 for term in &terms {
@@ -835,7 +926,7 @@ pub fn local_search_op(
                         *df.entry(term.clone()).or_insert(0) += 1;
                     }
                 }
-                doc_contents.push((file, text_opt));
+                doc_contents.push((file, text_opt, path_search_text));
             }
 
             let total_docs = doc_contents.len().max(1) as f64;
@@ -850,7 +941,7 @@ pub fn local_search_op(
             let max_possible_weight: f64 = terms.iter().map(|t| term_weight(t)).sum::<f64>().max(1.0);
             let mut hits = Vec::new();
 
-            for (file, text_opt) in doc_contents {
+            for (file, text_opt, path_search_text) in doc_contents {
                 let file_name = Path::new(&file.path)
                     .file_name()
                     .and_then(|s| s.to_str())
@@ -862,8 +953,12 @@ pub fn local_search_op(
 
                 let Some(content) = text_opt else {
                     for term in &terms {
+                        let w = term_weight(term);
                         if matches_term_in_text(&file_name, term) {
-                            matched_weight += term_weight(term);
+                            matched_weight += w;
+                            matched_words += 1;
+                        } else if matches_term_in_text(&path_search_text, term) {
+                            matched_weight += w * 0.85;
                             matched_words += 1;
                         }
                     }
@@ -892,8 +987,11 @@ pub fn local_search_op(
                         matched_weight += w;
                         matched_words += 1;
                     } else if matches_term_in_text(&file_name, term) {
-                        // Filename-only match gets a small weight if the term doesn't appear in body
-                        matched_weight += w * 0.35;
+                        // Filename-only match gets a solid weight if the term doesn't appear in body
+                        matched_weight += w * 0.65;
+                        matched_words += 1;
+                    } else if matches_term_in_text(&path_search_text, term) {
+                        matched_weight += w * 0.45;
                         matched_words += 1;
                     }
                 }
@@ -903,7 +1001,7 @@ pub fn local_search_op(
                 }
 
                 let lines: Vec<&str> = content.lines().collect();
-                let mut excerpt = String::new();
+                let excerpt: String;
                 let mut loc_val = Value::Null;
                 let mut end_line_val = Value::Null;
                 let mut top_sections_json = Vec::new();
@@ -1190,5 +1288,90 @@ mod tests {
         assert_eq!(sections.len(), 2);
         assert_eq!(sections[1].heading, "Authorization levels");
         assert!(sections[1].text.contains("Level 4"));
+    }
+
+    #[test]
+    fn query_terms_splits_underscores_hyphens_and_camelcase_cleanly() {
+        let terms_underscore = query_terms("Simon_JD_Prince understanding_deep_learning");
+        assert!(terms_underscore.contains(&"simon".to_string()));
+        assert!(terms_underscore.contains(&"jd".to_string()));
+        assert!(terms_underscore.contains(&"prince".to_string()));
+        assert!(terms_underscore.contains(&"understanding".to_string()));
+        assert!(terms_underscore.contains(&"deep".to_string()));
+        assert!(terms_underscore.contains(&"learning".to_string()));
+
+        let terms_camel = query_terms("SimonJDPrince UnderstandingDeepLearning");
+        assert!(terms_camel.contains(&"simon".to_string()));
+        assert!(terms_camel.contains(&"jd".to_string()));
+        assert!(terms_camel.contains(&"prince".to_string()));
+        assert!(terms_camel.contains(&"understanding".to_string()));
+        assert!(terms_camel.contains(&"deep".to_string()));
+        assert!(terms_camel.contains(&"learning".to_string()));
+
+        let terms_id = query_terms("invoice INV-2026-041 error ERR_502");
+        assert!(terms_id.contains(&"inv-2026-041".to_string()) || terms_id.contains(&"2026".to_string()));
+        assert!(terms_id.contains(&"err_502".to_string()) || terms_id.contains(&"502".to_string()));
+    }
+
+    #[test]
+    fn matches_term_in_text_respects_underscore_hyphen_and_camelcase_boundaries() {
+        let filename_lower = "simon_jd_prince-understanding_deep_learning.pdf";
+        for term in ["simon", "jd", "prince", "understanding", "deep", "learning", "pdf"] {
+            assert!(
+                matches_term_in_text(filename_lower, term),
+                "expected '{term}' to match inside '{filename_lower}'"
+            );
+        }
+        // Still rejects mid-word substring false positives
+        assert!(!matches_term_in_text("stops increasing", "tops"));
+        assert!(!matches_term_in_text("concatenate strings", "cat"));
+    }
+
+    #[test]
+    fn search_finds_pdf_by_underscored_filename_and_parent_folder() {
+        let tmp = std::env::temp_dir().join("digup_pdf_delimiter_unit_test");
+        let _ = fs::remove_dir_all(&tmp);
+        let author_dir = tmp.join("Machine_Learning_Robotics").join("Simon_JD_Prince");
+        fs::create_dir_all(&author_dir).unwrap();
+        let pdf_file = author_dir.join("Simon_JD_Prince_understanding_deep_learning.pdf");
+        fs::write(&pdf_file, b"%PDF-1.7 fake header").unwrap();
+
+        let roots = vec![tmp.display().to_string()];
+
+        // 1. Space-separated query matches underscored PDF filename
+        let res_spaces = local_search_op(
+            &json!({"op": "search", "query": "Simon JD Prince understanding deep learning", "limit": 10}),
+            &roots,
+            &[],
+            &[],
+            &[],
+        );
+        let hits_spaces = res_spaces["hits"].as_array().unwrap();
+        assert!(!hits_spaces.is_empty(), "space-separated query should find underscored PDF");
+        assert!(hits_spaces[0]["path"].as_str().unwrap().contains("understanding_deep_learning.pdf"));
+
+        // 2. Underscore-separated query matches underscored PDF filename
+        let res_underscores = local_search_op(
+            &json!({"op": "search", "query": "Simon_JD_Prince understanding_deep_learning", "limit": 10}),
+            &roots,
+            &[],
+            &[],
+            &[],
+        );
+        let hits_underscores = res_underscores["hits"].as_array().unwrap();
+        assert!(!hits_underscores.is_empty(), "underscored query should find underscored PDF");
+
+        // 3. Parent directory theme ("machine learning robotics") + book title matches
+        let res_folder = local_search_op(
+            &json!({"op": "search", "query": "machine learning robotics deep learning", "limit": 10}),
+            &roots,
+            &[],
+            &[],
+            &[],
+        );
+        let hits_folder = res_folder["hits"].as_array().unwrap();
+        assert!(!hits_folder.is_empty(), "parent folder theme + filename should find PDF");
+
+        let _ = fs::remove_dir_all(&tmp);
     }
 }
