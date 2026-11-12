@@ -13,7 +13,7 @@ use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -748,9 +748,11 @@ fn matches_term_in_text(haystack_lower: &str, term: &str) -> bool {
 #[derive(Clone, Debug)]
 struct DocSection {
     heading: String,
+    heading_lower: String,
     start_line: usize,
     end_line: usize,
     text: String,
+    text_lower: String,
 }
 
 fn split_into_sections(content: &str) -> Vec<DocSection> {
@@ -776,11 +778,15 @@ fn split_into_sections(content: &str) -> Vec<DocSection> {
         if is_heading && !buf.is_empty() {
             let text = buf.join("\n").trim().to_string();
             if !text.is_empty() {
+                let heading_lower = current_heading.to_ascii_lowercase();
+                let text_lower = text.to_ascii_lowercase();
                 sections.push(DocSection {
                     heading: current_heading.clone(),
+                    heading_lower,
                     start_line,
                     end_line: line_num - 1,
                     text,
+                    text_lower,
                 });
             }
             current_heading = trimmed.trim_start_matches('#').trim().to_string();
@@ -796,11 +802,15 @@ fn split_into_sections(content: &str) -> Vec<DocSection> {
     if !buf.is_empty() {
         let text = buf.join("\n").trim().to_string();
         if !text.is_empty() {
+            let heading_lower = current_heading.to_ascii_lowercase();
+            let text_lower = text.to_ascii_lowercase();
             sections.push(DocSection {
                 heading: current_heading,
+                heading_lower,
                 start_line,
                 end_line: lines.len(),
                 text,
+                text_lower,
             });
         }
     }
@@ -1402,6 +1412,48 @@ fn extract_all_pdf_headings(file: &mut File, size: u64) -> Vec<String> {
 
 static BOOK_DIGEST_CACHE: OnceLock<Mutex<HashMap<(String, u64), BookDigest>>> = OnceLock::new();
 
+#[derive(Clone, Debug)]
+struct CachedDocIndex {
+    file: LocalFileEntry,
+    file_name_lower: String,
+    path_search_text: String,
+    content: Option<String>,
+    content_lower: String,
+    sections: Vec<DocSection>,
+    unique_words: HashSet<String>,
+    prefix4_set: HashSet<[u8; 4]>,
+    prefix2_set: HashSet<[u8; 2]>,
+    doc_tokens: usize,
+    doc_chars: usize,
+}
+
+static PARSED_DOC_CACHE: OnceLock<Mutex<HashMap<(String, u64), Arc<CachedDocIndex>>>> = OnceLock::new();
+static DIR_WALK_CACHE: OnceLock<Mutex<HashMap<String, (Instant, Vec<LocalFileEntry>)>>> = OnceLock::new();
+
+/// Clears in-memory search & digest caches, and optionally purges the on-disk PDF digest cache directory
+/// (used by deterministic ablation benchmarks and cache unit tests).
+pub fn clear_all_search_caches(clear_disk: bool) {
+    if let Some(c) = BOOK_DIGEST_CACHE.get() {
+        if let Ok(mut g) = c.lock() {
+            g.clear();
+        }
+    }
+    if let Some(c) = PARSED_DOC_CACHE.get() {
+        if let Ok(mut g) = c.lock() {
+            g.clear();
+        }
+    }
+    if let Some(c) = DIR_WALK_CACHE.get() {
+        if let Ok(mut g) = c.lock() {
+            g.clear();
+        }
+    }
+    if clear_disk {
+        let dir = std::env::temp_dir().join("digup_book_digest_cache_v2");
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
 fn digest_disk_cache_path(path_str: &str, fingerprint: u64) -> PathBuf {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in path_str.as_bytes() {
@@ -1418,11 +1470,14 @@ fn digest_disk_cache_path(path_str: &str, fingerprint: u64) -> PathBuf {
 /// - **Stride Zone (8 evenly-spaced 32 KB seeks):** Captures chapter headings, running headers, and core terminology.
 /// - **Tail Zone (last 128 KB):** Captures the back-of-book subject index, bibliography, and trailer/XMP dictionary.
 pub fn extract_fast_book_digest(path: &Path, file_size: u64) -> Option<BookDigest> {
-    extract_fast_book_digest_with_status(path, file_size).map(|(digest, _)| digest)
+    extract_fast_book_digest_with_options(path, file_size, true).map(|(digest, _)| digest)
 }
 
-/// Extracts or loads a `BookDigest`, returning `(digest, was_cached)` so search telemetry can report cache hits.
-pub fn extract_fast_book_digest_with_status(path: &Path, file_size: u64) -> Option<(BookDigest, bool)> {
+pub fn extract_fast_book_digest_with_options(
+    path: &Path,
+    file_size: u64,
+    cache_all_pdf_sizes: bool,
+) -> Option<(BookDigest, bool)> {
     let mut file = File::open(path).ok()?;
     let meta = file.metadata().ok();
     let size = if file_size > 0 {
@@ -1449,10 +1504,15 @@ pub fn extract_fast_book_digest_with_status(path: &Path, file_size: u64) -> Opti
         }
     }
 
-    // Check persistent on-disk digest cache (eliminates 50+ MB PDF decompression on cold app restarts)
-    // Only use persistent disk cache for files >= 1 MB or real library PDFs so synthetic temp tests remain isolated.
+    // Check persistent on-disk digest cache: when `cache_all_pdf_sizes` is enabled (now default),
+    // all PDFs and binary documents are cached on disk regardless of whether they are 15 KB or 55 MB.
+    let min_disk_cache_bytes = if cache_all_pdf_sizes {
+        1024
+    } else {
+        2 * 1024 * 1024
+    };
     let disk_cache_file = digest_disk_cache_path(&path_str, fingerprint);
-    if size >= 2 * 1024 * 1024 && disk_cache_file.is_file() {
+    if size >= min_disk_cache_bytes && disk_cache_file.is_file() {
         if let Ok(raw_json) = fs::read_to_string(&disk_cache_file) {
             if let Ok(cached_digest) = serde_json::from_str::<BookDigest>(&raw_json) {
                 if !cached_digest.searchable_text.is_empty() {
@@ -1578,7 +1638,7 @@ pub fn extract_fast_book_digest_with_status(path: &Path, file_size: u64) -> Opti
         keywords,
         searchable_text: sections_text,
     };
-    if size >= 2 * 1024 * 1024 {
+    if size >= min_disk_cache_bytes {
         if let Ok(serialized) = serde_json::to_string(&digest) {
             let _ = fs::write(&disk_cache_file, serialized);
         }
@@ -1587,6 +1647,161 @@ pub fn extract_fast_book_digest_with_status(path: &Path, file_size: u64) -> Opti
         guard.insert(cache_key, digest.clone());
     }
     Some((digest, false))
+}
+
+fn build_or_get_cached_doc_index(
+    file: LocalFileEntry,
+    cache_all_pdf_sizes: bool,
+    use_doc_cache: bool,
+) -> (Arc<CachedDocIndex>, bool) {
+    let fingerprint = (file.modified.max(0) as u64) ^ file.size;
+    let cache_key = (file.path.clone(), fingerprint);
+    let parsed_cache = PARSED_DOC_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+
+    if use_doc_cache {
+        if let Ok(guard) = parsed_cache.lock() {
+            if let Some(existing) = guard.get(&cache_key) {
+                let was_pdf = file.kind == "pdf";
+                return (Arc::clone(existing), was_pdf);
+            }
+        }
+    }
+
+    let mut digest_was_cached = false;
+    let text_opt = if matches!(file.kind, "doc" | "code") && file.size <= 2_000_000 {
+        fs::read_to_string(&file.path).ok().or_else(|| {
+            extract_fast_book_digest_with_options(Path::new(&file.path), file.size, cache_all_pdf_sizes)
+                .map(|(d, _)| d.searchable_text)
+                .filter(|s| !s.trim().is_empty())
+        })
+    } else if matches!(file.kind, "pdf" | "doc") {
+        extract_fast_book_digest_with_options(Path::new(&file.path), file.size, cache_all_pdf_sizes)
+            .map(|(d, cached)| {
+                if file.kind == "pdf" {
+                    digest_was_cached = cached;
+                }
+                d.searchable_text
+            })
+            .filter(|s| !s.trim().is_empty())
+    } else {
+        None
+    };
+
+    let file_name_lower = Path::new(&file.path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    let rel_path_raw = file
+        .path
+        .strip_prefix(&file.root)
+        .unwrap_or(&file.path)
+        .trim_start_matches(['\\', '/']);
+    let camel_expanded: String = rel_path_raw
+        .split(|c: char| !c.is_alphanumeric())
+        .flat_map(split_camel_case)
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    let path_search_text = format!("{} {}", rel_path_raw.to_ascii_lowercase(), camel_expanded);
+
+    let body_ref = text_opt.as_deref().unwrap_or("");
+    let doc_chars = rel_path_raw.len() + body_ref.len();
+    let doc_tokens = rel_path_raw
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|s| !s.is_empty())
+        .count()
+        + body_ref.split_whitespace().count();
+
+    let content_lower = body_ref.to_ascii_lowercase();
+    let sections = if file.kind != "code" && !body_ref.is_empty() {
+        split_into_sections(body_ref)
+    } else {
+        Vec::new()
+    };
+
+    let mut unique_words = HashSet::new();
+    let mut prefix4_set = HashSet::new();
+    let mut prefix2_set = HashSet::new();
+
+    for src in [path_search_text.as_str(), content_lower.as_str()] {
+        for word in src.split(|c: char| !c.is_ascii_alphanumeric()) {
+            let w_bytes = word.as_bytes();
+            if w_bytes.len() < 2 {
+                continue;
+            }
+            prefix2_set.insert([w_bytes[0], w_bytes[1]]);
+            if w_bytes.len() >= 4 {
+                prefix4_set.insert([w_bytes[0], w_bytes[1], w_bytes[2], w_bytes[3]]);
+            }
+            unique_words.insert(word.to_string());
+        }
+    }
+
+    let built = Arc::new(CachedDocIndex {
+        file,
+        file_name_lower,
+        path_search_text,
+        content: text_opt,
+        content_lower,
+        sections,
+        unique_words,
+        prefix4_set,
+        prefix2_set,
+        doc_tokens,
+        doc_chars,
+    });
+
+    if use_doc_cache {
+        if let Ok(mut guard) = parsed_cache.lock() {
+            guard.insert(cache_key, Arc::clone(&built));
+        }
+    }
+
+    (built, digest_was_cached)
+}
+
+fn doc_term_quality_fast(doc: &CachedDocIndex, term: &str) -> f64 {
+    let tb = term.as_bytes();
+    if tb.is_empty() {
+        return 0.0;
+    }
+    if doc.unique_words.contains(term) {
+        return 1.0;
+    }
+    if tb.len() >= 4 {
+        let p4 = [tb[0], tb[1], tb[2], tb[3]];
+        if doc.prefix4_set.contains(&p4) {
+            for w in &doc.unique_words {
+                let wb = w.as_bytes();
+                if wb.len() > tb.len() && wb.len() <= tb.len() + 6 && wb.starts_with(tb) {
+                    return 0.85;
+                }
+            }
+        }
+    }
+    if tb.len() >= 5 {
+        let p2 = [tb[0], tb[1]];
+        if doc.prefix2_set.contains(&p2) {
+            for w in &doc.unique_words {
+                let wb = w.as_bytes();
+                if wb.len() >= 2
+                    && wb[0] == tb[0]
+                    && wb[1] == tb[1]
+                    && wb.len().abs_diff(tb.len()) <= 1
+                    && is_within_one_edit(wb, tb)
+                {
+                    return 0.65;
+                }
+            }
+        }
+    }
+    0.0
+}
+
+fn doc_may_match_term_fast(doc: &CachedDocIndex, term: &str) -> bool {
+    doc_term_quality_fast(doc, term) > 0.0
 }
 
 /// Wraps whole-word or prefix occurrences of `terms` in `text` with `«...»` markers (which `window.js` renders as `<mark>`).
@@ -1804,13 +2019,47 @@ where
                 .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect());
             let limit = request["limit"].as_u64().unwrap_or(50) as usize;
 
+            let opt_disk_cache_all_pdfs = request["opt"]["diskCacheAllPdfs"].as_bool().unwrap_or(true);
+            let opt_parallel_scan = request["opt"]["parallelScan"].as_bool().unwrap_or(true);
+            let opt_inverted_index = request["opt"]["invertedIndex"].as_bool().unwrap_or(true);
+
             let mut all_roots: Vec<String> = folders.to_vec();
             for cf in code_folders {
                 if !all_roots.iter().any(|r| r.eq_ignore_ascii_case(cf)) {
                     all_roots.push(cf.clone());
                 }
             }
-            let all_files = walk_local_folders(&all_roots, skipped, skip_types);
+
+            let walk_key = format!(
+                "{}|{}|{}",
+                all_roots.join(";"),
+                skipped.join(";"),
+                skip_types.join(";")
+            );
+            let all_files = if opt_inverted_index {
+                let walk_cache = DIR_WALK_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+                let cached_walk = walk_cache.lock().ok().and_then(|g| {
+                    g.get(&walk_key).and_then(|(ts, list)| {
+                        if ts.elapsed() < Duration::from_secs(10) {
+                            Some(list.clone())
+                        } else {
+                            None
+                        }
+                    })
+                });
+                if let Some(files) = cached_walk {
+                    files
+                } else {
+                    let fresh = walk_local_folders(&all_roots, skipped, skip_types);
+                    if let Ok(mut g) = walk_cache.lock() {
+                        g.insert(walk_key, (Instant::now(), fresh.clone()));
+                    }
+                    fresh
+                }
+            } else {
+                walk_local_folders(&all_roots, skipped, skip_types)
+            };
+
             let eligible_files: Vec<LocalFileEntry> = all_files
                 .into_iter()
                 .filter(|file| {
@@ -1847,10 +2096,7 @@ where
                 "elapsedMs": started.elapsed().as_secs_f64() * 1000.0,
             }));
 
-            // Compute document frequency (DF) per term across the local corpus so rare, specific terms
-            // (`authorization`, `nanopowders`, `hydrofluoric`, `analog-ai`, `tops`) outweigh generic terms (`micro`, `lab`).
-            let mut doc_contents: Vec<(LocalFileEntry, Option<String>, String)> =
-                Vec::with_capacity(total_candidates);
+            let mut indexed_docs: Vec<Arc<CachedDocIndex>> = Vec::with_capacity(total_candidates);
             let mut df: HashMap<String, usize> = HashMap::new();
             let mut tokens_searched: usize = 0;
             let mut chars_searched: usize = 0;
@@ -1859,94 +2105,190 @@ where
             let mut cached_digests_used: usize = 0;
             let emit_stride = (total_candidates / 20).max(1);
 
-            for (idx, file) in eligible_files.into_iter().enumerate() {
-                let is_pdf_or_large = file.kind == "pdf" || file.size > 1_000_000;
-                if file.kind == "pdf" {
-                    pdf_books_scanned += 1;
-                }
-                bytes_inspected = bytes_inspected.saturating_add(file.size);
-
-                let text_opt = if matches!(file.kind, "doc" | "code") && file.size <= 2_000_000 {
-                    fs::read_to_string(&file.path).ok().or_else(|| {
-                        extract_fast_book_digest_with_status(Path::new(&file.path), file.size)
-                            .map(|(d, cached)| {
-                                if cached {
+            // Fast-path: if `opt_inverted_index` is enabled and all candidate files are already present
+            // in `PARSED_DOC_CACHE`, retrieve them in a single lock acquisition on the main thread
+            // without spawning worker threads.
+            let mut warm_cache_complete = false;
+            if opt_inverted_index && total_candidates > 0 {
+                let parsed_cache = PARSED_DOC_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+                if let Ok(guard) = parsed_cache.lock() {
+                    if eligible_files.iter().all(|f| {
+                        let fp = (f.modified.max(0) as u64) ^ f.size;
+                        guard.contains_key(&(f.path.clone(), fp))
+                    }) {
+                        for file in &eligible_files {
+                            let fp = (file.modified.max(0) as u64) ^ file.size;
+                            if let Some(doc) = guard.get(&(file.path.clone(), fp)) {
+                                if doc.file.kind == "pdf" {
+                                    pdf_books_scanned += 1;
                                     cached_digests_used += 1;
                                 }
-                                d.searchable_text
-                            })
-                            .filter(|s| !s.trim().is_empty())
-                    })
-                } else if matches!(file.kind, "pdf" | "doc") {
-                    extract_fast_book_digest_with_status(Path::new(&file.path), file.size)
-                        .map(|(d, cached)| {
-                            if cached {
-                                cached_digests_used += 1;
+                                bytes_inspected = bytes_inspected.saturating_add(doc.file.size);
+                                chars_searched += doc.doc_chars;
+                                tokens_searched += doc.doc_tokens;
+                                indexed_docs.push(Arc::clone(doc));
                             }
-                            d.searchable_text
-                        })
-                        .filter(|s| !s.trim().is_empty())
-                } else {
-                    None
-                };
-
-                // Normalize relative path from root + split CamelCase segments so parent directory themes
-                // (`Machine_Learning_Robotics/Simon_JD_Prince/understanding_deep_learning.pdf` or `SimonJDPrince`) match cleanly.
-                let rel_path_raw = file
-                    .path
-                    .strip_prefix(&file.root)
-                    .unwrap_or(&file.path)
-                    .trim_start_matches(['\\', '/']);
-                let camel_expanded: String = rel_path_raw
-                    .split(|c: char| !c.is_alphanumeric())
-                    .flat_map(split_camel_case)
-                    .collect::<Vec<_>>()
-                    .join(" ")
-                    .to_ascii_lowercase();
-                let path_search_text = format!("{} {}", rel_path_raw.to_ascii_lowercase(), camel_expanded);
-
-                let body_ref = text_opt.as_deref().unwrap_or("");
-                chars_searched += rel_path_raw.len() + body_ref.len();
-                let doc_tokens = rel_path_raw
-                    .split(|c: char| !c.is_alphanumeric())
-                    .filter(|s| !s.is_empty())
-                    .count()
-                    + body_ref.split_whitespace().count();
-                tokens_searched += doc_tokens;
-
-                let combined_lower = format!("{} {}", path_search_text, body_ref.to_ascii_lowercase());
-                for term in &terms {
-                    if matches_term_in_text(&combined_lower, term) {
-                        *df.entry(term.clone()).or_insert(0) += 1;
+                        }
+                        warm_cache_complete = indexed_docs.len() == total_candidates;
                     }
                 }
-
-                let done = idx + 1;
-                if is_pdf_or_large || done % emit_stride == 0 || done == total_candidates {
-                    let short_name = Path::new(&file.path)
-                        .file_name()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or(&file.path)
-                        .to_string();
-                    on_progress(json!({
-                        "query": query,
-                        "phase": if done == total_candidates { "ranking" } else { "scanning" },
-                        "done": done,
-                        "total": total_candidates,
-                        "progress": (done as f64) / (total_candidates.max(1) as f64),
-                        "currentFile": short_name,
-                        "tokensSearched": tokens_searched,
-                        "charsSearched": chars_searched,
-                        "pdfBooksScanned": pdf_books_scanned,
-                        "cachedDigestsUsed": cached_digests_used,
-                        "elapsedMs": (started.elapsed().as_secs_f64() * 1000.0 * 10.0).round() / 10.0,
-                    }));
-                }
-
-                doc_contents.push((file, text_opt, path_search_text));
             }
 
-            let total_docs = doc_contents.len().max(1) as f64;
+            if warm_cache_complete {
+                on_progress(json!({
+                    "query": query,
+                    "phase": "ranking",
+                    "done": total_candidates,
+                    "total": total_candidates,
+                    "progress": 1.0,
+                    "currentFile": "",
+                    "tokensSearched": tokens_searched,
+                    "charsSearched": chars_searched,
+                    "pdfBooksScanned": pdf_books_scanned,
+                    "cachedDigestsUsed": cached_digests_used,
+                    "elapsedMs": (started.elapsed().as_secs_f64() * 1000.0 * 10.0).round() / 10.0,
+                }));
+            } else if opt_parallel_scan && total_candidates > 1 {
+                let worker_count = std::thread::available_parallelism()
+                    .map(|n| n.get())
+                    .unwrap_or(8)
+                    .clamp(2, 16);
+                let chunk_size = (total_candidates + worker_count - 1) / worker_count;
+                let chunks: Vec<Vec<LocalFileEntry>> = eligible_files
+                    .chunks(chunk_size.max(1))
+                    .map(|c| c.to_vec())
+                    .collect();
+
+                let chunk_results: Vec<Vec<(Arc<CachedDocIndex>, bool)>> = std::thread::scope(|s| {
+                    let handles: Vec<_> = chunks
+                        .into_iter()
+                        .map(|chunk| {
+                            s.spawn(move || {
+                                chunk
+                                    .into_iter()
+                                    .map(|file| {
+                                        build_or_get_cached_doc_index(
+                                            file,
+                                            opt_disk_cache_all_pdfs,
+                                            opt_inverted_index,
+                                        )
+                                    })
+                                    .collect::<Vec<_>>()
+                            })
+                        })
+                        .collect();
+                    handles
+                        .into_iter()
+                        .filter_map(|h| h.join().ok())
+                        .collect()
+                });
+
+                let mut idx = 0usize;
+                for batch in chunk_results {
+                    for (doc, was_cached) in batch {
+                        let is_pdf_or_large = doc.file.kind == "pdf" || doc.file.size > 1_000_000;
+                        if doc.file.kind == "pdf" {
+                            pdf_books_scanned += 1;
+                        }
+                        if was_cached {
+                            cached_digests_used += 1;
+                        }
+                        bytes_inspected = bytes_inspected.saturating_add(doc.file.size);
+                        chars_searched += doc.doc_chars;
+                        tokens_searched += doc.doc_tokens;
+
+                        idx += 1;
+                        if is_pdf_or_large || idx % emit_stride == 0 || idx == total_candidates {
+                            let short_name = Path::new(&doc.file.path)
+                                .file_name()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or(&doc.file.path)
+                                .to_string();
+                            on_progress(json!({
+                                "query": query,
+                                "phase": if idx == total_candidates { "ranking" } else { "scanning" },
+                                "done": idx,
+                                "total": total_candidates,
+                                "progress": (idx as f64) / (total_candidates.max(1) as f64),
+                                "currentFile": short_name,
+                                "tokensSearched": tokens_searched,
+                                "charsSearched": chars_searched,
+                                "pdfBooksScanned": pdf_books_scanned,
+                                "cachedDigestsUsed": cached_digests_used,
+                                "elapsedMs": (started.elapsed().as_secs_f64() * 1000.0 * 10.0).round() / 10.0,
+                            }));
+                        }
+                        indexed_docs.push(doc);
+                    }
+                }
+            } else {
+                for (idx, file) in eligible_files.into_iter().enumerate() {
+                    let is_pdf_or_large = file.kind == "pdf" || file.size > 1_000_000;
+                    if file.kind == "pdf" {
+                        pdf_books_scanned += 1;
+                    }
+                    bytes_inspected = bytes_inspected.saturating_add(file.size);
+
+                    let (doc, was_cached) = build_or_get_cached_doc_index(
+                        file,
+                        opt_disk_cache_all_pdfs,
+                        opt_inverted_index,
+                    );
+                    if was_cached {
+                        cached_digests_used += 1;
+                    }
+                    chars_searched += doc.doc_chars;
+                    tokens_searched += doc.doc_tokens;
+
+                    let done = idx + 1;
+                    if is_pdf_or_large || done % emit_stride == 0 || done == total_candidates {
+                        let short_name = Path::new(&doc.file.path)
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or(&doc.file.path)
+                            .to_string();
+                        on_progress(json!({
+                            "query": query,
+                            "phase": if done == total_candidates { "ranking" } else { "scanning" },
+                            "done": done,
+                            "total": total_candidates,
+                            "progress": (done as f64) / (total_candidates.max(1) as f64),
+                            "currentFile": short_name,
+                            "tokensSearched": tokens_searched,
+                            "charsSearched": chars_searched,
+                            "pdfBooksScanned": pdf_books_scanned,
+                            "cachedDigestsUsed": cached_digests_used,
+                            "elapsedMs": (started.elapsed().as_secs_f64() * 1000.0 * 10.0).round() / 10.0,
+                        }));
+                    }
+                    indexed_docs.push(doc);
+                }
+            }
+
+            // Use the word/prefix inverted index on each document (when `opt_inverted_index` is enabled)
+            // to compute document frequencies (DF) and prune non-matching documents in O(1) per doc.
+            let mut candidate_docs: Vec<Arc<CachedDocIndex>> = Vec::new();
+            for doc in &indexed_docs {
+                let mut doc_matches_any = false;
+                for term in &terms {
+                    let matched = if opt_inverted_index {
+                        doc_may_match_term_fast(doc, term)
+                    } else {
+                        matches_term_in_text(&doc.path_search_text, term)
+                            || matches_term_in_text(&doc.content_lower, term)
+                    };
+                    if matched {
+                        *df.entry(term.clone()).or_insert(0) += 1;
+                        doc_matches_any = true;
+                    }
+                }
+                if doc_matches_any || !opt_inverted_index {
+                    candidate_docs.push(Arc::clone(doc));
+                }
+            }
+
+            let index_candidates_count = candidate_docs.len();
+            let total_docs = indexed_docs.len().max(1) as f64;
             let term_weight = |term: &str| -> f64 {
                 let doc_freq = (*df.get(term).unwrap_or(&1)).max(1) as f64;
                 let idf = ((total_docs + 1.0) / (doc_freq + 0.5)).ln() + 1.0;
@@ -1962,23 +2304,30 @@ where
                 .filter(|s| !s.is_empty())
                 .collect::<Vec<_>>()
                 .join(" ");
-            let mut hits = Vec::new();
 
-            for (file, text_opt, path_search_text) in doc_contents {
-                let file_name = Path::new(&file.path)
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("")
-                    .to_ascii_lowercase();
+            // Stage 1: Score all candidate documents first (using O(1) inverted-index word quality
+            // when `opt_inverted_index` is active), then sort and truncate to `limit` BEFORE
+            // extracting section snippets and line highlights so we never do snippet extraction
+            // on lower-ranked documents that won't be returned.
+            struct ScoredDocCandidate {
+                doc: Arc<CachedDocIndex>,
+                score: f64,
+                matched_words: usize,
+            }
+            let mut scored_candidates: Vec<ScoredDocCandidate> = Vec::with_capacity(candidate_docs.len());
+
+            for doc in candidate_docs {
+                let file_name = &doc.file_name_lower;
+                let path_search_text = &doc.path_search_text;
 
                 let mut matched_weight = 0.0f64;
                 let mut matched_words = 0usize;
 
-                let Some(content) = text_opt else {
+                if doc.content.is_none() {
                     for term in &terms {
                         let w = term_weight(term);
-                        let q_name = match_term_quality(&file_name, term);
-                        let q_path = match_term_quality(&path_search_text, term);
+                        let q_name = match_term_quality(file_name, term);
+                        let q_path = match_term_quality(path_search_text, term);
                         if q_name > 0.0 {
                             matched_weight += w * q_name;
                             matched_words += 1;
@@ -1995,32 +2344,31 @@ where
                             1.0
                         };
                         let score = ((matched_weight / max_possible_weight) * cov_factor).clamp(0.12, 0.99);
-                        hits.push(json!({
-                            "path": file.path,
-                            "kind": if is_code_req { "code" } else { file.kind },
-                            "score": score,
-                            "matchedWords": matched_words,
-                            "words": true,
-                            "meaning": true,
-                            "excerpt": "",
-                            "loc": Value::Null,
-                            "endLine": Value::Null,
-                            "size": file.size,
-                            "modified": file.modified,
-                        }));
+                        scored_candidates.push(ScoredDocCandidate {
+                            doc,
+                            score,
+                            matched_words,
+                        });
                     }
                     continue;
-                };
+                }
 
-                let content_lower = content.to_ascii_lowercase();
+                let content_lower = &doc.content_lower;
                 for term in &terms {
-                    let w = term_weight(term);
-                    let q_body = match_term_quality(&content_lower, term);
-                    let q_name = match_term_quality(&file_name, term);
-                    let q_path = match_term_quality(&path_search_text, term);
-                    let best_q = q_body.max(q_name * 0.85).max(q_path * 0.65);
+                    let best_q = if opt_inverted_index {
+                        let q_idx = doc_term_quality_fast(&doc, term);
+                        if q_idx == 0.0 {
+                            continue;
+                        }
+                        q_idx
+                    } else {
+                        let q_body = match_term_quality(content_lower, term);
+                        let q_name = match_term_quality(file_name, term);
+                        let q_path = match_term_quality(path_search_text, term);
+                        q_body.max(q_name * 0.85).max(q_path * 0.65)
+                    };
                     if best_q > 0.0 {
-                        matched_weight += w * best_q;
+                        matched_weight += term_weight(term) * best_q;
                         matched_words += 1;
                     }
                 }
@@ -2033,7 +2381,7 @@ where
                 // `"From composing networks to deep networks"` strongly elevate exact/near-phrase matches
                 // above documents that merely contain one common word like `"networks"`.
                 let mut phrase_boost = 0.0f64;
-                if terms.len() >= 2 {
+                if terms.len() >= 2 && matched_words >= 2 {
                     if clean_phrase.len() >= 8 && content_lower.contains(&clean_phrase) {
                         phrase_boost += 0.45;
                     }
@@ -2056,22 +2404,78 @@ where
                     }
                 }
 
-                let lines: Vec<&str> = content.lines().collect();
+                // Multi-term coverage factor: prevents a document that only matches 1 common word (e.g. "networks")
+                // from rivaling a document that matches all 4 words ("composing", "networks", "deep").
+                let coverage = (matched_words as f64) / (terms.len().max(1) as f64);
+                let coverage_factor = if terms.len() >= 2 {
+                    0.35 + 0.65 * coverage.powf(1.15)
+                } else {
+                    1.0
+                };
+                let raw_score = (matched_weight / max_possible_weight) * coverage_factor + phrase_boost;
+                let normalized_score = raw_score.clamp(0.10, 0.99);
+                scored_candidates.push(ScoredDocCandidate {
+                    doc,
+                    score: normalized_score,
+                    matched_words,
+                });
+            }
+
+            scored_candidates.sort_by(|a, b| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            scored_candidates.truncate(limit);
+
+            // Stage 2: Extract rich sections, line numbers, and highlighted excerpts ONLY for the top `limit` hits.
+            let mut hits = Vec::with_capacity(scored_candidates.len());
+            for cand in scored_candidates {
+                let doc = &cand.doc;
+                let file = &doc.file;
+                let matched_words = cand.matched_words;
+                let normalized_score = cand.score;
+
+                let Some(content) = doc.content.as_deref() else {
+                    hits.push(json!({
+                        "path": file.path,
+                        "kind": if is_code_req { "code" } else { file.kind },
+                        "score": normalized_score,
+                        "matchedWords": matched_words,
+                        "words": true,
+                        "meaning": true,
+                        "excerpt": "",
+                        "loc": Value::Null,
+                        "endLine": Value::Null,
+                        "size": file.size,
+                        "modified": file.modified,
+                    }));
+                    continue;
+                };
+
                 let excerpt: String;
                 let mut loc_val = Value::Null;
                 let mut end_line_val = Value::Null;
                 let mut top_sections_json = Vec::new();
 
+                // Evaluate per-document term eligibility once, not per line/section.
+                let doc_active_terms: Vec<(&String, f64)> = terms
+                    .iter()
+                    .filter(|term| !opt_inverted_index || doc_may_match_term_fast(doc, term))
+                    .map(|term| (term, term_weight(term)))
+                    .collect();
+
                 if file.kind == "code" {
+                    let lines: Vec<&str> = content.lines().collect();
                     let mut best_line_idx = 0usize;
                     let mut best_line_w = 0.0f64;
                     for (idx, line) in lines.iter().enumerate() {
                         let l_lower = line.to_ascii_lowercase();
                         let mut lw = 0.0f64;
-                        for term in &terms {
+                        for (term, w) in &doc_active_terms {
                             let q = match_term_quality(&l_lower, term);
                             if q > 0.0 {
-                                lw += term_weight(term) * q;
+                                lw += *w * q;
                             }
                         }
                         if lw > best_line_w {
@@ -2093,17 +2497,23 @@ where
                     }));
                 } else {
                     // Section-aware scoring for Markdown, text, and BookDigest documents
-                    let sections = split_into_sections(&content);
+                    let owned_sections;
+                    let sections: &[DocSection] = if !doc.sections.is_empty() {
+                        &doc.sections
+                    } else {
+                        owned_sections = split_into_sections(content);
+                        &owned_sections
+                    };
                     let mut scored_sections: Vec<(f64, &DocSection)> = Vec::new();
-                    for sec in &sections {
-                        let sec_lower = sec.text.to_ascii_lowercase();
-                        let head_lower = sec.heading.to_ascii_lowercase();
+                    for sec in sections {
+                        let sec_lower = &sec.text_lower;
+                        let head_lower = &sec.heading_lower;
                         let mut sec_w = 0.0f64;
                         let mut sec_matched = 0usize;
-                        for term in &terms {
-                            let w = term_weight(term);
-                            let q_head = match_term_quality(&head_lower, term);
-                            let q_sec = match_term_quality(&sec_lower, term);
+                        for (term, w) in &doc_active_terms {
+                            let w = *w;
+                            let q_head = match_term_quality(head_lower, term);
+                            let q_sec = match_term_quality(sec_lower, term);
                             if q_head > 0.0 {
                                 sec_w += w * q_head * 2.2;
                                 sec_matched += 1;
@@ -2130,13 +2540,13 @@ where
                         if chosen.len() >= 3 {
                             break;
                         }
-                        let sec_lower = sec.text.to_ascii_lowercase();
+                        let sec_lower = &sec.text_lower;
                         let adds_new_term = terms.iter().any(|t| {
-                            !covered_terms.contains(t) && matches_term_in_text(&sec_lower, t)
+                            !covered_terms.contains(t) && matches_term_in_text(sec_lower, t)
                         });
                         if chosen.is_empty() || adds_new_term {
                             for t in &terms {
-                                if matches_term_in_text(&sec_lower, t) {
+                                if matches_term_in_text(sec_lower, t) {
                                     covered_terms.insert(t.clone());
                                 }
                             }
@@ -2193,16 +2603,6 @@ where
                     excerpt = highlight_excerpt(&joined, &terms);
                 }
 
-                // Multi-term coverage factor: prevents a document that only matches 1 common word (e.g. "networks")
-                // from rivaling a document that matches all 4 words ("composing", "networks", "deep").
-                let coverage = (matched_words as f64) / (terms.len().max(1) as f64);
-                let coverage_factor = if terms.len() >= 2 {
-                    0.35 + 0.65 * coverage.powf(1.15)
-                } else {
-                    1.0
-                };
-                let raw_score = (matched_weight / max_possible_weight) * coverage_factor + phrase_boost;
-                let normalized_score = raw_score.clamp(0.10, 0.99);
                 hits.push(json!({
                     "path": file.path,
                     "kind": if is_code_req { "code" } else { file.kind },
@@ -2218,14 +2618,6 @@ where
                     "modified": file.modified,
                 }));
             }
-
-            hits.sort_by(|a, b| {
-                let sa = a["score"].as_f64().unwrap_or(0.0);
-                let sb = b["score"].as_f64().unwrap_or(0.0);
-                sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
-            });
-
-            hits.truncate(limit);
 
             // Partition hits into `strong` (top-ranked primary matches) and `weaker` (partial single-word
             // overlap hits placed under the UI's collapsible "X weaker matches" divider).
@@ -2260,6 +2652,7 @@ where
             let metrics = json!({
                 "elapsedMs": elapsed_ms,
                 "docsSearched": total_candidates,
+                "indexCandidates": index_candidates_count,
                 "tokensSearched": tokens_searched,
                 "charsSearched": chars_searched,
                 "bytesInspected": bytes_inspected,
@@ -2763,5 +3156,321 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn caches_all_pdf_sizes_to_disk_and_survives_ram_cache_clear() {
+        let tmp = std::env::temp_dir().join("digup_all_pdf_disk_cache_test");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        // Create 3 small PDFs (16 KB, 64 KB, 256 KB — all < 2 MB, which previously missed disk cache)
+        for (idx, kb) in [16usize, 64, 256].into_iter().enumerate() {
+            let mut pdf_bytes = format!(
+                "%PDF-1.7\n1 0 obj\n<</Title (Small Book {idx}) /Author (Author {idx})>>\nstream\nBT (Backpropagation and Composing Deep Networks Chapter {idx}) Tj ET\nendstream\nendobj\n%%EOF"
+            )
+            .into_bytes();
+            pdf_bytes.resize(kb * 1024, b' ');
+            fs::write(tmp.join(format!("small_book_{idx}.pdf")), &pdf_bytes).unwrap();
+        }
+
+        clear_all_search_caches(true);
+        let roots = vec![tmp.display().to_string()];
+
+        // First search: populates disk cache for all 3 small PDFs
+        let res1 = local_search_op(
+            &json!({"op": "search", "query": "Composing Deep Networks", "limit": 10}),
+            &roots,
+            &[],
+            &[],
+            &[],
+        );
+        assert_eq!(res1["metrics"]["pdfBooksScanned"].as_u64().unwrap_or(0), 3);
+
+        // Clear RAM caches ONLY (simulating a cold app restart via start-digup.ps1)
+        clear_all_search_caches(false);
+
+        // Second search after RAM clear: all 3 small PDFs (< 2 MB) MUST load from disk cache!
+        let res2 = local_search_op(
+            &json!({
+                "op": "search",
+                "query": "Composing Deep Networks",
+                "limit": 10,
+                "opt": { "diskCacheAllPdfs": true, "parallelScan": false, "invertedIndex": false }
+            }),
+            &roots,
+            &[],
+            &[],
+            &[],
+        );
+        assert_eq!(
+            res2["metrics"]["cachedDigestsUsed"].as_u64().unwrap_or(0),
+            3,
+            "All 3 small PDFs (< 2 MB) must hit persistent disk cache after RAM clear, got: {:?}",
+            res2["metrics"]
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn parallel_scan_and_inverted_index_match_baseline_hits_and_accelerate_queries() {
+        let tmp = std::env::temp_dir().join("digup_parallel_inverted_index_test");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        // Build a synthetic corpus of 60 documents + 4 PDFs
+        for i in 0..60 {
+            let content = if i == 17 {
+                "# Understanding Deep Learning\n## 4.2 From composing networks to deep networks\nShallow neural networks compose piecewise linear regions into deep networks."
+            } else if i % 3 == 0 {
+                "# Campus Networks\nWireless networks and router configuration guide for building B."
+            } else {
+                "# General Lab Note\nCalibration schedule for optical sensors and thermal chambers."
+            };
+            fs::write(tmp.join(format!("doc_{i:03}.md")), content).unwrap();
+        }
+        for p in 0..4 {
+            let mut pdf_bytes = format!(
+                "%PDF-1.7\n1 0 obj\n<</Title (Paper {p}) /Author (Simon Prince)>>\nstream\nBT (Deep networks paper number {p} on representation learning) Tj ET\nendstream\nendobj\n%%EOF"
+            )
+            .into_bytes();
+            pdf_bytes.resize(32 * 1024, b' ');
+            fs::write(tmp.join(format!("paper_{p}.pdf")), &pdf_bytes).unwrap();
+        }
+
+        let roots = vec![tmp.display().to_string()];
+        let query = "From composing networks to deep networks";
+
+        // 1. Baseline (sequential, no inverted index)
+        clear_all_search_caches(true);
+        let base_res = local_search_op(
+            &json!({
+                "op": "search",
+                "query": query,
+                "limit": 20,
+                "opt": { "diskCacheAllPdfs": false, "parallelScan": false, "invertedIndex": false }
+            }),
+            &roots,
+            &[],
+            &[],
+            &[],
+        );
+
+        // 2. Parallel scan only
+        clear_all_search_caches(true);
+        let par_res = local_search_op(
+            &json!({
+                "op": "search",
+                "query": query,
+                "limit": 20,
+                "opt": { "diskCacheAllPdfs": true, "parallelScan": true, "invertedIndex": false }
+            }),
+            &roots,
+            &[],
+            &[],
+            &[],
+        );
+
+        // 3. Combined (Parallel + All-PDF Disk Cache + Inverted Index warm query)
+        let _warmup = local_search_op(
+            &json!({
+                "op": "search",
+                "query": "warmup query",
+                "limit": 20,
+                "opt": { "diskCacheAllPdfs": true, "parallelScan": true, "invertedIndex": true }
+            }),
+            &roots,
+            &[],
+            &[],
+            &[],
+        );
+        let idx_res = local_search_op(
+            &json!({
+                "op": "search",
+                "query": query,
+                "limit": 20,
+                "opt": { "diskCacheAllPdfs": true, "parallelScan": true, "invertedIndex": true }
+            }),
+            &roots,
+            &[],
+            &[],
+            &[],
+        );
+
+        // Verify exact parity on top hit, strong count, and total hits
+        let base_hits = base_res["hits"].as_array().unwrap();
+        let par_hits = par_res["hits"].as_array().unwrap();
+        let idx_hits = idx_res["hits"].as_array().unwrap();
+        assert_eq!(base_hits[0]["path"], par_hits[0]["path"]);
+        assert_eq!(base_hits[0]["path"], idx_hits[0]["path"]);
+        assert!(base_hits[0]["path"].as_str().unwrap().contains("doc_017.md"));
+        assert_eq!(base_res["strong"], par_res["strong"]);
+        assert_eq!(base_res["strong"], idx_res["strong"]);
+        assert_eq!(base_hits.len(), idx_hits.len());
+        assert!(
+            idx_res["metrics"]["indexCandidates"].as_u64().unwrap_or(999) < 64,
+            "Inverted index should prune non-matching documents before scoring, got: {:?}",
+            idx_res["metrics"]
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn ablation_benchmark_on_real_user_documents_corpus() {
+        let user_docs = PathBuf::from(r"C:\Users\SaadG\Documents");
+        if !user_docs.is_dir() {
+            return;
+        }
+        let roots = vec![user_docs.display().to_string()];
+        let query = "From composing networks to deep networks";
+
+        // Mode A: Baseline (Sequential + >2MB disk cache only + no inverted index)
+        clear_all_search_caches(true);
+        let t_a = Instant::now();
+        let res_a = local_search_op(
+            &json!({
+                "op": "search",
+                "query": query,
+                "limit": 50,
+                "opt": { "diskCacheAllPdfs": false, "parallelScan": false, "invertedIndex": false }
+            }),
+            &roots,
+            &[],
+            &[],
+            &[],
+        );
+        let ms_a = t_a.elapsed().as_secs_f64() * 1000.0;
+
+        // Mode B: Parallel multi-core scan ALONE (cold caches, no inverted index)
+        clear_all_search_caches(true);
+        let t_b = Instant::now();
+        let res_b = local_search_op(
+            &json!({
+                "op": "search",
+                "query": query,
+                "limit": 50,
+                "opt": { "diskCacheAllPdfs": false, "parallelScan": true, "invertedIndex": false }
+            }),
+            &roots,
+            &[],
+            &[],
+            &[],
+        );
+        let ms_b = t_b.elapsed().as_secs_f64() * 1000.0;
+
+        // Mode C: All-PDF Persistent Disk Cache ALONE (populate disk cache, clear RAM cache, run sequential without inverted index)
+        clear_all_search_caches(true);
+        let _populate = local_search_op(
+            &json!({
+                "op": "search",
+                "query": " populate ",
+                "limit": 5,
+                "opt": { "diskCacheAllPdfs": true, "parallelScan": true, "invertedIndex": false }
+            }),
+            &roots,
+            &[],
+            &[],
+            &[],
+        );
+        clear_all_search_caches(false); // Clear RAM only, keeping disk cache
+        let t_c = Instant::now();
+        let res_c = local_search_op(
+            &json!({
+                "op": "search",
+                "query": query,
+                "limit": 50,
+                "opt": { "diskCacheAllPdfs": true, "parallelScan": false, "invertedIndex": false }
+            }),
+            &roots,
+            &[],
+            &[],
+            &[],
+        );
+        let ms_c = t_c.elapsed().as_secs_f64() * 1000.0;
+
+        // Mode D: In-Memory Inverted Index ALONE (warm index)
+        let _build_idx = local_search_op(
+            &json!({
+                "op": "search",
+                "query": "warmup",
+                "limit": 5,
+                "opt": { "diskCacheAllPdfs": false, "parallelScan": false, "invertedIndex": true }
+            }),
+            &roots,
+            &[],
+            &[],
+            &[],
+        );
+        let t_d = Instant::now();
+        let res_d = local_search_op(
+            &json!({
+                "op": "search",
+                "query": query,
+                "limit": 50,
+                "opt": { "diskCacheAllPdfs": false, "parallelScan": false, "invertedIndex": true }
+            }),
+            &roots,
+            &[],
+            &[],
+            &[],
+        );
+        let ms_d = t_d.elapsed().as_secs_f64() * 1000.0;
+
+        // Mode E: All Combined (Cold restart with Disk Cache + Parallel Scan + Inverted Index build, then Warm query)
+        clear_all_search_caches(false); // Simulate cold app restart (RAM empty, disk cache warm)
+        let t_e_cold = Instant::now();
+        let res_e_cold = local_search_op(
+            &json!({
+                "op": "search",
+                "query": query,
+                "limit": 50,
+                "opt": { "diskCacheAllPdfs": true, "parallelScan": true, "invertedIndex": true }
+            }),
+            &roots,
+            &[],
+            &[],
+            &[],
+        );
+        let ms_e_cold = t_e_cold.elapsed().as_secs_f64() * 1000.0;
+
+        let t_e_warm = Instant::now();
+        let res_e_warm = local_search_op(
+            &json!({
+                "op": "search",
+                "query": query,
+                "limit": 50,
+                "opt": { "diskCacheAllPdfs": true, "parallelScan": true, "invertedIndex": true }
+            }),
+            &roots,
+            &[],
+            &[],
+            &[],
+        );
+        let ms_e_warm = t_e_warm.elapsed().as_secs_f64() * 1000.0;
+
+        println!("\n=== ABLATION BENCHMARK RESULTS (C:\\Users\\SaadG\\Documents) ===");
+        println!("A. Baseline (Sequential, >2MB cache only):      {:>8.2} ms | strong={} hits={} cached_pdfs={}/{}",
+            ms_a, res_a["strong"], res_a["hits"].as_array().map(|a| a.len()).unwrap_or(0),
+            res_a["metrics"]["cachedDigestsUsed"], res_a["metrics"]["pdfBooksScanned"]);
+        println!("B. Parallel Multi-Core Scan ALONE (Cold):       {:>8.2} ms | strong={} hits={} cached_pdfs={}/{}",
+            ms_b, res_b["strong"], res_b["hits"].as_array().map(|a| a.len()).unwrap_or(0),
+            res_b["metrics"]["cachedDigestsUsed"], res_b["metrics"]["pdfBooksScanned"]);
+        println!("C. All-PDF Disk Cache ALONE (Cold App Restart): {:>8.2} ms | strong={} hits={} cached_pdfs={}/{}",
+            ms_c, res_c["strong"], res_c["hits"].as_array().map(|a| a.len()).unwrap_or(0),
+            res_c["metrics"]["cachedDigestsUsed"], res_c["metrics"]["pdfBooksScanned"]);
+        println!("D. RAM Inverted Index ALONE (Warm Query):       {:>8.2} ms | strong={} hits={} candidates={}",
+            ms_d, res_d["strong"], res_d["hits"].as_array().map(|a| a.len()).unwrap_or(0),
+            res_d["metrics"]["indexCandidates"]);
+        println!("E1. COMBINED (Cold App Restart First Query):    {:>8.2} ms | strong={} hits={} cached_pdfs={}/{}",
+            ms_e_cold, res_e_cold["strong"], res_e_cold["hits"].as_array().map(|a| a.len()).unwrap_or(0),
+            res_e_cold["metrics"]["cachedDigestsUsed"], res_e_cold["metrics"]["pdfBooksScanned"]);
+        println!("E2. COMBINED (Warm Subsequent Query):           {:>8.2} ms | strong={} hits={} candidates={}\n",
+            ms_e_warm, res_e_warm["strong"], res_e_warm["hits"].as_array().map(|a| a.len()).unwrap_or(0),
+            res_e_warm["metrics"]["indexCandidates"]);
+
+        assert_eq!(res_a["strong"], res_e_warm["strong"]);
+        assert!(ms_e_warm < ms_a);
     }
 }
