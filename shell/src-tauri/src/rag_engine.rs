@@ -13,6 +13,7 @@ use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -1448,9 +1449,15 @@ pub fn clear_all_search_caches(clear_disk: bool) {
             g.clear();
         }
     }
+    if let Some(c) = PDF_FULL_TEXT_CACHE.get() {
+        if let Ok(mut g) = c.lock() {
+            g.clear();
+        }
+    }
     if clear_disk {
         let dir = std::env::temp_dir().join("digup_book_digest_cache_v2");
         let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(std::env::temp_dir().join("digup_pdf_fulltext_cache_v1"));
     }
 }
 
@@ -1802,6 +1809,337 @@ fn doc_term_quality_fast(doc: &CachedDocIndex, term: &str) -> f64 {
 
 fn doc_may_match_term_fast(doc: &CachedDocIndex, term: &str) -> bool {
     doc_term_quality_fast(doc, term) > 0.0
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Exact quote search: `"GLOW model samples from the base density raised to a positive power."` finds only the
+// documents that contain those exact words in that exact order (case, punctuation, hyphens and line breaks between
+// the words are ignored; every word must match whole, with no prefix or fuzzy matching).
+// ---------------------------------------------------------------------------------------------------------------
+
+const QUOTE_CONTEXT_CHARS: usize = 220;
+const QUOTE_SNIPPETS_PER_DOC: usize = 3;
+
+fn is_quote_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b >= 0x80
+}
+
+fn quote_tokens(text: &str) -> Vec<String> {
+    text.split(|c: char| !(c.is_ascii_alphanumeric() || !c.is_ascii()))
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_ascii_lowercase())
+        .collect()
+}
+
+fn is_quote_char(c: char) -> bool {
+    matches!(c, '"' | '“' | '”' | '„')
+}
+
+/// Returns the phrase to look for when `query` is a quote: wrapped in one pair of double quotes (straight or curly),
+/// or any query when `force` (`"exact": true` in the request) is set. `None` for ordinary searches.
+pub fn exact_quote_phrase(query: &str, force: bool) -> Option<String> {
+    let q = query.trim();
+    let chars: Vec<char> = q.chars().collect();
+    let wrapped = chars.len() >= 2
+        && is_quote_char(chars[0])
+        && is_quote_char(chars[chars.len() - 1])
+        && !chars[1..chars.len() - 1].iter().any(|&c| is_quote_char(c));
+    if !wrapped && !force {
+        return None;
+    }
+    let inner: String = if wrapped {
+        chars[1..chars.len() - 1].iter().collect()
+    } else {
+        q.chars().filter(|&c| !is_quote_char(c)).collect()
+    };
+    if quote_tokens(&inner).is_empty() {
+        None
+    } else {
+        Some(inner)
+    }
+}
+
+fn next_quote_word(b: &[u8], mut i: usize) -> Option<(usize, usize)> {
+    while i < b.len() && !is_quote_word_byte(b[i]) {
+        i += 1;
+    }
+    if i >= b.len() {
+        return None;
+    }
+    let start = i;
+    while i < b.len() && is_quote_word_byte(b[i]) {
+        i += 1;
+    }
+    Some((start, i))
+}
+
+/// Counts the places in `content` where `tokens` (lowercase) occur as consecutive whole words, and returns the byte
+/// spans of the first `keep` of them.
+fn find_exact_quote(content: &str, tokens: &[String], keep: usize) -> (usize, Vec<(usize, usize)>) {
+    let mut kept = Vec::new();
+    let mut count = 0usize;
+    if tokens.is_empty() {
+        return (0, kept);
+    }
+    let b = content.as_bytes();
+    let mut pos = 0usize;
+    while let Some((s, e)) = next_quote_word(b, pos) {
+        pos = e;
+        if !b[s..e].eq_ignore_ascii_case(tokens[0].as_bytes()) {
+            continue;
+        }
+        let mut end = e;
+        let mut all = true;
+        for tok in &tokens[1..] {
+            match next_quote_word(b, end) {
+                Some((ws, we)) if b[ws..we].eq_ignore_ascii_case(tok.as_bytes()) => end = we,
+                _ => {
+                    all = false;
+                    break;
+                }
+            }
+        }
+        if all {
+            count += 1;
+            if kept.len() < keep {
+                kept.push((s, end));
+            }
+        }
+    }
+    (count, kept)
+}
+
+/// Cheap pre-filter on the per-document word index: every (ASCII) word of the quote must occur in the document.
+fn doc_has_all_quote_words(doc: &CachedDocIndex, tokens: &[String]) -> bool {
+    tokens
+        .iter()
+        .all(|t| t.len() < 2 || !t.is_ascii() || doc.unique_words.contains(t.as_str()))
+}
+
+fn collapse_ws(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut prev_space = false;
+    for c in s.chars() {
+        if c.is_whitespace() {
+            if !prev_space {
+                out.push(' ');
+            }
+            prev_space = true;
+        } else {
+            out.push(c);
+            prev_space = false;
+        }
+    }
+    out
+}
+
+fn line_of_byte(content: &str, byte: usize) -> usize {
+    content.as_bytes()[..byte.min(content.len())]
+        .iter()
+        .filter(|&&c| c == b'\n')
+        .count()
+        + 1
+}
+
+static PDF_FULL_TEXT_CACHE: OnceLock<Mutex<HashMap<(String, u64), Option<Arc<String>>>>> = OnceLock::new();
+
+fn pdf_full_text_disk_path(path_str: &str, fingerprint: u64) -> PathBuf {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in path_str.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    let dir = std::env::temp_dir().join("digup_pdf_fulltext_cache_v1");
+    let _ = fs::create_dir_all(&dir);
+    dir.join(format!("{h:016x}_{fingerprint:016x}.txt"))
+}
+
+/// Full text of a PDF (every page), from RAM, else the disk cache, else extracted once and cached in both.
+fn pdf_full_text(file: &LocalFileEntry) -> Option<Arc<String>> {
+    let fingerprint = (file.modified.max(0) as u64) ^ file.size;
+    let key = (file.path.clone(), fingerprint);
+    let cache = PDF_FULL_TEXT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(g) = cache.lock() {
+        if let Some(found) = g.get(&key) {
+            return found.clone();
+        }
+    }
+    let disk = pdf_full_text_disk_path(&file.path, fingerprint);
+    let text = match fs::read_to_string(&disk) {
+        Ok(t) if !t.is_empty() => Some(t),
+        _ => {
+            let extracted = crate::pdf_text::extract_full_pdf_text(Path::new(&file.path));
+            if let Some(t) = &extracted {
+                let _ = fs::write(&disk, t);
+            }
+            extracted
+        }
+    }
+    .map(Arc::new);
+    if let Ok(mut g) = cache.lock() {
+        g.insert(key, text.clone());
+    }
+    text
+}
+
+enum QuoteText<'a> {
+    Borrowed(&'a str),
+    Full(Arc<String>),
+}
+
+impl QuoteText<'_> {
+    fn as_str(&self) -> &str {
+        match self {
+            QuoteText::Borrowed(s) => s,
+            QuoteText::Full(s) => s.as_str(),
+        }
+    }
+}
+
+/// The text a quote is looked for in: a PDF's full text (falling back to its digest when it cannot be extracted),
+/// otherwise the document's content.
+fn quote_text_of(doc: &CachedDocIndex) -> Option<QuoteText<'_>> {
+    if doc.file.kind == "pdf" {
+        if let Some(full) = pdf_full_text(&doc.file) {
+            return Some(QuoteText::Full(full));
+        }
+    }
+    doc.content.as_deref().map(QuoteText::Borrowed)
+}
+
+/// Runs an exact quote search over already indexed documents. Returns `(hits, total_matches, docs_checked)`.
+fn exact_quote_search(
+    docs: &[Arc<CachedDocIndex>],
+    phrase: &str,
+    is_code_req: bool,
+    limit: usize,
+    use_prefilter: bool,
+) -> (Vec<Value>, usize, usize) {
+    let tokens = quote_tokens(phrase);
+    // A PDF's digest only samples the book, so PDFs are never pre-filtered by it: their full text is searched.
+    let candidates: Vec<&Arc<CachedDocIndex>> = docs
+        .iter()
+        .filter(|d| {
+            d.file.kind == "pdf"
+                || (d.content.is_some() && (!use_prefilter || doc_has_all_quote_words(d, &tokens)))
+        })
+        .collect();
+    let docs_checked = candidates.len();
+
+    // Workers pull the next document off a shared counter, so one big book does not stall a fixed chunk.
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .clamp(1, 16)
+        .min(candidates.len().max(1));
+    let next = AtomicUsize::new(0);
+    let mut found: Vec<(usize, usize, Vec<(usize, usize)>)> = Vec::new();
+    std::thread::scope(|s| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                let (tokens, candidates, next) = (&tokens, &candidates, &next);
+                s.spawn(move || {
+                    let mut local = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(d) = candidates.get(i) else { break };
+                        let Some(text) = quote_text_of(d) else { continue };
+                        let (count, spans) = find_exact_quote(text.as_str(), tokens, QUOTE_SNIPPETS_PER_DOC);
+                        if count > 0 {
+                            local.push((i, count, spans));
+                        }
+                    }
+                    local
+                })
+            })
+            .collect();
+        for h in handles {
+            if let Ok(v) = h.join() {
+                found.extend(v);
+            }
+        }
+    });
+
+    let total_matches: usize = found.iter().map(|f| f.1).sum();
+    found.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+            .then_with(|| candidates[a.0].file.path.cmp(&candidates[b.0].file.path))
+    });
+    found.truncate(limit);
+
+    let mut hits = Vec::with_capacity(found.len());
+    for (doc_idx, count, spans) in found {
+        let doc = candidates[doc_idx];
+        let file = &doc.file;
+        let Some(text) = quote_text_of(doc) else { continue };
+        let content = text.as_str();
+        // Full PDF text carries a form feed after every page, so the place of a match is its page.
+        let paged = matches!(text, QuoteText::Full(_));
+        let mut sections = Vec::new();
+        let mut snippets = Vec::new();
+        let mut loc_val = Value::Null;
+        let mut end_line_val = Value::Null;
+        for (n, &(s, e)) in spans.iter().enumerate() {
+            let mut a = s.saturating_sub(QUOTE_CONTEXT_CHARS);
+            while !content.is_char_boundary(a) {
+                a -= 1;
+            }
+            let mut b = (e + QUOTE_CONTEXT_CHARS).min(content.len());
+            while !content.is_char_boundary(b) {
+                b += 1;
+            }
+            let before = collapse_ws(&content[a..s]);
+            let mid = collapse_ws(&content[s..e]);
+            let after = collapse_ws(&content[e..b]);
+            let (start_line, end_line) = if paged {
+                let page = content.as_bytes()[..s].iter().filter(|&&c| c == 0x0c).count() + 1;
+                (page, page)
+            } else {
+                (line_of_byte(content, s), line_of_byte(content, e))
+            };
+            if n == 0 {
+                loc_val = json!(start_line);
+                end_line_val = json!(end_line);
+            }
+            snippets.push(format!(
+                "{}{}«{}»{}{}",
+                if a > 0 { "…" } else { "" },
+                before,
+                mid,
+                after,
+                if b < content.len() { "…" } else { "" },
+            ));
+            sections.push(json!({
+                "heading": if paged {
+                    format!("Page {start_line} · exact match {} of {}", n + 1, count)
+                } else {
+                    format!("Exact match {} of {}", n + 1, count)
+                },
+                "startLine": start_line,
+                "endLine": end_line,
+                "text": format!("{before}{mid}{after}"),
+            }));
+        }
+        hits.push(json!({
+            "path": file.path,
+            "kind": if is_code_req { "code" } else { file.kind },
+            "score": 1.0,
+            "segment": if paged { "page" } else { "lines" },
+            "loc_end": end_line_val,
+            "matchedWords": tokens.len(),
+            "words": true,
+            "meaning": true,
+            "exact": true,
+            "exactMatches": count,
+            "excerpt": snippets.join("\n\n"),
+            "sections": sections,
+            "loc": loc_val,
+            "endLine": end_line_val,
+            "size": file.size,
+            "modified": file.modified,
+        }));
+    }
+    (hits, total_matches, docs_checked)
 }
 
 /// Wraps whole-word or prefix occurrences of `terms` in `text` with `«...»` markers (which `window.js` renders as `<mark>`).
@@ -2263,6 +2601,35 @@ where
                     }
                     indexed_docs.push(doc);
                 }
+            }
+
+            // Exact quote mode: a query wrapped in double quotes (or `"exact": true`) returns only documents
+            // that contain those words consecutively, in that order.
+            if let Some(phrase) = exact_quote_phrase(query, request["exact"].as_bool().unwrap_or(false)) {
+                let (hits, total_matches, docs_checked) =
+                    exact_quote_search(&indexed_docs, &phrase, is_code_req, limit, opt_inverted_index);
+                let elapsed_ms = (started.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0;
+                let strong_count = hits.len();
+                return json!({
+                    "hits": hits,
+                    "strong": strong_count,
+                    "meaning": true,
+                    "metrics": {
+                        "elapsedMs": elapsed_ms,
+                        "docsSearched": total_candidates,
+                        "indexCandidates": docs_checked,
+                        "tokensSearched": tokens_searched,
+                        "charsSearched": chars_searched,
+                        "bytesInspected": bytes_inspected,
+                        "queryTerms": quote_tokens(&phrase).len(),
+                        "pdfBooksScanned": pdf_books_scanned,
+                        "cachedDigestsUsed": cached_digests_used,
+                        "strongHits": strong_count,
+                        "weakerHits": 0,
+                        "exactQuote": true,
+                        "exactMatches": total_matches,
+                    },
+                });
             }
 
             // Use the word/prefix inverted index on each document (when `opt_inverted_index` is enabled)
@@ -3472,5 +3839,200 @@ mod tests {
 
         assert_eq!(res_a["strong"], res_e_warm["strong"]);
         assert!(ms_e_warm < ms_a);
+    }
+
+    #[test]
+    fn exact_quote_phrase_detects_quoted_queries_only() {
+        assert_eq!(
+            exact_quote_phrase("\"GLOW model samples.\"", false).as_deref(),
+            Some("GLOW model samples.")
+        );
+        assert_eq!(exact_quote_phrase("  “curly quotes here”  ", false).as_deref(), Some("curly quotes here"));
+        assert_eq!(exact_quote_phrase("glow model samples", false), None);
+        assert_eq!(exact_quote_phrase("\"one\" and \"two\"", false), None);
+        assert_eq!(exact_quote_phrase("\"\"", false), None);
+        assert_eq!(exact_quote_phrase("\"...\"", false), None);
+        assert_eq!(exact_quote_phrase("glow model samples", true).as_deref(), Some("glow model samples"));
+    }
+
+    #[test]
+    fn find_exact_quote_requires_consecutive_whole_words_ignoring_case_and_punctuation() {
+        let tokens = quote_tokens("base density raised to a positive power.");
+        let ok = "The Base-Density,\nraised   to a POSITIVE power; and again: base density raised to a positive power.";
+        let (count, spans) = find_exact_quote(ok, &tokens, 5);
+        assert_eq!(count, 2);
+        assert_eq!(spans.len(), 2);
+        assert!(ok[spans[0].0..spans[0].1].starts_with("Base-Density"));
+
+        // Different word between, plural, prefix, reversed order, truncated phrase: none may match.
+        for bad in [
+            "base density never raised to a positive power",
+            "base densities raised to a positive power",
+            "base density raised to a positive powers",
+            "power positive a to raised density base",
+            "base density raised to a positive",
+            "database density raised to a positive power",
+        ] {
+            assert_eq!(find_exact_quote(bad, &tokens, 5).0, 0, "must not match: {bad}");
+        }
+        // Single-word quote is a whole-word match, not a prefix.
+        let one = quote_tokens("glow");
+        assert_eq!(find_exact_quote("glow glowing GLOW", &one, 5).0, 2);
+    }
+
+    #[test]
+    fn quoted_query_returns_only_documents_with_the_exact_sentence() {
+        let tmp = std::env::temp_dir().join("digup_exact_quote_test");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(
+            tmp.join("exact_once.md"),
+            "# Flows\nNotes.\nSampling: GLOW model samples from the\nbase density raised to a positive power.\nMore notes.",
+        )
+        .unwrap();
+        fs::write(
+            tmp.join("exact_twice.md"),
+            "glow model samples from the base density raised to a positive power. Later: GLOW Model Samples From The Base Density Raised To A Positive Power!",
+        )
+        .unwrap();
+        fs::write(
+            tmp.join("scattered_words.md"),
+            "The glow of the model samples a base. From the density we raise to a positive power.",
+        )
+        .unwrap();
+        fs::write(
+            tmp.join("near_miss.md"),
+            "GLOW models sample from the base density raised to a positive power.",
+        )
+        .unwrap();
+        fs::write(tmp.join("unrelated.md"), "Calibration schedule for optical sensors.").unwrap();
+
+        clear_all_search_caches(true);
+        let roots = vec![tmp.display().to_string()];
+        let sentence = "GLOW model samples from the base density raised to a positive power.";
+
+        let quoted = local_search_op(
+            &json!({"op": "search", "query": format!("\"{sentence}\""), "limit": 20}),
+            &roots,
+            &[],
+            &[],
+            &[],
+        );
+        let hits = quoted["hits"].as_array().unwrap();
+        let names: Vec<String> = hits
+            .iter()
+            .map(|h| Path::new(h["path"].as_str().unwrap()).file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["exact_twice.md", "exact_once.md"], "got {names:?}");
+        assert_eq!(quoted["strong"].as_u64(), Some(2));
+        assert_eq!(hits[0]["exactMatches"].as_u64(), Some(2));
+        assert_eq!(hits[1]["exactMatches"].as_u64(), Some(1));
+        assert_eq!(hits[1]["loc"].as_u64(), Some(3), "match starts on line 3");
+        assert_eq!(hits[1]["endLine"].as_u64(), Some(4), "match ends on line 4");
+        let excerpt = hits[1]["excerpt"].as_str().unwrap();
+        assert!(excerpt.contains("«GLOW model samples from the base density raised to a positive power»"), "{excerpt}");
+        assert_eq!(quoted["metrics"]["exactQuote"], json!(true));
+        assert_eq!(quoted["metrics"]["exactMatches"].as_u64(), Some(3));
+
+        // `exact: true` forces the same behavior without typing quotes.
+        let forced = local_search_op(
+            &json!({"op": "search", "query": sentence, "exact": true, "limit": 20}),
+            &roots,
+            &[],
+            &[],
+            &[],
+        );
+        assert_eq!(forced["hits"].as_array().unwrap().len(), 2);
+
+        // Without quotes the ordinary ranked search is used and also surfaces the near misses.
+        let plain = local_search_op(
+            &json!({"op": "search", "query": sentence, "limit": 20}),
+            &roots,
+            &[],
+            &[],
+            &[],
+        );
+        assert!(plain["hits"].as_array().unwrap().len() >= 4);
+        assert!(plain["metrics"]["exactQuote"].is_null());
+
+        // Same results with the inverted-index prefilter off.
+        let no_index = local_search_op(
+            &json!({
+                "op": "search",
+                "query": format!("\"{sentence}\""),
+                "limit": 20,
+                "opt": { "invertedIndex": false }
+            }),
+            &roots,
+            &[],
+            &[],
+            &[],
+        );
+        assert_eq!(no_index["hits"].as_array().unwrap().len(), 2);
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn exact_quote_search_on_real_user_documents_corpus() {
+        let user_docs = PathBuf::from(r"C:\Users\SaadG\Documents");
+        if !user_docs.is_dir() {
+            return;
+        }
+        let roots = vec![user_docs.display().to_string()];
+        let phrase = "GLOW model samples from the base density raised to a positive power.";
+        let query = format!("\"{phrase}\"");
+        let tokens = quote_tokens(phrase);
+
+        clear_all_search_caches(true);
+        let mut ms = Vec::new();
+        let mut last = Value::Null;
+        for _ in 0..3 {
+            let t = Instant::now();
+            last = local_search_op(&json!({"op": "search", "query": query, "limit": 50}), &roots, &[], &[], &[]);
+            ms.push(t.elapsed().as_secs_f64() * 1000.0);
+        }
+        println!("\n=== EXACT QUOTE SEARCH (C:\\Users\\SaadG\\Documents) ===");
+        println!("quote: {phrase}");
+        println!("runs ms (cold, warm, warm): {:.2} / {:.2} / {:.2}", ms[0], ms[1], ms[2]);
+        // App restart: RAM caches gone, the on-disk digest and full-text caches stay.
+        clear_all_search_caches(false);
+        let t = Instant::now();
+        let restarted = local_search_op(&json!({"op": "search", "query": query, "limit": 50}), &roots, &[], &[], &[]);
+        println!("after restart (disk caches): {:.2} ms", t.elapsed().as_secs_f64() * 1000.0);
+        assert_eq!(restarted["hits"], last["hits"]);
+        println!("metrics: {}", last["metrics"]);
+        for h in last["hits"].as_array().unwrap() {
+            println!(
+                "  {} | matches={} | line {} | {}",
+                h["path"].as_str().unwrap_or(""),
+                h["exactMatches"],
+                h["loc"],
+                h["excerpt"].as_str().unwrap_or("").chars().take(200).collect::<String>()
+            );
+        }
+
+        // Every reported hit must truly contain the whole quote as consecutive words.
+        for h in last["hits"].as_array().unwrap() {
+            let path = h["path"].as_str().unwrap();
+            let text = if path.to_ascii_lowercase().ends_with(".pdf") {
+                crate::pdf_text::extract_full_pdf_text(Path::new(path)).unwrap_or_default()
+            } else {
+                fs::read_to_string(path).unwrap_or_default()
+            };
+            assert!(find_exact_quote(&text, &tokens, 1).0 > 0, "false positive: {path}");
+        }
+
+        // The sentence is on one page of Understanding Deep Learning (chapter 16, GLOW), found by its full text.
+        let book = last["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|h| h["path"].as_str().unwrap_or("").contains("Understanding_Deep_Learning"));
+        if user_docs.join("_OceanofPDF.com_Understanding_Deep_Learning_-_Simon_JD_Prince.pdf").is_file() {
+            let book = book.expect("the GLOW sentence must be found in the book");
+            assert_eq!(book["segment"], json!("page"));
+            assert!(book["loc"].as_u64().unwrap_or(0) > 1);
+        }
     }
 }

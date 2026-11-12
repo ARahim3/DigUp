@@ -266,6 +266,9 @@ function renderTelemetry() {
     box.hidden = false;
     box.className = "search-telemetry done";
     const row = element("div", "telemetry-row");
+    if (m.exactQuote) {
+      row.append(element("span", "telemetry-pill primary", `❝ exact quote · ${(m.exactMatches ?? 0).toLocaleString()} ${m.exactMatches === 1 ? "match" : "matches"}`));
+    }
     row.append(
       element("span", "telemetry-pill time", `⏱ ${formatDurationMs(m.elapsedMs)}`),
       element(

@@ -15,6 +15,7 @@ mod hours;
 mod launch;
 mod moments;
 mod options;
+mod pdf_text;
 mod rag_engine;
 mod settings;
 mod status;
