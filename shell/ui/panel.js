@@ -42,6 +42,9 @@ const state = {
   error: null,
   indexing: null,        // {done, total} while the index helper works through new files
   caveat: null,          // why results may be incomplete right now (the shell's status.rs)
+  searching: false,
+  searchProgress: null,
+  searchMetrics: null,
 };
 let debugPending = false;
 
@@ -61,9 +64,16 @@ function queryChanged(event) {
   const text = code ? typed.slice(5).trim() : typed;
   state.isCode = code;
   if (!typed || (code && !text)) {
+    state.searching = false;
+    state.searchProgress = null;
+    state.searchMetrics = null;
+    renderProgressBar();
     show({ hits: [], strong: 0 }, text, typed ? "codeHint" : "empty");
     return;
   }
+  state.searching = true;
+  state.searchProgress = { done: 0, total: 0, progress: 0.05, tokensSearched: 0, elapsedMs: 0 };
+  renderProgressBar();
   // Words now. The last word is probably half-typed, so it matches as a prefix.
   ask({ op: "search", q: text, code, meaning: false, prefix_last: true, limit: 40 })
     .then((reply) => {
@@ -77,10 +87,20 @@ function queryChanged(event) {
       .then((reply) => {
         if (generation !== state.generation) return;
         state.finalGeneration = generation;
+        state.searching = false;
+        state.searchProgress = null;
+        renderProgressBar();
         show(reply, text, reply.meaning ? "meaning" : "wordsOnly");
         if (debugPending) report();
       })
-      .catch((error) => { if (generation === state.generation) failed(error); });
+      .catch((error) => {
+        if (generation === state.generation) {
+          state.searching = false;
+          state.searchProgress = null;
+          renderProgressBar();
+          failed(error);
+        }
+      });
   }, TYPING_PAUSE);
 }
 
@@ -91,6 +111,7 @@ function show(reply, text, phase) {
   state.phase = phase;
   state.strong = hits.slice(0, strong);
   state.weaker = hits.slice(strong);
+  if (reply.metrics) state.searchMetrics = reply.metrics;
   // Grouped by kind, the best hit's group first; code is one group with the room of all of them.
   const groups = new Map();
   for (const hit of state.strong) {
@@ -369,17 +390,38 @@ function facts(hit) {
   return box;
 }
 
+function renderProgressBar() {
+  const bar = $("search-progress-bar");
+  const fill = $("search-progress-fill");
+  if (!bar || !fill) return;
+  if (!state.searching || !state.searchProgress) {
+    bar.hidden = true;
+    return;
+  }
+  bar.hidden = false;
+  const pct = Math.max(5, Math.min(100, Math.round((state.searchProgress.progress || 0) * 100)));
+  fill.style.width = `${pct}%`;
+}
+
 function renderFooter() {
   const strong = state.strong.length, weaker = state.weaker.length;
   let summary;
   if (state.error) summary = `DigUp's helper: ${state.error}`;
-  else if (state.phase === "words") {
+  else if (state.searching && state.searchProgress && state.searchProgress.total > 0) {
+    const p = state.searchProgress;
+    const pct = Math.max(1, Math.min(100, Math.round((p.progress || 0) * 100)));
+    summary = `Searching ${p.done.toLocaleString()}/${p.total.toLocaleString()} docs (${pct}%) · ${(p.tokensSearched || 0).toLocaleString()} tokens`;
+  } else if (state.phase === "words") {
     summary = state.encoder === "starting" ? "Matching words; meaning search is warming up…" : "Matching words…";
   } else if (state.phase === "wordsOnly") summary = "Words only: meaning search isn't available";
   else if (state.phase === "codeHint") summary = "Searching your code";
   // Results while indexing (or before the model is in) may be missing some: that, where they're counted.
   else if (state.caveat && !state.isCode) summary = state.caveat;
-  else summary = `${strong} ${strong === 1 ? "result" : "results"}` + (weaker ? ` · ${weaker} weaker` : "");
+  else {
+    const m = state.searchMetrics;
+    const msText = m && m.elapsedMs != null ? ` · ${m.elapsedMs >= 1000 ? (m.elapsedMs / 1000).toFixed(2) + " s" : Math.round(m.elapsedMs) + " ms"} · ${(m.docsSearched ?? 0).toLocaleString()} docs · ${(m.tokensSearched ?? 0).toLocaleString()} tokens` : "";
+    summary = `${strong} ${strong === 1 ? "result" : "results"}` + (weaker ? ` · ${weaker} weaker` : "") + msText;
+  }
   $summary.textContent = summary;
   $keys.textContent = `↩ Open   ${MOD}↩ Show in ${FILE_MANAGER}   ␣ Preview`;
 }
@@ -507,6 +549,13 @@ tauri.event.listen("helper", ({ payload }) => {
     state.encoder = event.state;
     if (state.phase !== "empty") renderFooter();
   }
+});
+
+tauri.event.listen("search-progress", ({ payload }) => {
+  if (!payload || !state.searching) return;
+  state.searchProgress = payload;
+  renderProgressBar();
+  renderFooter();
 });
 
 /// Indexing and the model, from the shell: a badge beside the field while results may be incomplete ("Indexing 42%"),

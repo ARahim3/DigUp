@@ -60,6 +60,9 @@ const state = {
   cagSlots: [],
   jsonlStats: { sftCount: 0, dpoCount: 0 },
   hardwareProfile: null,
+  searching: false,
+  searchProgress: null, // { done, total, progress, currentFile, tokensSearched, charsSearched, elapsedMs }
+  searchMetrics: null,  // { elapsedMs, docsSearched, tokensSearched, charsSearched, bytesInspected, queryTerms, pdfBooksScanned, cachedDigestsUsed }
 };
 let debugPending = false;
 
@@ -82,6 +85,8 @@ function run() {
   state.navigated = false;
   state.error = null;
   if (isAi()) {
+    state.searching = false;
+    state.searchProgress = null;
     render();
     return;
   }
@@ -90,17 +95,39 @@ function run() {
   const text = /^code:/i.test(typed) ? typed.slice(5).trim() : typed;
   state.codePhase = null;
   if (!typed || (code && (!state.info.hasCode || !text))) {
-    Object.assign(state, { ranked: [], weaker: [], counts: {}, hasResults: false, selection: null });
+    Object.assign(state, {
+      ranked: [],
+      weaker: [],
+      counts: {},
+      hasResults: false,
+      selection: null,
+      searching: false,
+      searchProgress: null,
+      searchMetrics: null,
+    });
     if (typed) state.codePhase = state.info.hasCode ? "hint" : "off";
     render();
     return;
   }
+  state.searching = true;
+  state.searchProgress = {
+    query: text,
+    phase: "starting",
+    done: 0,
+    total: 0,
+    progress: 0.04,
+    currentFile: "Preparing search…",
+    tokensSearched: 0,
+    elapsedMs: 0,
+  };
   ask({ op: "embed_ahead", q: text, code }).catch(() => {});
   // Results of an earlier query stay until these are in; with none to show, a spinner.
   renderBar();
+  renderTelemetry();
   if (!state.hasResults) renderContent();
   const filter = FILTERS.find((item) => item.key === state.filter);
   state.timer = setTimeout(async () => {
+    const startedClient = performance.now();
     try {
       const all = await ask({ op: "search", q: text, code, meaning: true, limit: LIMIT });
       const shown = filter && !code
@@ -112,14 +139,34 @@ function run() {
         const key = FILTER_OF_KIND[hit.kind];
         counts[key] = (counts[key] || 0) + 1;
       }
-      Object.assign(state, { counts, text, meaning: shown.meaning, hasResults: true, showWeaker: false,
-                             ranked: shown.hits.slice(0, shown.strong), weaker: shown.hits.slice(shown.strong) });
+      const metrics = shown.metrics || all.metrics || {
+        elapsedMs: Math.round((performance.now() - startedClient) * 10) / 10,
+        docsSearched: (all.hits || []).length,
+        tokensSearched: 0,
+        charsSearched: 0,
+        queryTerms: text.split(/\s+/).filter(Boolean).length,
+      };
+      Object.assign(state, {
+        counts,
+        text,
+        meaning: shown.meaning,
+        hasResults: true,
+        showWeaker: false,
+        searching: false,
+        searchProgress: null,
+        searchMetrics: metrics,
+        ranked: shown.hits.slice(0, shown.strong),
+        weaker: shown.hits.slice(shown.strong),
+      });
       if (!rows().some((hit) => hit.path === state.selection)) state.selection = rows()[0]?.path ?? null;
       render();
       if (debugPending) report();
     } catch (error) {
       if (generation !== state.generation) return;
+      state.searching = false;
+      state.searchProgress = null;
       state.error = String(error);
+      renderTelemetry();
       renderStatus();
     }
   }, TYPING_PAUSE);
@@ -165,9 +212,80 @@ function selectedHit() {
 
 function render() {
   renderBar();
+  renderTelemetry();
   renderContent();
   renderSide();
   renderStatus();
+}
+
+function formatDurationMs(ms) {
+  if (ms == null || Number.isNaN(ms)) return "0 ms";
+  if (ms >= 1000) return `${(ms / 1000).toFixed(2)} s (${Math.round(ms).toLocaleString()} ms)`;
+  return `${ms < 10 ? ms.toFixed(1) : Math.round(ms).toLocaleString()} ms`;
+}
+
+function renderTelemetry() {
+  const box = $("search-telemetry");
+  if (!box) return;
+  if (!state.query.trim() || isAi() || state.codePhase) {
+    box.hidden = true;
+    box.replaceChildren();
+    return;
+  }
+
+  if (state.searching && state.searchProgress) {
+    const p = state.searchProgress;
+    const pct = Math.max(4, Math.min(100, Math.round((p.progress || 0) * 100)));
+    box.hidden = false;
+    box.className = "search-telemetry active";
+    const track = element("div", "telemetry-progress-track");
+    const fill = element("div", "telemetry-progress-fill");
+    fill.style.width = `${pct}%`;
+    track.append(fill);
+
+    const row = element("div", "telemetry-row");
+    const statusText = p.total > 0
+      ? `Searching ${p.done.toLocaleString()} / ${p.total.toLocaleString()} docs (${pct}%)`
+      : "Scanning folders…";
+    row.append(element("span", "telemetry-pill primary", statusText));
+    if (p.tokensSearched > 0) {
+      row.append(element("span", "telemetry-pill", `${p.tokensSearched.toLocaleString()} tokens scanned`));
+    }
+    if (p.elapsedMs > 0) {
+      row.append(element("span", "telemetry-pill", formatDurationMs(p.elapsedMs)));
+    }
+    if (p.currentFile) {
+      row.append(element("span", "telemetry-file", p.currentFile));
+    }
+    box.replaceChildren(track, row);
+    return;
+  }
+
+  if (state.hasResults && state.searchMetrics) {
+    const m = state.searchMetrics;
+    box.hidden = false;
+    box.className = "search-telemetry done";
+    const row = element("div", "telemetry-row");
+    row.append(
+      element("span", "telemetry-pill time", `⏱ ${formatDurationMs(m.elapsedMs)}`),
+      element("span", "telemetry-pill", `📄 ${(m.docsSearched ?? 0).toLocaleString()} docs searched`),
+      element("span", "telemetry-pill", `🔤 ${(m.tokensSearched ?? 0).toLocaleString()} tokens`),
+      element("span", "telemetry-pill", `🔎 ${m.queryTerms ?? 0} ${(m.queryTerms === 1) ? "term" : "terms"}`),
+      element(
+        "span",
+        "telemetry-pill",
+        `✓ ${state.ranked.length} strong` + (state.weaker.length ? ` · ${state.weaker.length} weaker` : "")
+      )
+    );
+    if (m.pdfBooksScanned > 0) {
+      const cacheNote = m.cachedDigestsUsed > 0 ? ` (${m.cachedDigestsUsed} cached ⚡)` : "";
+      row.append(element("span", "telemetry-pill pdf", `📚 ${m.pdfBooksScanned} PDF${m.pdfBooksScanned === 1 ? "" : "s"}${cacheNote}`));
+    }
+    box.replaceChildren(row);
+    return;
+  }
+
+  box.hidden = true;
 }
 
 function renderBar() {
@@ -1152,6 +1270,13 @@ tauri.event.listen("chat-event", ({ payload }) => {
   }
 });
 
+tauri.event.listen("search-progress", ({ payload }) => {
+  if (!payload || !state.searching) return;
+  state.searchProgress = payload;
+  renderTelemetry();
+  renderStatus();
+});
+
 // MARK: The status bar
 
 function renderStatus() {
@@ -1181,10 +1306,20 @@ function renderStatus() {
   }
   let count = "";
   if (state.error) count = `DigUp's helper: ${state.error}`;
-  else if (state.hasResults && state.query.trim()) {
+  else if (state.searching && state.searchProgress) {
+    const p = state.searchProgress;
+    const pct = Math.max(1, Math.min(100, Math.round((p.progress || 0) * 100)));
+    count = p.total > 0
+      ? `Searching ${p.done.toLocaleString()}/${p.total.toLocaleString()} docs (${pct}%) · ${(p.tokensSearched || 0).toLocaleString()} tokens`
+      : "Searching…";
+  } else if (state.hasResults && state.query.trim()) {
     const strong = state.ranked.length, weaker = state.weaker.length;
+    const m = state.searchMetrics;
+    const metricSuffix = m
+      ? ` · ${formatDurationMs(m.elapsedMs)} · ${(m.docsSearched ?? 0).toLocaleString()} docs · ${(m.tokensSearched ?? 0).toLocaleString()} tokens`
+      : "";
     count = app.caveat || (!state.meaning ? "Words only: meaning search isn't available"
-      : `${strong} ${strong === 1 ? "result" : "results"}` + (weaker ? ` · ${weaker} weaker` : ""));
+      : `${strong} ${strong === 1 ? "result" : "results"}` + (weaker ? ` · ${weaker} weaker` : "") + metricSuffix);
   }
   $("count").textContent = count;
   renderUpdate(app.update);
