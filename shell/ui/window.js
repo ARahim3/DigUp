@@ -268,7 +268,12 @@ function renderTelemetry() {
     const row = element("div", "telemetry-row");
     row.append(
       element("span", "telemetry-pill time", `⏱ ${formatDurationMs(m.elapsedMs)}`),
-      element("span", "telemetry-pill", `📄 ${(m.docsSearched ?? 0).toLocaleString()} docs searched`),
+      element(
+        "span",
+        "telemetry-pill",
+        `📄 ${(m.docsSearched ?? 0).toLocaleString()} docs` +
+          (m.indexCandidates != null ? ` (${m.indexCandidates.toLocaleString()} index hits)` : "")
+      ),
       element("span", "telemetry-pill", `🔤 ${(m.tokensSearched ?? 0).toLocaleString()} tokens`),
       element("span", "telemetry-pill", `🔎 ${m.queryTerms ?? 0} ${(m.queryTerms === 1) ? "term" : "terms"}`),
       element(

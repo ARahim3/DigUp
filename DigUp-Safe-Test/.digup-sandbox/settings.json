@@ -1,7 +1,6 @@
 {
   "folders": [
-    "C:\\Users\\SaadG\\Desktop\\Projects\\Digup_Data\\DigUp-Safe-Test\\code-sample",
-    "C:\\Users\\SaadG\\Desktop\\Projects\\Digup_Data\\DigUp-Safe-Test\\docs"
+    "C:\\Users\\SaadG\\Documents"
   ],
   "skipped": [],
   "skipTypes": [],
@@ -18,10 +17,10 @@
   "codeEditor": "",
   "deleteCodeIndex": false,
   "window": {
-    "width": 1040.0,
-    "height": 700.0,
-    "x": 432,
-    "y": 150,
+    "width": 958.0,
+    "height": 1000.0,
+    "x": -7,
+    "y": 0,
     "maximized": false
   },
   "trayClick": "panel",
