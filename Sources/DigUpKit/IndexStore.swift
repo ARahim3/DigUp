@@ -74,6 +74,25 @@ public final class IndexStore {
         file = directory.appendingPathComponent(name)
         db = try Database(path: file.path)
         try migrate()
+        try ensureGraphTables()
+    }
+
+    /// Ensures the GraphRAG `edges` table exists without bumping `PRAGMA user_version`, so prebuilt `v0.7.0` helpers
+    /// and newer GraphRAG-enabled helpers can share `index.sqlite` and `code.sqlite` seamlessly.
+    public func ensureGraphTables() throws {
+        try db.execute("""
+            CREATE TABLE IF NOT EXISTS edges(
+                id INTEGER PRIMARY KEY,
+                source_file INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+                source_segment INTEGER NOT NULL REFERENCES segments(id) ON DELETE CASCADE,
+                entity_type TEXT NOT NULL,
+                entity_key TEXT NOT NULL,
+                weight REAL NOT NULL DEFAULT 1.0
+            );
+            CREATE INDEX IF NOT EXISTS edges_key ON edges(entity_key);
+            CREATE INDEX IF NOT EXISTS edges_file ON edges(source_file);
+            CREATE INDEX IF NOT EXISTS edges_segment ON edges(source_segment);
+            """)
     }
 
     /// Bytes on disk: the database and its write-ahead log.
@@ -434,7 +453,8 @@ public final class IndexStore {
 
     // MARK: Segments
 
-    /// Adds a segment; `text` goes into keyword search (normalized, see `SearchText`), `vector` into meaning search.
+    /// Adds a segment; `text` goes into keyword search (normalized, see `SearchText`), `vector` into meaning search,
+    /// and deterministic entities/identifiers go into `edges` for lightweight SQLite GraphRAG multi-hop traversal.
     public func addSegment(file: Int64, kind: SegmentKind, modality: Modality, loc: Double? = nil, locEnd: Double? = nil,
                            excerpt: String? = nil, text: String? = nil, vector: [Float]? = nil) throws {
         try db.transaction {   // the segment and its keyword text together
@@ -442,11 +462,52 @@ public final class IndexStore {
                        [.int(file), .text(kind.rawValue), .text(vector == nil ? Modality.none.rawValue : modality.rawValue),
                         .optional(loc), .optional(locEnd), .optional(excerpt),
                         vector.map { .blob(Vectors.half($0)) } ?? .null])
+            let segmentID = db.lastInsertID
             if let text, !text.isEmpty {
                 try db.run("INSERT INTO fts(rowid, name, body, original) VALUES(?, '', ?, ?)",
-                           [.int(db.lastInsertID)] + Self.keywordText(text))
+                           [.int(segmentID)] + Self.keywordText(text))
+                for entity in Self.extractGraphEntities(from: text) {
+                    try db.run("INSERT INTO edges(source_file, source_segment, entity_type, entity_key, weight) VALUES(?, ?, ?, ?, ?)",
+                               [.int(file), .int(segmentID), .text(entity.type), .text(entity.key), .double(entity.weight)])
+                }
             }
         }
+    }
+
+    /// Zero-LLM-overhead deterministic entity extractor for SQLite GraphRAG (`symbol`, `id_code`, `file_ref`).
+    public static func extractGraphEntities(from text: String) -> [(type: String, key: String, weight: Double)] {
+        var results: [(type: String, key: String, weight: Double)] = []
+        var seen = Set<String>()
+        let tokens = text.components(separatedBy: CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_-./")).inverted)
+        for raw in tokens where raw.count >= 4 && raw.count <= 80 {
+            let trimmed = raw.trimmingCharacters(in: CharacterSet(charactersIn: ".-_/"))
+            guard trimmed.count >= 4 else { continue }
+            let lower = trimmed.lowercased()
+            // 1. File references (e.g., auth.ts, settings.yaml, report.pdf)
+            if trimmed.contains("."), let ext = trimmed.split(separator: ".").last,
+               ["py", "ts", "tsx", "js", "rs", "swift", "md", "pdf", "json", "yaml", "yml", "toml", "sql", "sh"].contains(ext.lowercased()) {
+                let key = (trimmed as NSString).lastPathComponent.lowercased()
+                if seen.insert("file_ref:\(key)").inserted {
+                    results.append(("file_ref", key, 2.2))
+                }
+            }
+            // 2. CamelCase or snake_case symbols (e.g., refreshAccessToken, quantize_row_q8_0)
+            let hasUpper = trimmed.rangeOfCharacter(from: .uppercaseLetters) != nil
+            let hasLower = trimmed.rangeOfCharacter(from: .lowercaseLetters) != nil
+            let hasDigit = trimmed.rangeOfCharacter(from: .decimalDigits) != nil
+            if (hasUpper && hasLower && trimmed.count >= 6) || (trimmed.contains("_") && hasLower) {
+                if seen.insert("symbol:\(lower)").inserted {
+                    results.append(("symbol", lower, 2.0))
+                }
+            } else if hasDigit && (hasUpper || hasLower) && (trimmed.contains("-") || trimmed.contains("_") || hasUpper) {
+                // 3. Exact ID codes (invoice numbers, ticket IDs, error codes, CVEs)
+                if seen.insert("id_code:\(lower)").inserted {
+                    results.append(("id_code", lower, 2.5))
+                }
+            }
+            if results.count >= 32 { break }
+        }
+        return results
     }
 
     /// `body` and `original` for keyword search: the normalized text, and the text as written if that differs.
@@ -457,13 +518,18 @@ public final class IndexStore {
 
     private func addNameRow(file: Int64, path: String) throws {
         try db.run("INSERT INTO segments(file, kind, modality) VALUES(?, 'name', 'none')", [.int(file)])
+        let segID = db.lastInsertID
         try db.run("INSERT INTO fts(rowid, name, body) VALUES(?, ?, ?)",
-                   [.int(db.lastInsertID), .text(SearchText.normalized(Self.nameText(path))),
+                   [.int(segID), .text(SearchText.normalized(Self.nameText(path))),
                     .text(SearchText.normalized(Self.folderText(path)))])
+        let fileName = Self.nameText(path).lowercased()
+        try db.run("INSERT INTO edges(source_file, source_segment, entity_type, entity_key, weight) VALUES(?, ?, 'file_ref', ?, 2.5)",
+                   [.int(file), .int(segID), .text(fileName)])
     }
 
     private func deleteSegments(of file: Int64, keepingName: Bool) throws {
         let filter = keepingName ? "AND kind != 'name'" : ""
+        try db.run("DELETE FROM edges WHERE source_segment IN (SELECT id FROM segments WHERE file = ? \(filter))", [.int(file)])
         try db.run("DELETE FROM fts WHERE rowid IN (SELECT id FROM segments WHERE file = ? \(filter))", [.int(file)])
         try db.run("DELETE FROM segments WHERE file = ? \(filter)", [.int(file)])
     }

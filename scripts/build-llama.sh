@@ -132,5 +132,8 @@ cp "$SOURCE/include/llama.h" "$SOURCE"/ggml/include/*.h "$SOURCE/tools/mtmd/mtmd
 # changed header, so the Swift file that reads it is touched.
 printf '// Written by scripts/build-llama.sh.\n#define LLAMA_BUILD_TAG "%s"\n' "$TAG" > "$OUT/include/llama-build.h"
 touch Sources/LlamaRuntime/LlamaEmbedder.swift
+if [[ -f Sources/LlamaRuntime/LlamaGenerator.swift ]]; then
+  touch Sources/LlamaRuntime/LlamaGenerator.swift
+fi
 echo "$STAMP" > "$OUT/BUILD"
 echo "Built llama.cpp $TAG (patched, $FLAVOR${CC:+, $CC}) into $OUT"

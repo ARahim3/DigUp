@@ -435,4 +435,92 @@ public final class Searcher {
                 }?.value
             })
     }
+
+    // MARK: Lightweight SQLite GraphRAG Multi-Hop Expansion
+
+    public struct GraphContextPiece: Sendable {
+        public let path: String
+        public let kind: String
+        public let segmentID: Int64
+        public let loc: Double?
+        public let locEnd: Double?
+        public let hop: Int
+        public let linkedVia: String?
+        public let text: String
+    }
+
+    /// Expands initial hybrid search hits (`seeds`) across the SQLite `edges` graph (1 to 2 hops) to retrieve
+    /// connected code definitions, referenced files, or cross-document identifiers without LLM indexing overhead.
+    public func retrieveGraphContext(query: String, seeds: [SearchHit], hops: Int = 1,
+                                     maxSeeds: Int = 5, maxNeighbors: Int = 5) throws -> [GraphContextPiece] {
+        var pieces: [GraphContextPiece] = []
+        var visitedSegments = Set<Int64>()
+        var seedSegments: [Int64] = []
+
+        for hit in seeds.prefix(maxSeeds) {
+            visitedSegments.insert(hit.segmentID)
+            seedSegments.append(hit.segmentID)
+            let body = (try? text(ofSegment: hit.segmentID)) ?? hit.excerpt ?? ""
+            let clipped = String(body.prefix(1600))
+            pieces.append(GraphContextPiece(
+                path: hit.path, kind: hit.kind.rawValue, segmentID: hit.segmentID,
+                loc: hit.loc, locEnd: hit.locEnd, hop: 0, linkedVia: nil, text: clipped
+            ))
+        }
+
+        guard hops >= 1, !seedSegments.isEmpty else { return pieces }
+        let idList = seedSegments.map(String.init).joined(separator: ",")
+        let queryEntities = IndexStore.extractGraphEntities(from: query).map(\.key)
+        var entityKeys: [String] = queryEntities
+
+        try store.db.query("""
+            SELECT DISTINCT entity_key FROM edges
+            WHERE source_segment IN (\(idList))
+            ORDER BY weight DESC LIMIT 16
+            """) { row in
+            if let key = row.text(0), !entityKeys.contains(key) {
+                entityKeys.append(key)
+            }
+        }
+
+        guard !entityKeys.isEmpty else { return pieces }
+        let placeholders = Array(repeating: "?", count: entityKeys.count).joined(separator: ",")
+        let args = entityKeys.map(SQLValue.text)
+
+        var neighborRows: [(segID: Int64, path: String, kind: String, loc: Double?, locEnd: Double?, via: String)] = []
+        try store.db.query("""
+            SELECT e.source_segment, f.path, f.kind, s.loc, s.loc_end, GROUP_CONCAT(DISTINCT e.entity_key) AS via,
+                   SUM(e.weight) AS total_weight
+            FROM edges e
+            JOIN segments s ON s.id = e.source_segment
+            JOIN files f ON f.id = e.source_file
+            WHERE e.entity_key IN (\(placeholders))
+              AND e.source_segment NOT IN (\(idList))
+            GROUP BY e.source_segment
+            ORDER BY total_weight DESC
+            LIMIT \(maxNeighbors * 2)
+            """, args) { row in
+            let segID = row.int(0)
+            guard visitedSegments.insert(segID).inserted else { return }
+            neighborRows.append((
+                segID: segID,
+                path: row.text(1) ?? "",
+                kind: row.text(2) ?? "doc",
+                loc: row.isNull(3) ? nil : row.double(3),
+                locEnd: row.isNull(4) ? nil : row.double(4),
+                via: row.text(5) ?? ""
+            ))
+        }
+
+        for neighbor in neighborRows.prefix(maxNeighbors) {
+            if let body = try? text(ofSegment: neighbor.segID), !body.isEmpty {
+                pieces.append(GraphContextPiece(
+                    path: neighbor.path, kind: neighbor.kind, segmentID: neighbor.segID,
+                    loc: neighbor.loc, locEnd: neighbor.locEnd, hop: 1,
+                    linkedVia: neighbor.via, text: String(body.prefix(1200))
+                ))
+            }
+        }
+        return pieces
+    }
 }
